@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mktlib"
+authors = [{name = "Matt Buck", email = "matt@mblance.com"}]
+description = "Polars-native financial market toolkit"
+version = "0.1.0"
+requires-python = ">=3.14"
+keywords = ["finance", "markets", "polars", "trading", "indicators"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = ["polars"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "flake8",
+    "pyright",
+    "pre-commit",
+    "bump-my-version",
+    "exchange-calendars",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --cov=mktlib --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.14"
+include = ["mktlib"]
+
+[tool.black]
+line-length = 127
+
+[tool.setuptools.packages.find]
+
+[tool.bumpversion]
+current_version = "0.1.0"
