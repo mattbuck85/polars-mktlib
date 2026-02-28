@@ -4,7 +4,7 @@ from __future__ import annotations
 def test_version():
     import mktlib
 
-    assert mktlib.__version__ == "0.1.0"
+    assert mktlib.__version__ == "0.2.0"
 
 
 def test_scheduling_import():
