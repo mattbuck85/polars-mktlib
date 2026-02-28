@@ -28,6 +28,10 @@ dev = [
     "pre-commit",
     "bump-my-version",
     "exchange-calendars",
+    "jinja2>=3.1",
+    "plotly>=6.0",
+    "pyarrow",
+    "pandas",
 ]
 
 [tool.pytest.ini_options]
