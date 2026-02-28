@@ -26,3 +26,29 @@ def test_get_calendar_alias():
 
     cal = get_calendar("NYSE")
     assert cal.name == "XNYS"
+
+
+def test_get_calendar_lse():
+    from mktlib.scheduling import get_calendar
+
+    cal = get_calendar("XLON")
+    assert cal.name == "XLON"
+
+
+def test_lse_alias():
+    from mktlib.scheduling import get_calendar
+
+    assert get_calendar("LSE").name == "XLON"
+
+
+def test_get_calendar_euronext():
+    from mktlib.scheduling import get_calendar
+
+    cal = get_calendar("XPAR")
+    assert cal.name == "XPAR"
+
+
+def test_euronext_alias():
+    from mktlib.scheduling import get_calendar
+
+    assert get_calendar("Euronext").name == "XPAR"

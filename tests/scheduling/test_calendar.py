@@ -4,14 +4,6 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import polars as pl
-import pytest
-
-from mktlib.scheduling import get_calendar
-
-
-@pytest.fixture
-def nyse():
-    return get_calendar("XNYS")
 
 
 class TestValidDays:

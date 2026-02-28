@@ -29,9 +29,9 @@ class HolidayRule:
         Checks year-1 through year+1 to catch cross-year observances
         (e.g., New Year's on Saturday observed as previous Friday Dec 31).
         """
-        results = []
+        results: list[date] = []
         for year in range(start.year - 1, end.year + 2):
-            d = self._raw_date(year)
+            d = self.raw_date(year)
             if d is None:
                 continue
             if self.observance is not None:
@@ -40,7 +40,7 @@ class HolidayRule:
                 results.append(d)
         return results
 
-    def _raw_date(self, year: int) -> date | None:
+    def raw_date(self, year: int) -> date | None:
         if self.start_year is not None and year < self.start_year:
             return None
         if self.end_year is not None and year > self.end_year:
@@ -60,7 +60,7 @@ class AdhocClosure:
     """An explicit list of closure dates (e.g., 9/11, Hurricane Sandy)."""
 
     name: str
-    dates: list[date] = field(default_factory=list)
+    dates: list[date] = field(default_factory=lambda: [])
 
 
 @dataclass(frozen=True)
@@ -70,11 +70,11 @@ class EarlyClose:
     name: str
     close_time: time
     rule: HolidayRule | None = None
-    dates: list[date] = field(default_factory=list)
+    dates: list[date] = field(default_factory=lambda: [])
 
     def dates_in_range(self, start: date, end: date) -> list[date]:
         """All early-close dates within [start, end]."""
-        results = []
+        results: list[date] = []
         if self.rule is not None:
             results.extend(self.rule.dates_in_range(start, end))
         for d in self.dates:
