@@ -8,7 +8,8 @@ Polars-native financial market toolkit. Zero pandas dependency.
 ## Installation
 
 ```bash
-pip install mktlib
+pip install mktlib              # core (scheduling only)
+pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 ```
 
 ## Supported Exchanges
@@ -136,10 +137,97 @@ register_exchange("XTKS", lambda: cal, aliases=["TSE", "Tokyo"])
 
 All date parameters accept `date` objects or ISO-format strings (`"2024-01-02"`).
 
+## Reports — Tearsheet Generation
+
+`mktlib.reports` is a Polars-native replacement for quantstats. It computes 25 performance metrics and renders an interactive HTML tearsheet with Plotly charts — no pandas, matplotlib, or seaborn required.
+
+### Quick Start
+
+```python
+from mktlib.reports import html, metrics
+
+# From a Polars DataFrame with 'date' and 'return' columns
+html(returns_df, output="tearsheet.html", title="My Strategy")
+
+# From a bare Polars Series (synthetic dates are generated)
+html(returns_series, benchmark=bench_series, output="report.html")
+
+# Metrics only (no HTML)
+result = metrics(returns_df, benchmark=bench_df, rf=0.05)
+print(result.sharpe, result.max_drawdown, result.cagr)
+```
+
+### Input Types
+
+Both `html()` and `metrics()` accept any of:
+
+| Type | Notes |
+|-|-|
+| `pl.DataFrame` | Must have `date` (Date/Datetime) and `return` (Float64) columns, or columns will be inferred |
+| `pl.Series` | Bare returns; synthetic business-day dates are generated starting from 2000-01-03 |
+| `pd.Series` | Duck-typed via `PandasConvertible` protocol; DatetimeIndex is converted to `pl.Date` automatically |
+
+### Metrics (25)
+
+| Category | Metrics |
+|-|-|
+| Returns | Cumulative, CAGR, MTD, YTD, 1Y |
+| Ratios | Sharpe, Sortino, Calmar, Omega, RoMaD |
+| Risk | Max DD, Max DD Date, Longest DD Days, Avg DD, Volatility (ann.) |
+| Tail | VaR (95%), CVaR (95%) |
+| Win/Loss | Win Rate, Payoff Ratio, Profit Factor, Kelly Criterion |
+| Benchmark | Alpha, Beta, R-squared, Information Ratio |
+
+### Charts (8)
+
+Cumulative returns (with optional benchmark overlay), drawdown underwater, monthly returns heatmap, yearly returns bar, rolling Sharpe (126d), rolling volatility (126d), daily returns scatter, returns distribution histogram.
+
+All charts are interactive Plotly — hover for values, zoom, pan. Plotly JS is loaded via CDN.
+
+### API
+
+```python
+def html(
+    returns: ReturnsInput,
+    *,
+    benchmark: ReturnsInput | None = None,
+    output: str | None = None,          # file path; None → return HTML string
+    title: str = "Strategy Tearsheet",
+    rf: float = 0.0,                    # annualised risk-free rate
+    periods_per_year: int = 252,
+    compounded: bool = True,
+) -> str | None: ...
+
+def metrics(
+    returns: ReturnsInput,
+    *,
+    benchmark: ReturnsInput | None = None,
+    rf: float = 0.0,
+    periods_per_year: int = 252,
+    compounded: bool = True,
+) -> MetricsResult: ...
+```
+
+`MetricsResult` is a dataclass with all 25 metrics as named fields. Benchmark fields (`alpha`, `beta`, `r_squared`, `information_ratio`) are `None` when no benchmark is provided.
+
+### Migration from quantstats
+
+```python
+# Before
+import quantstats as qs
+qs.reports.html(returns, benchmark=bench, output="report.html", title="My Strategy")
+
+# After
+from mktlib.reports import html
+html(returns, benchmark=bench, output="report.html", title="My Strategy")
+```
+
+`pd.Series` inputs continue to work during migration. Switch to `pl.Series` or `pl.DataFrame` to eliminate the pandas dependency entirely.
+
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,reports]"
 pytest
 pyright mktlib
 pre-commit install  # trailing whitespace, flake8, pyright
