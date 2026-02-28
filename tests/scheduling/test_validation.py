@@ -10,27 +10,36 @@ from mktlib.scheduling import get_calendar
 ec = pytest.importorskip("exchange_calendars")
 
 
-@pytest.fixture
-def nyse():
-    return get_calendar("XNYS")
+class ExchangeValidationBase:
+    """Base cross-validation against exchange_calendars."""
 
+    MKTLIB_NAME: str
+    EC_NAME: str
+    VALID_DAYS_YEARS: range
+    EARLY_CLOSE_YEARS: range
 
-@pytest.fixture
-def ec_nyse():
-    return ec.get_calendar("XNYS")
+    def pytest_generate_tests(self, metafunc):
+        if "year" in metafunc.fixturenames:
+            if metafunc.function.__name__ == "test_valid_days_match":
+                metafunc.parametrize("year", self.VALID_DAYS_YEARS)
+            elif metafunc.function.__name__ == "test_early_closes_superset":
+                metafunc.parametrize("year", self.EARLY_CLOSE_YEARS)
 
+    @pytest.fixture
+    def cal(self):
+        return get_calendar(self.MKTLIB_NAME)
 
-class TestCrossValidation:
-    """Cross-reference mktlib calendar against exchange_calendars."""
+    @pytest.fixture
+    def ec_cal(self):
+        return ec.get_calendar(self.EC_NAME)
 
-    @pytest.mark.parametrize("year", range(2007, 2027))
-    def test_valid_days_match(self, nyse, ec_nyse, year):
+    def test_valid_days_match(self, cal, ec_cal, year):
         start = date(year, 1, 1)
         end = date(year, 12, 31)
 
-        mktlib_days = set(nyse.valid_days(start, end).to_list())
+        mktlib_days = set(cal.valid_days(start, end).to_list())
         try:
-            ec_sessions = ec_nyse.sessions_in_range(str(start), str(end))
+            ec_sessions = ec_cal.sessions_in_range(str(start), str(end))
         except Exception:
             pytest.skip(f"exchange_calendars out of range for year {year}")
             return
@@ -42,23 +51,44 @@ class TestCrossValidation:
         assert not missing, f"Year {year}: mktlib missing sessions: {sorted(missing)}"
         assert not extra, f"Year {year}: mktlib has extra sessions: {sorted(extra)}"
 
-    @pytest.mark.parametrize("year", range(2014, 2027))
-    def test_early_closes_superset(self, nyse, ec_nyse, year):
+    def test_early_closes_superset(self, cal, ec_cal, year):
         """Verify mktlib early closes are a superset of exchange_calendars."""
         start = date(year, 1, 1)
         end = date(year, 12, 31)
 
-        mktlib_schedule = nyse.schedule(start, end)
+        mktlib_schedule = cal.schedule(start, end)
+        normal_close = cal.close_time
         mktlib_early = set()
         for row in mktlib_schedule.iter_rows(named=True):
-            if row["market_close"].hour < 16:
+            if row["market_close"].time() < normal_close:
                 mktlib_early.add(row["date"])
 
         ec_early_dates = {
             d.date()
-            for d in ec_nyse.early_closes
+            for d in ec_cal.early_closes
             if start <= d.date() <= end
         }
 
         missing = ec_early_dates - mktlib_early
         assert not missing, f"Year {year}: mktlib missing early closes: {sorted(missing)}"
+
+
+class TestNYSEValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XNYS"
+    EC_NAME = "XNYS"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestLSEValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XLON"
+    EC_NAME = "XLON"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestEuronextValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XPAR"
+    EC_NAME = "XPAR"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)

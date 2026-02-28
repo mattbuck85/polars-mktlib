@@ -4,13 +4,7 @@ from datetime import date
 
 import pytest
 
-from mktlib.scheduling import get_calendar
 from mktlib.scheduling.easter import easter, good_friday
-
-
-@pytest.fixture
-def nyse():
-    return get_calendar("XNYS")
 
 
 class TestEaster:

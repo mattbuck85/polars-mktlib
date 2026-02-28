@@ -37,6 +37,7 @@ class ExchangeCalendar:
         early_closes: list[EarlyClose] | None = None,
         special_closures_fn: Callable[[date, date], list[date]] | None = None,
         special_early_closes_fn: Callable[[date, date], dict[date, time]] | None = None,
+        exclusions: set[date] | None = None,
     ):
         self.name = name
         self.timezone = timezone
@@ -48,6 +49,7 @@ class ExchangeCalendar:
         self.early_closes = early_closes or []
         self._special_closures_fn = special_closures_fn
         self._special_early_closes_fn = special_early_closes_fn
+        self._exclusions = exclusions or set()
 
     def _closure_dates(self, start: date, end: date) -> set[date]:
         """Collect all closure dates (holidays + adhoc) within [start, end]."""
@@ -60,6 +62,7 @@ class ExchangeCalendar:
                     closures.add(d)
         if self._special_closures_fn is not None:
             closures.update(self._special_closures_fn(start, end))
+        closures -= self._exclusions
         return closures
 
     def _early_close_map(self, start: date, end: date) -> dict[date, time]:
@@ -77,7 +80,7 @@ class ExchangeCalendar:
         start_d, end_d = _parse_date(start), _parse_date(end)
         closures = self._closure_dates(start_d, end_d)
 
-        days = []
+        days: list[date] = []
         current = start_d
         while current <= end_d:
             if current.weekday() < 5 and current not in closures:
@@ -92,9 +95,9 @@ class ExchangeCalendar:
         closures = self._closure_dates(start_d, end_d)
         ec_map = self._early_close_map(start_d, end_d)
 
-        dates = []
-        opens = []
-        closes = []
+        dates: list[date] = []
+        opens: list[datetime] = []
+        closes: list[datetime] = []
 
         current = start_d
         while current <= end_d:
@@ -207,3 +210,61 @@ def _make_nyse() -> ExchangeCalendar:
 
 
 register_exchange("XNYS", _make_nyse, aliases=["NYSE"])
+
+
+def _make_lse() -> ExchangeCalendar:
+    from mktlib.scheduling.exchanges.lse import (
+        ADHOC_CLOSURES,
+        BANK_HOLIDAY_MOVES,
+        EARLY_CLOSES,
+        LSE_CLOSE,
+        LSE_OPEN,
+        LSE_TZ,
+        RECURRING_HOLIDAYS,
+        special_closures_with_moves,
+        special_early_closes,
+    )
+
+    return ExchangeCalendar(
+        name="XLON",
+        timezone=LSE_TZ,
+        open_time=LSE_OPEN,
+        close_time=LSE_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=special_closures_with_moves,
+        special_early_closes_fn=special_early_closes,
+        exclusions=set(BANK_HOLIDAY_MOVES.keys()),
+    )
+
+
+register_exchange("XLON", _make_lse, aliases=["LSE", "London"])
+
+
+def _make_euronext() -> ExchangeCalendar:
+    from mktlib.scheduling.exchanges.euronext import (
+        ADHOC_CLOSURES,
+        EARLY_CLOSES,
+        EURONEXT_CLOSE,
+        EURONEXT_OPEN,
+        EURONEXT_TZ,
+        RECURRING_HOLIDAYS,
+        special_closures,
+        special_early_closes,
+    )
+
+    return ExchangeCalendar(
+        name="XPAR",
+        timezone=EURONEXT_TZ,
+        open_time=EURONEXT_OPEN,
+        close_time=EURONEXT_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=special_closures,
+        special_early_closes_fn=special_early_closes,
+    )
+
+
+register_exchange("XPAR", _make_euronext, aliases=["Euronext", "Paris"])

@@ -31,7 +31,7 @@ addopts = "-ra --cov=mktlib --cov-report=term-missing"
 testpaths = ["tests"]
 
 [tool.pyright]
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
 pythonVersion = "3.14"
 include = ["mktlib"]
 

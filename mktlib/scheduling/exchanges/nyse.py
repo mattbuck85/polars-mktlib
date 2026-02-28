@@ -95,7 +95,7 @@ RECURRING_HOLIDAYS: list[HolidayRule] = [
 
 def good_friday_closures(start: date, end: date) -> list[date]:
     """Generate Good Friday closure dates for NYSE within a range."""
-    results = []
+    results: list[date] = []
     for year in range(start.year, end.year + 1):
         gf = good_friday(year)
         if start <= gf <= end:
@@ -127,7 +127,7 @@ EARLY_CLOSE_TIME = time(13, 0)  # 1:00 PM
 
 def _compute_black_friday(year: int) -> date:
     """Black Friday = day after Thanksgiving (4th Thursday of November)."""
-    thanksgiving = THANKSGIVING._raw_date(year)
+    thanksgiving = THANKSGIVING.raw_date(year)
     assert thanksgiving is not None
     return thanksgiving + timedelta(days=1)
 
@@ -162,7 +162,7 @@ def _compute_christmas_eve_early_close(year: int) -> date | None:
 
 def independence_day_early_closes(start: date, end: date) -> list[date]:
     """Generate early close dates for day before Independence Day."""
-    results = []
+    results: list[date] = []
     for year in range(start.year, end.year + 1):
         d = _compute_independence_day_early_close(year)
         if d is not None and start <= d <= end:
@@ -172,7 +172,7 @@ def independence_day_early_closes(start: date, end: date) -> list[date]:
 
 def black_friday_early_closes(start: date, end: date) -> list[date]:
     """Generate Black Friday early close dates."""
-    results = []
+    results: list[date] = []
     for year in range(start.year, end.year + 1):
         d = _compute_black_friday(year)
         if start <= d <= end:
@@ -182,7 +182,7 @@ def black_friday_early_closes(start: date, end: date) -> list[date]:
 
 def christmas_eve_early_closes(start: date, end: date) -> list[date]:
     """Generate Christmas Eve early close dates (post-1993)."""
-    results = []
+    results: list[date] = []
     for year in range(max(start.year, 1993), end.year + 1):
         d = _compute_christmas_eve_early_close(year)
         if d is not None and start <= d <= end:
