@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -134,6 +134,166 @@ class ExchangeCalendar:
             market_open=datetime.combine(d, self.open_time, tzinfo=self.tz),
             market_close=datetime.combine(d, close_t, tzinfo=self.tz),
         )
+
+    # --- Session navigation ---
+
+    def next_session(self, day: date | str) -> date:
+        """First trading day strictly after *day*."""
+        d = _parse_date(day) + timedelta(days=1)
+        while not self.is_session(d):
+            d += timedelta(days=1)
+        return d
+
+    def previous_session(self, day: date | str) -> date:
+        """Last trading day strictly before *day*."""
+        d = _parse_date(day) - timedelta(days=1)
+        while not self.is_session(d):
+            d -= timedelta(days=1)
+        return d
+
+    def session_offset(self, day: date | str, n: int) -> date:
+        """Offset *day* by *n* trading sessions (negative = backward).
+
+        *day* must be a session.  ``n=0`` returns *day* unchanged.
+        """
+        d = _parse_date(day)
+        if not self.is_session(d):
+            raise ValueError(f"{d} is not a trading session")
+        if n == 0:
+            return d
+        step = 1 if n > 0 else -1
+        remaining = abs(n)
+        while remaining > 0:
+            d += timedelta(days=step)
+            if self.is_session(d):
+                remaining -= 1
+        return d
+
+    def date_to_session(self, day: date | str, direction: str = "none") -> date:
+        """Resolve *day* to a session.
+
+        *direction*: ``"none"`` (raise if not session), ``"next"``, ``"previous"``.
+        """
+        d = _parse_date(day)
+        if self.is_session(d):
+            return d
+        match direction:
+            case "next":
+                return self.next_session(d)
+            case "previous":
+                return self.previous_session(d)
+            case "none":
+                raise ValueError(f"{d} is not a trading session")
+            case _:
+                raise ValueError(f"Invalid direction {direction!r}")
+
+    def sessions_in_range(self, start: date | str, end: date | str) -> int:
+        """Count trading sessions in [start, end]."""
+        return len(self.valid_days(start, end))
+
+    # --- Minute-level queries ---
+
+    def _to_aware(self, dt: datetime) -> datetime:
+        """Ensure *dt* is timezone-aware in exchange tz."""
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=self.tz)
+        return dt.astimezone(self.tz)
+
+    def is_open_on_minute(self, dt: datetime) -> bool:
+        """Check if the exchange is open at *dt*.  Uses ``[open, close)`` semantics."""
+        aware = self._to_aware(dt)
+        sched = self.get_schedule(aware.date())
+        if sched is None:
+            return False
+        return sched.market_open <= aware < sched.market_close
+
+    def next_open(self, dt: datetime) -> datetime:
+        """Next market open strictly after *dt* (or today's open if before it)."""
+        aware = self._to_aware(dt)
+        d = aware.date()
+        sched = self.get_schedule(d)
+        if sched is not None and aware < sched.market_open:
+            return sched.market_open
+        next_d = self.next_session(d)
+        next_sched = self.get_schedule(next_d)
+        assert next_sched is not None
+        return next_sched.market_open
+
+    def next_close(self, dt: datetime) -> datetime:
+        """Next market close at or after *dt* (today's close if still open)."""
+        aware = self._to_aware(dt)
+        d = aware.date()
+        sched = self.get_schedule(d)
+        if sched is not None and aware < sched.market_close:
+            return sched.market_close
+        next_d = self.next_session(d)
+        next_sched = self.get_schedule(next_d)
+        assert next_sched is not None
+        return next_sched.market_close
+
+    def previous_open(self, dt: datetime) -> datetime:
+        """Most recent market open strictly before *dt*."""
+        aware = self._to_aware(dt)
+        d = aware.date()
+        sched = self.get_schedule(d)
+        if sched is not None and aware > sched.market_open:
+            return sched.market_open
+        prev_d = self.previous_session(d)
+        prev_sched = self.get_schedule(prev_d)
+        assert prev_sched is not None
+        return prev_sched.market_open
+
+    def previous_close(self, dt: datetime) -> datetime:
+        """Most recent market close strictly before *dt*."""
+        aware = self._to_aware(dt)
+        d = aware.date()
+        sched = self.get_schedule(d)
+        if sched is not None and aware > sched.market_close:
+            return sched.market_close
+        prev_d = self.previous_session(d)
+        prev_sched = self.get_schedule(prev_d)
+        assert prev_sched is not None
+        return prev_sched.market_close
+
+    def minute_to_session(self, dt: datetime) -> date | None:
+        """Return the session date that contains *dt*, or ``None`` if market is closed."""
+        aware = self._to_aware(dt)
+        d = aware.date()
+        sched = self.get_schedule(d)
+        if sched is not None and sched.market_open <= aware < sched.market_close:
+            return d
+        return None
+
+    # --- Trading index ---
+
+    def trading_index(
+        self,
+        start: date | str,
+        end: date | str,
+        period: str = "1m",
+        closed: Literal["left", "right", "both", "none"] = "left",
+    ) -> pl.Series:
+        """Generate a Polars Series of trading timestamps at the given frequency.
+
+        *closed*: ``"left"`` (default) = ``[open, close)``,
+        ``"right"`` = ``(open, close]``,
+        ``"both"`` = ``[open, close]``,
+        ``"none"`` = ``(open, close)``.
+        """
+        sched = self.schedule(start, end)
+        parts: list[pl.Series] = []
+        for row in sched.iter_rows(named=True):
+            ts = pl.datetime_range(
+                row["market_open"],
+                row["market_close"],
+                interval=period,
+                eager=True,
+                closed=closed,
+            )
+            parts.append(ts)
+        if not parts:
+            return pl.Series("datetime", [], dtype=pl.Datetime("us", self.timezone))
+        return pl.concat(parts).alias("datetime")
 
 
 # --- Registry ---
