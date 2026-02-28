@@ -17,7 +17,7 @@ def html(
     benchmark: ReturnsInput | None = None,
     output: str | None = None,
     title: str = "Strategy Tearsheet",
-    rf: float = 0.0,
+    rf: float | str = 0.0,
     periods_per_year: int = 252,
     compounded: bool = True,
 ) -> str | None:
@@ -35,7 +35,8 @@ def html(
     title
         Report title shown in the header.
     rf
-        Risk-free rate (annualised, e.g. ``0.05`` for 5 %).
+        Risk-free rate (annualised, e.g. ``0.05`` for 5 %).  Pass ``"auto"``
+        to fetch the 3-month T-bill average for the returns date range.
     periods_per_year
         Trading days per year (default 252).
     compounded
@@ -48,11 +49,22 @@ def html(
     """
     from . import _compat, _plots, _stats, _template
 
-    config = ReportConfig(rf=rf, periods_per_year=periods_per_year, compounded=compounded, title=title)
-
     # Coerce inputs
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
+
+    rf_resolved: float = rf if isinstance(rf, (int, float)) else 0.0
+    if rf == "auto":
+        from datetime import date as _date
+
+        from ..rates._treasury import fetch_average_rate
+
+        start = ret_df["date"].min()
+        end = ret_df["date"].max()
+        assert isinstance(start, _date) and isinstance(end, _date)
+        rf_resolved = fetch_average_rate(start, end)
+
+    config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded, title=title)
 
     # Compute metrics
     result = _stats.compute_metrics(ret_df, bench_df, config)
@@ -105,14 +117,33 @@ def metrics(
     returns: ReturnsInput,
     *,
     benchmark: ReturnsInput | None = None,
-    rf: float = 0.0,
+    rf: float | str = 0.0,
     periods_per_year: int = 252,
     compounded: bool = True,
 ) -> MetricsResult:
-    """Compute performance metrics without generating an HTML report."""
+    """Compute performance metrics without generating an HTML report.
+
+    Parameters
+    ----------
+    rf
+        Risk-free rate (annualised).  Pass ``"auto"`` to fetch the 3-month
+        T-bill average for the returns date range.
+    """
     from . import _compat, _stats
 
-    config = ReportConfig(rf=rf, periods_per_year=periods_per_year, compounded=compounded)
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
+
+    rf_resolved: float = rf if isinstance(rf, (int, float)) else 0.0
+    if rf == "auto":
+        from datetime import date as _date
+
+        from ..rates._treasury import fetch_average_rate
+
+        start = ret_df["date"].min()
+        end = ret_df["date"].max()
+        assert isinstance(start, _date) and isinstance(end, _date)
+        rf_resolved = fetch_average_rate(start, end)
+
+    config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded)
     return _stats.compute_metrics(ret_df, bench_df, config)

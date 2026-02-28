@@ -48,6 +48,7 @@ line-length = 127
 
 [tool.setuptools.package-data]
 "mktlib.reports" = ["templates/*.j2"]
+"mktlib.rates" = ["_data/*.csv"]
 
 [tool.setuptools.packages.find]
 
