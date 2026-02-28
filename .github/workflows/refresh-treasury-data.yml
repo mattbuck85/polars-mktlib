@@ -1,0 +1,45 @@
+name: Refresh Treasury Data
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Fetch latest Treasury data
+        run: python scripts/refresh_treasury_data.py
+
+      - name: Check for changes
+        id: diff
+        run: |
+          git diff --quiet mktlib/rates/_data/ && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="chore/refresh-treasury-data-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git add mktlib/rates/_data/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: refresh bundled Treasury yield data"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "chore: refresh bundled Treasury yield data" \
+            --body "Automated weekly refresh of \`mktlib/rates/_data/*.csv\` from Treasury.gov." \
+            --label "automated"
