@@ -1,17 +1,19 @@
+# pyright: reportMissingImports=false, reportUnknownMemberType=false
+# pyright: reportUnknownVariableType=false, reportUnknownParameterType=false
 from __future__ import annotations
 
 from importlib.resources import files
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import jinja2
+import jinja2  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from ._types import MetricsResult
 
-_cached_template: jinja2.Template | None = None
+_cached_template: Any = None
 
 
-def _get_template() -> jinja2.Template:
+def _get_template() -> Any:
     global _cached_template  # noqa: PLW0603
     if _cached_template is None:
         text = (files("mktlib.reports") / "templates" / "tearsheet.html.j2").read_text(encoding="utf-8")
@@ -30,7 +32,7 @@ def render(
 ) -> str:
     """Render the full tearsheet HTML."""
     template = _get_template()
-    return template.render(
+    result: str = template.render(
         title=title,
         start_date=start_date,
         end_date=end_date,
@@ -38,6 +40,7 @@ def render(
         metrics_groups=_format_metrics(metrics),
         charts=charts,
     )
+    return result
 
 
 def _format_metrics(m: MetricsResult) -> list[tuple[str, list[tuple[str, str]]]]:
