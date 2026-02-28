@@ -54,11 +54,11 @@ class TestCrossValidation:
             if row["market_close"].hour < 16:
                 mktlib_early.add(row["date"])
 
-        try:
-            ec_early_dates = set(d.date() for d in ec_nyse.early_closes(str(start), str(end)))
-        except Exception:
-            pytest.skip(f"exchange_calendars out of range for year {year}")
-            return
+        ec_early_dates = {
+            d.date()
+            for d in ec_nyse.early_closes
+            if start <= d.date() <= end
+        }
 
         missing = ec_early_dates - mktlib_early
         assert not missing, f"Year {year}: mktlib missing early closes: {sorted(missing)}"
