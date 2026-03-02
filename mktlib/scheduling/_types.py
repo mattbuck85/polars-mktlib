@@ -11,6 +11,8 @@ class MarketDailySchedule:
     date: date
     market_open: datetime
     market_close: datetime
+    break_start: datetime | None = None
+    break_end: datetime | None = None
 
 
 def parse_date(d: date | str) -> date:
