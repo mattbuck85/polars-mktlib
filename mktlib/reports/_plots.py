@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 import plotly.graph_objects as go
@@ -29,8 +30,8 @@ def _to_div(fig: go.Figure) -> str:
 
 
 def cumulative_returns_chart(
-    dates: list[Any], cum_ret: list[Any],
-    bench_dates: list[Any] | None = None, bench_cum_ret: list[Any] | None = None,
+    dates: list[dt.date], cum_ret: list[float],
+    bench_dates: list[dt.date] | None = None, bench_cum_ret: list[float] | None = None,
 ) -> str:
     fig = go.Figure()
     fig = fig.add_trace(go.Scatter(x=dates, y=cum_ret, name="Strategy", line=dict(color=STRATEGY_COLOR, width=2)))
@@ -43,7 +44,7 @@ def cumulative_returns_chart(
     return _to_div(fig)
 
 
-def drawdown_chart(dates: list[Any], drawdowns: list[Any]) -> str:
+def drawdown_chart(dates: list[dt.date], drawdowns: list[float]) -> str:
     fig = go.Figure()
     fig = fig.add_trace(go.Scatter(
         x=dates, y=drawdowns, fill="tozeroy",
@@ -54,7 +55,7 @@ def drawdown_chart(dates: list[Any], drawdowns: list[Any]) -> str:
     return _to_div(fig)
 
 
-def yearly_returns_chart(years: list[Any], returns: list[float]) -> str:
+def yearly_returns_chart(years: list[int], returns: list[float]) -> str:
     colors = [POSITIVE_COLOR if r >= 0 else NEGATIVE_COLOR for r in returns]
     fig = go.Figure()
     fig = fig.add_trace(go.Bar(x=[str(y) for y in years], y=returns, marker_color=colors, name="Return"))
@@ -87,22 +88,22 @@ def monthly_heatmap_chart(years: list[int], months: list[int], returns: list[flo
     return _to_div(fig)
 
 
-def rolling_sharpe_chart(dates: list[Any], values: list[Any]) -> str:
+def rolling_sharpe_chart(dates: list[dt.date], values: list[float | None]) -> str:
     fig = go.Figure()
-    fig = fig.add_trace(go.Scatter(x=dates, y=values, line=dict(color=STRATEGY_COLOR, width=1.5), name="Rolling Sharpe"))
+    fig = fig.add_trace(go.Scatter(x=dates, y=values, line=dict(color=STRATEGY_COLOR, width=1.5), name="Rolling Sharpe"))  # type: ignore[arg-type]  # stubs don't allow None in y
     fig = fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
     fig = fig.update_layout(_base_layout("Rolling Sharpe (126d)"))
     return _to_div(fig)
 
 
-def rolling_volatility_chart(dates: list[Any], values: list[Any]) -> str:
+def rolling_volatility_chart(dates: list[dt.date], values: list[float | None]) -> str:
     fig = go.Figure()
-    fig = fig.add_trace(go.Scatter(x=dates, y=values, line=dict(color="#FF9800", width=1.5), name="Rolling Volatility"))
+    fig = fig.add_trace(go.Scatter(x=dates, y=values, line=dict(color="#FF9800", width=1.5), name="Rolling Volatility"))  # type: ignore[arg-type]  # stubs don't allow None in y
     fig = fig.update_layout(_base_layout("Rolling Volatility (126d)"), yaxis_tickformat=".1%")
     return _to_div(fig)
 
 
-def daily_returns_scatter(dates: list[Any], returns: list[float]) -> str:
+def daily_returns_scatter(dates: list[dt.date], returns: list[float]) -> str:
     colors = [POSITIVE_COLOR if r >= 0 else NEGATIVE_COLOR for r in returns]
     fig = go.Figure()
     fig = fig.add_trace(go.Scatter(

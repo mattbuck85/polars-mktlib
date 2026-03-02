@@ -1,12 +1,14 @@
 """Polars-native tearsheet generator — drop-in replacement for quantstats."""
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from . import _compat, _plots, _stats, _template
 from ._compat import PandasConvertible, ReturnsInput
-
 from ._types import DrawdownInfo, MetricsResult, ReportConfig
+from ..rates._treasury import fetch_average_rate
 
 if TYPE_CHECKING:
     import plotly.graph_objects as go
@@ -66,21 +68,14 @@ def html(
     str | None
         The HTML string when *output* is *None*, otherwise *None*.
     """
-    from . import _compat, _plots, _stats, _template
-
     # Coerce inputs
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
 
     rf_resolved: float = rf if isinstance(rf, (int, float)) else 0.0
     if rf == "auto":
-        from datetime import date as _date
-
-        from ..rates._treasury import fetch_average_rate
-
-        start = ret_df["date"].min()
-        end = ret_df["date"].max()
-        assert isinstance(start, _date) and isinstance(end, _date)
+        start = cast(date, ret_df["date"].min())
+        end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
     config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded, title=title)
@@ -136,9 +131,8 @@ def html(
     )
 
     if output is not None:
-        import pathlib
-        pathlib.Path(output).parent.mkdir(parents=True, exist_ok=True)
-        pathlib.Path(output).write_text(html_str, encoding="utf-8")
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_text(html_str, encoding="utf-8")
         return None
     return html_str
 
@@ -159,20 +153,13 @@ def metrics(
         Risk-free rate (annualised).  Pass ``"auto"`` to fetch the 3-month
         T-bill average for the returns date range.
     """
-    from . import _compat, _stats
-
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
 
     rf_resolved: float = rf if isinstance(rf, (int, float)) else 0.0
     if rf == "auto":
-        from datetime import date as _date
-
-        from ..rates._treasury import fetch_average_rate
-
-        start = ret_df["date"].min()
-        end = ret_df["date"].max()
-        assert isinstance(start, _date) and isinstance(end, _date)
+        start = cast(date, ret_df["date"].min())
+        end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
     config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded)
