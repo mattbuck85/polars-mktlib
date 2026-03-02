@@ -45,7 +45,33 @@ Bundled Treasury CSVs refreshed by `scripts/refresh_treasury_data.py` (standalon
 - `reports.__init__` resolves `rf="auto"` by calling `rates._treasury.fetch_average_rate` — this is the only cross-subpackage dependency.
 - `scheduling` is fully standalone with zero external deps beyond polars.
 - Exchange definitions live in `scheduling/exchanges/` — each module exports constants and rule lists consumed by `registry.py`.
-- Adding an exchange: create `exchanges/foo.py` with holiday rules, register in `registry.py` via `register_exchange()`.
+- Adding an exchange: create `exchanges/foo.py` with holiday rules, register in `registry.py` via `register_exchange()`. **Must** add an `ExchangeValidationBase` subclass in `tests/scheduling/test_validation.py` cross-validating against `exchange_calendars` for 20 years of data (see below).
+
+## Exchange Validation
+
+Every calendar **must** have a cross-validation test class inheriting from `ExchangeValidationBase` in `tests/scheduling/test_validation.py`. This validates `valid_days` and `early_closes` against the `exchange_calendars` library for 20 years of data.
+
+When adding a new exchange:
+1. Create the exchange module in `scheduling/exchanges/`
+2. Register in `registry.py` via `register_exchange()`
+3. Add a test class in `test_validation.py`:
+   ```python
+   class TestFooValidation(ExchangeValidationBase):
+       MKTLIB_NAME = "XFOO"
+       EC_NAME = "XFOO"  # exchange_calendars name (may differ)
+       VALID_DAYS_YEARS = range(2007, 2027)
+       EARLY_CLOSE_YEARS = range(2014, 2027)
+   ```
+4. Run `pytest tests/scheduling/test_validation.py -v` and fix any discrepancies before merging
+
+### CME Validation Gap
+
+CME (XCME/GLBX) currently lacks `ExchangeValidationBase` coverage. The `exchange_calendars` CME calendar (`CMES`) uses `America/Chicago` timezone and has more sessions (~259/year vs our ~252) because our CME implementation reuses NYSE holidays directly. Key known differences:
+- `exchange_calendars` CMES treats some NYSE holidays (MLK Day, Presidents Day, etc.) as early-close days rather than full closures
+- Timezone is `America/Chicago` in `exchange_calendars` vs `America/New_York` in our implementation
+- Early close schedule differs (their CME has early closes on MLK, Presidents Day, Memorial Day, Labor Day, Thanksgiving)
+
+This gap should be addressed by adding `TestCMERTHValidation` and investigating the session/early-close discrepancies.
 
 ## Versioning
 

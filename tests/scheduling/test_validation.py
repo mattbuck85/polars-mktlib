@@ -92,3 +92,14 @@ class TestEuronextValidation(ExchangeValidationBase):
     EC_NAME = "XPAR"
     VALID_DAYS_YEARS = range(2007, 2027)
     EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+@pytest.mark.xfail(
+    reason="CME implementation reuses NYSE holidays; exchange_calendars CMES treats some as early-close instead of closure",
+    strict=False,
+)
+class TestCMERTHValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XCME"
+    EC_NAME = "CMES"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
