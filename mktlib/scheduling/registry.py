@@ -31,23 +31,13 @@ def get_calendar(name: str) -> ExchangeCalendar:
     return _REGISTRY[canonical]()
 
 
-# --- Shared US-exchange helpers ---
+# --- Shared helpers ---
 
 
-def _us_special_closures(start: date, end: date) -> list[date]:
-    from mktlib.scheduling.exchanges.nyse import good_friday_closures
+def _good_friday_closures(start: date, end: date) -> list[date]:
+    from mktlib.scheduling.exchanges._us_holidays import us_good_friday_closures
 
-    return good_friday_closures(start, end)
-
-
-# --- CME-specific helpers ---
-
-
-def _cme_special_closures(start: date, end: date) -> list[date]:
-    """Good Friday — same as NYSE."""
-    from mktlib.scheduling.exchanges.nyse import good_friday_closures
-
-    return good_friday_closures(start, end)
+    return us_good_friday_closures(start, end)
 
 
 # --- Factory functions ---
@@ -72,7 +62,7 @@ def _make_nyse() -> ExchangeCalendar:
         holidays=RECURRING_HOLIDAYS,
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
-        special_closures_fn=_us_special_closures,
+        special_closures_fn=_good_friday_closures,
     )
 
 
@@ -145,7 +135,7 @@ def _make_cme_rth() -> ExchangeCalendar:
         holidays=RECURRING_HOLIDAYS,
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
-        special_closures_fn=_cme_special_closures,
+        special_closures_fn=_good_friday_closures,
     )
 
 
@@ -168,8 +158,160 @@ def _make_cme_globex() -> ExchangeCalendar:
         holidays=RECURRING_HOLIDAYS,
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
-        special_closures_fn=_cme_special_closures,
+        special_closures_fn=_good_friday_closures,
         open_offset=-1,
+    )
+
+
+def _make_nasdaq() -> ExchangeCalendar:
+    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.exchanges.nasdaq import (
+        ADHOC_CLOSURES,
+        EARLY_CLOSES,
+        NASDAQ_CLOSE,
+        NASDAQ_OPEN,
+        NASDAQ_TZ,
+        RECURRING_HOLIDAYS,
+    )
+
+    return ExchangeCalendar(
+        name="XNAS",
+        timezone=NASDAQ_TZ,
+        open_time=NASDAQ_OPEN,
+        close_time=NASDAQ_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=_good_friday_closures,
+    )
+
+
+def _make_cboe() -> ExchangeCalendar:
+    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.exchanges.cboe import (
+        ADHOC_CLOSURES,
+        CBOE_CLOSE,
+        CBOE_OPEN,
+        CBOE_TZ,
+        EARLY_CLOSES,
+        RECURRING_HOLIDAYS,
+    )
+
+    return ExchangeCalendar(
+        name="XCBO",
+        timezone=CBOE_TZ,
+        open_time=CBOE_OPEN,
+        close_time=CBOE_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=_good_friday_closures,
+    )
+
+
+def _make_tsx() -> ExchangeCalendar:
+    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.exchanges.tsx import (
+        ADHOC_CLOSURES,
+        EARLY_CLOSES,
+        RECURRING_HOLIDAYS,
+        TSX_CLOSE,
+        TSX_OPEN,
+        TSX_TZ,
+        special_closures,
+    )
+
+    return ExchangeCalendar(
+        name="XTSE",
+        timezone=TSX_TZ,
+        open_time=TSX_OPEN,
+        close_time=TSX_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=special_closures,
+    )
+
+
+def _make_xetra() -> ExchangeCalendar:
+    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.exchanges.xetra import (
+        ADHOC_CLOSURES,
+        EARLY_CLOSES,
+        RECURRING_HOLIDAYS,
+        XETR_CLOSE,
+        XETR_OPEN,
+        XETR_TZ,
+        special_closures,
+    )
+
+    return ExchangeCalendar(
+        name="XETR",
+        timezone=XETR_TZ,
+        open_time=XETR_OPEN,
+        close_time=XETR_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=special_closures,
+    )
+
+
+def _make_jpx() -> ExchangeCalendar:
+    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.exchanges.jpx import (
+        ADHOC_CLOSURES,
+        EARLY_CLOSES,
+        JPX_BREAK_END,
+        JPX_BREAK_START,
+        JPX_CLOSE,
+        JPX_EXCLUSIONS,
+        JPX_OPEN,
+        JPX_TZ,
+        RECURRING_HOLIDAYS,
+        special_closures,
+    )
+
+    return ExchangeCalendar(
+        name="XTKS",
+        timezone=JPX_TZ,
+        open_time=JPX_OPEN,
+        close_time=JPX_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=special_closures,
+        exclusions=JPX_EXCLUSIONS,
+        break_start=JPX_BREAK_START,
+        break_end=JPX_BREAK_END,
+    )
+
+
+def _make_hkex() -> ExchangeCalendar:
+    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.exchanges.hkex import (
+        ADHOC_CLOSURES,
+        EARLY_CLOSES,
+        HKEX_BREAK_END,
+        HKEX_BREAK_START,
+        HKEX_CLOSE,
+        HKEX_OPEN,
+        HKEX_TZ,
+        RECURRING_HOLIDAYS,
+        special_closures,
+    )
+
+    return ExchangeCalendar(
+        name="XHKG",
+        timezone=HKEX_TZ,
+        open_time=HKEX_OPEN,
+        close_time=HKEX_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=special_closures,
+        break_start=HKEX_BREAK_START,
+        break_end=HKEX_BREAK_END,
     )
 
 
@@ -180,3 +322,9 @@ register_exchange("XLON", _make_lse, aliases=["LSE", "London"])
 register_exchange("XPAR", _make_euronext, aliases=["Euronext", "Paris"])
 register_exchange("XCME", _make_cme_rth, aliases=["CME", "CME-RTH"])
 register_exchange("GLBX", _make_cme_globex, aliases=["Globex", "CME-GLOBEX"])
+register_exchange("XNAS", _make_nasdaq, aliases=["NASDAQ"])
+register_exchange("XCBO", _make_cboe, aliases=["CBOE"])
+register_exchange("XTSE", _make_tsx, aliases=["TSX", "Toronto"])
+register_exchange("XETR", _make_xetra, aliases=["Xetra", "Frankfurt"])
+register_exchange("XTKS", _make_jpx, aliases=["JPX", "Tokyo", "TSE"])
+register_exchange("XHKG", _make_hkex, aliases=["HKEX", "HongKong"])

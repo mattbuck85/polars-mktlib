@@ -34,7 +34,7 @@ class TestValidDays:
 class TestSchedule:
     def test_columns(self, nyse):
         df = nyse.schedule("2024-01-02", "2024-01-05")
-        assert set(df.columns) == {"date", "market_open", "market_close"}
+        assert set(df.columns) == {"date", "market_open", "market_close", "break_start", "break_end"}
 
     def test_open_close_times(self, nyse):
         df = nyse.schedule("2024-01-02", "2024-01-02")

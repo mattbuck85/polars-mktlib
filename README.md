@@ -47,12 +47,18 @@ pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 | Exchange | ID | Aliases | Hours | Timezone |
 |-|-|-|-|-|
 | NYSE | `XNYS` | `NYSE` | 09:30 - 16:00 | America/New_York |
+| NASDAQ | `XNAS` | `NASDAQ` | 09:30 - 16:00 | America/New_York |
+| CBOE Options | `XCBO` | `CBOE` | 09:30 - 16:15 | America/New_York |
 | LSE | `XLON` | `LSE`, `London` | 08:00 - 16:30 | Europe/London |
 | Euronext | `XPAR` | `Euronext`, `Paris` | 09:00 - 17:30 | Europe/Paris |
+| Xetra | `XETR` | `Xetra`, `Frankfurt` | 09:00 - 17:30 | Europe/Berlin |
+| TSX | `XTSE` | `TSX`, `Toronto` | 09:30 - 16:00 | America/Toronto |
 | CME RTH | `XCME` | `CME`, `CME-RTH` | 09:30 - 16:15 | America/New_York |
 | CME Globex | `GLBX` | `Globex`, `CME-GLOBEX` | 18:00 - 17:00 | America/New_York |
+| JPX (Tokyo) | `XTKS` | `JPX`, `Tokyo`, `TSE` | 09:00 - 15:00 | Asia/Tokyo |
+| HKEX | `XHKG` | `HKEX`, `HongKong` | 09:30 - 16:00 | Asia/Hong_Kong |
 
-Each calendar includes holidays, ad-hoc closures, and early closes with full observance rules.
+Each calendar includes holidays, ad-hoc closures, and early closes with full observance rules. JPX and HKEX include lunch break support — `schedule()` returns `break_start`/`break_end` columns, and `is_open_on_minute()` returns `False` during breaks.
 
 ### Schedule & Trading Days
 

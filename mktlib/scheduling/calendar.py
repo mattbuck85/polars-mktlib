@@ -31,6 +31,8 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         special_early_closes_fn: Callable[[date, date], dict[date, time]] | None = None,
         exclusions: set[date] | None = None,
         open_offset: int = 0,
+        break_start: time | None = None,
+        break_end: time | None = None,
     ):
         self.name = name
         self.timezone = timezone
@@ -44,6 +46,8 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         self._special_early_closes_fn = special_early_closes_fn
         self._exclusions = exclusions or set()
         self.open_offset = open_offset
+        self.break_start = break_start
+        self.break_end = break_end
 
     def _closure_dates(self, start: date, end: date) -> set[date]:
         """Collect all closure dates (holidays + adhoc) within [start, end]."""
@@ -84,7 +88,11 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         return pl.Series("date", days, dtype=pl.Date)
 
     def schedule(self, start: date | str, end: date | str) -> pl.DataFrame:
-        """Return a Polars DataFrame with columns: date, market_open, market_close."""
+        """Return a Polars DataFrame with columns: date, market_open, market_close.
+
+        When the calendar has a lunch break, ``break_start`` and ``break_end``
+        columns are included (null for calendars without breaks).
+        """
         start_d, end_d = parse_date(start), parse_date(end)
         closures = self._closure_dates(start_d, end_d)
         ec_map = self._early_close_map(start_d, end_d)
@@ -92,6 +100,8 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         dates: list[date] = []
         opens: list[datetime] = []
         closes: list[datetime] = []
+        break_starts: list[datetime | None] = []
+        break_ends: list[datetime | None] = []
 
         current = start_d
         while current <= end_d:
@@ -101,13 +111,22 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
                 opens.append(datetime.combine(open_date, self.open_time, tzinfo=self.tz))
                 close_t = ec_map.get(current, self.close_time)
                 closes.append(datetime.combine(current, close_t, tzinfo=self.tz))
+                if self.break_start is not None and self.break_end is not None:
+                    break_starts.append(datetime.combine(current, self.break_start, tzinfo=self.tz))
+                    break_ends.append(datetime.combine(current, self.break_end, tzinfo=self.tz))
+                else:
+                    break_starts.append(None)
+                    break_ends.append(None)
             current += timedelta(days=1)
 
-        return pl.DataFrame({
+        df = pl.DataFrame({
             "date": pl.Series(dates, dtype=pl.Date),
             "market_open": pl.Series(opens, dtype=pl.Datetime("us", self.timezone)),
             "market_close": pl.Series(closes, dtype=pl.Datetime("us", self.timezone)),
+            "break_start": pl.Series(break_starts, dtype=pl.Datetime("us", self.timezone)),
+            "break_end": pl.Series(break_ends, dtype=pl.Datetime("us", self.timezone)),
         })
+        return df
 
     def is_session(self, day: date | str) -> bool:
         """Check if a given date is a trading day."""
@@ -125,8 +144,12 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         ec_map = self._early_close_map(d, d)
         close_t = ec_map.get(d, self.close_time)
         open_date = d + timedelta(days=self.open_offset)
+        bs = datetime.combine(d, self.break_start, tzinfo=self.tz) if self.break_start else None
+        be = datetime.combine(d, self.break_end, tzinfo=self.tz) if self.break_end else None
         return MarketDailySchedule(
             date=d,
             market_open=datetime.combine(open_date, self.open_time, tzinfo=self.tz),
             market_close=datetime.combine(d, close_t, tzinfo=self.tz),
+            break_start=bs,
+            break_end=be,
         )

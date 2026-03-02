@@ -123,3 +123,45 @@ class TestCMERTHValidation(ExchangeValidationBase):
     EC_NAME = "CMES"
     VALID_DAYS_YEARS = range(2007, 2027)
     EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestNASDAQValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XNAS"
+    EC_NAME = "XNYS"  # NASDAQ follows NYSE calendar exactly
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestCBOEValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XCBO"
+    EC_NAME = "XCBF"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestTSXValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XTSE"
+    EC_NAME = "XTSE"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestXetraValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XETR"
+    EC_NAME = "XETR"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestJPXValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XTKS"
+    EC_NAME = "XTKS"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestHKEXValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "XHKG"
+    EC_NAME = "XHKG"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)
