@@ -7,7 +7,7 @@ from datetime import date, datetime
 from statistics import mean
 from urllib.request import urlopen
 
-from . import _bundled
+from . import _bundled, _disk_cache
 
 _NS = {
     "atom": "http://www.w3.org/2005/Atom",
@@ -30,19 +30,37 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
     if year in _cache:
         return _cache[year]
 
+    cached = _disk_cache.load_year(year)
+    if cached is not None:
+        _cache[year] = cached
+        return cached
+
+    # Past years are finalized — seed disk cache from bundled data to avoid
+    # unnecessary network requests.
+    if year < date.today().year:
+        bundled = _bundled.load_year(year)
+        if bundled:
+            _disk_cache.save_year(year, bundled)
+            _cache[year] = bundled
+            return bundled
+
     url = _BASE_URL.format(year=year)
     try:
         with urlopen(url, timeout=30) as resp:  # noqa: S310
             data = resp.read()
     except Exception as exc:
+        stale = _disk_cache.load_year(year, ignore_stale=True)
         bundled = _bundled.load_year(year)
-        if bundled:
+        fallback = max(filter(None, [stale, bundled]), key=len, default=None)
+        if fallback is not None:
+            source = "disk cache" if fallback is stale else "bundled data"
             warnings.warn(
-                f"Treasury.gov unreachable for {year}, using bundled data ({len(bundled)} days)",
+                f"Treasury.gov unreachable for {year}, using {source} ({len(fallback)} days)",
                 stacklevel=2,
             )
-            _cache[year] = bundled
-            return bundled
+            _disk_cache.save_year(year, fallback)
+            _cache[year] = fallback
+            return fallback
         raise ConnectionError(
             f"Failed to fetch Treasury yield data for {year} from {url}: {exc}"
         ) from exc
@@ -72,6 +90,7 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
 
         rows.append((row_date, rates))
 
+    _disk_cache.save_year(year, rows)
     _cache[year] = rows
     return rows
 
@@ -106,6 +125,11 @@ def fetch_average_rate(
     return mean(r for _, r in daily)
 
 
-def clear_cache() -> None:
-    """Clear the module-level year cache (useful for testing)."""
+def clear_cache(*, disk: bool = False) -> None:
+    """Clear the module-level year cache (useful for testing).
+
+    If *disk* is True, also delete all persistent disk-cached CSVs.
+    """
     _cache.clear()
+    if disk:
+        _disk_cache.clear()
