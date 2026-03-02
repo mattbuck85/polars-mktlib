@@ -136,11 +136,12 @@ class TestNYSEEarlyCloses:
         assert sched is not None
         assert sched.market_close.hour == 13
 
-    def test_independence_day_early_close_saturday_observance(self, nyse):
-        # 2020: July 4 is Saturday (observed Fri July 3), early close Thu July 2
+    def test_independence_day_no_early_close_when_weekend(self, nyse):
+        # 2020: July 4 is Saturday (observed Fri July 3 closure).
+        # No early close — the observed holiday is already adjacent to the weekend.
         sched = nyse.get_schedule(date(2020, 7, 2))
         assert sched is not None
-        assert sched.market_close.hour == 13
+        assert sched.market_close.hour == 16
 
 
 class TestNYSETradingDayCount:

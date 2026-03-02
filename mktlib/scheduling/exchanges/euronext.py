@@ -7,6 +7,7 @@ from mktlib.scheduling.rules import (
     AdhocClosure,
     EarlyClose,
     HolidayRule,
+    fixed_date_if_weekday,
 )
 
 # --- Recurring holidays ---
@@ -62,25 +63,14 @@ def special_closures(start: date, end: date) -> list[date]:
 
 ADHOC_CLOSURES: list[AdhocClosure] = []
 
-# --- Early close helpers ---
+# --- Early closes ---
 
 EURONEXT_EARLY_CLOSE_TIME = time(14, 5)
 
-
-def special_early_closes(start: date, end: date) -> dict[date, time]:
-    """Christmas Eve and New Year's Eve early closes at 14:05."""
-    result: dict[date, time] = {}
-    for year in range(start.year, end.year + 1):
-        dec24 = date(year, 12, 24)
-        if dec24.weekday() < 5 and start <= dec24 <= end:
-            result[dec24] = EURONEXT_EARLY_CLOSE_TIME
-        dec31 = date(year, 12, 31)
-        if dec31.weekday() < 5 and start <= dec31 <= end:
-            result[dec31] = EURONEXT_EARLY_CLOSE_TIME
-    return result
-
-
-EARLY_CLOSES: list[EarlyClose] = []
+EARLY_CLOSES: list[EarlyClose] = [
+    EarlyClose("Christmas Eve", EURONEXT_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 24)),
+    EarlyClose("New Year's Eve", EURONEXT_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 31)),
+]
 
 # --- Exchange constants ---
 

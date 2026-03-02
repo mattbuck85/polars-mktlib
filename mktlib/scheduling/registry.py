@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -40,22 +40,14 @@ def _us_special_closures(start: date, end: date) -> list[date]:
     return good_friday_closures(start, end)
 
 
-def _us_special_early_closes(start: date, end: date) -> dict[date, time]:
-    from mktlib.scheduling.exchanges.nyse import (
-        EARLY_CLOSE_TIME,
-        black_friday_early_closes,
-        christmas_eve_early_closes,
-        independence_day_early_closes,
-    )
+# --- CME-specific helpers ---
 
-    result: dict[date, time] = {}
-    for d in black_friday_early_closes(start, end):
-        result[d] = EARLY_CLOSE_TIME
-    for d in independence_day_early_closes(start, end):
-        result[d] = EARLY_CLOSE_TIME
-    for d in christmas_eve_early_closes(start, end):
-        result[d] = EARLY_CLOSE_TIME
-    return result
+
+def _cme_special_closures(start: date, end: date) -> list[date]:
+    """Good Friday — same as NYSE."""
+    from mktlib.scheduling.exchanges.nyse import good_friday_closures
+
+    return good_friday_closures(start, end)
 
 
 # --- Factory functions ---
@@ -81,7 +73,6 @@ def _make_nyse() -> ExchangeCalendar:
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
         special_closures_fn=_us_special_closures,
-        special_early_closes_fn=_us_special_early_closes,
     )
 
 
@@ -96,7 +87,6 @@ def _make_lse() -> ExchangeCalendar:
         LSE_TZ,
         RECURRING_HOLIDAYS,
         special_closures_with_moves,
-        special_early_closes,
     )
 
     return ExchangeCalendar(
@@ -108,7 +98,6 @@ def _make_lse() -> ExchangeCalendar:
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
         special_closures_fn=special_closures_with_moves,
-        special_early_closes_fn=special_early_closes,
         exclusions=set(BANK_HOLIDAY_MOVES.keys()),
     )
 
@@ -123,7 +112,6 @@ def _make_euronext() -> ExchangeCalendar:
         EURONEXT_TZ,
         RECURRING_HOLIDAYS,
         special_closures,
-        special_early_closes,
     )
 
     return ExchangeCalendar(
@@ -135,7 +123,6 @@ def _make_euronext() -> ExchangeCalendar:
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
         special_closures_fn=special_closures,
-        special_early_closes_fn=special_early_closes,
     )
 
 
@@ -158,8 +145,7 @@ def _make_cme_rth() -> ExchangeCalendar:
         holidays=RECURRING_HOLIDAYS,
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
-        special_closures_fn=_us_special_closures,
-        special_early_closes_fn=_us_special_early_closes,
+        special_closures_fn=_cme_special_closures,
     )
 
 
@@ -182,8 +168,7 @@ def _make_cme_globex() -> ExchangeCalendar:
         holidays=RECURRING_HOLIDAYS,
         adhoc_closures=ADHOC_CLOSURES,
         early_closes=EARLY_CLOSES,
-        special_closures_fn=_us_special_closures,
-        special_early_closes_fn=_us_special_early_closes,
+        special_closures_fn=_cme_special_closures,
         open_offset=-1,
     )
 

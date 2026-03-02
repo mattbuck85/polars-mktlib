@@ -65,18 +65,24 @@ class AdhocClosure:
 
 @dataclass(frozen=True)
 class EarlyClose:
-    """An early close rule — either rule-based or ad-hoc dates."""
+    """An early close rule — either rule-based, ad-hoc dates, or compute_fn."""
 
     name: str
     close_time: time
     rule: HolidayRule | None = None
     dates: list[date] = field(default_factory=lambda: [])
+    compute_fn: Callable[[int], date | None] | None = None
 
     def dates_in_range(self, start: date, end: date) -> list[date]:
         """All early-close dates within [start, end]."""
         results: list[date] = []
         if self.rule is not None:
             results.extend(self.rule.dates_in_range(start, end))
+        if self.compute_fn is not None:
+            for year in range(start.year, end.year + 1):
+                d = self.compute_fn(year)
+                if d is not None and start <= d <= end:
+                    results.append(d)
         for d in self.dates:
             if start <= d <= end and d not in results:
                 results.append(d)
@@ -127,3 +133,75 @@ def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
     diff = (weekday - first.weekday()) % 7
     first_occurrence = date(year, month, 1 + diff)
     return first_occurrence + timedelta(weeks=n - 1)
+
+
+# --- Early-close compute_fn factories ---
+
+
+def weekday_before(d: date) -> date:
+    """Last weekday strictly before a date."""
+    d = d - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def holiday_eve(month: int, day: int) -> Callable[[int], date | None]:
+    """Weekday before holiday; None if holiday falls on Sat/Sun/Mon.
+
+    When July 4 is Sat/Sun, the observed holiday shifts to Fri/Mon — no eve.
+    When July 4 is Mon, the closure itself gives a long weekend — no eve.
+    Tue-Fri: early close on the weekday immediately before the holiday.
+    """
+
+    def _compute(year: int) -> date | None:
+        holiday = date(year, month, day)
+        if holiday.weekday() >= 5 or holiday.weekday() == 0:
+            return None
+        return weekday_before(holiday)
+
+    return _compute
+
+
+def fixed_date_if_weekday(
+    month: int, day: int, *, start_year: int | None = None
+) -> Callable[[int], date | None]:
+    """Fixed date if it's a weekday; None if weekend."""
+
+    def _compute(year: int) -> date | None:
+        if start_year is not None and year < start_year:
+            return None
+        d = date(year, month, day)
+        if d.weekday() >= 5:
+            return None
+        return d
+
+    return _compute
+
+
+def day_after(rule: HolidayRule) -> Callable[[int], date | None]:
+    """Day after a HolidayRule's raw date (e.g., Black Friday)."""
+
+    def _compute(year: int) -> date | None:
+        d = rule.raw_date(year)
+        if d is None:
+            return None
+        return d + timedelta(days=1)
+
+    return _compute
+
+
+def last_weekday_before(
+    month: int, day: int, *, year_offset: int = 0
+) -> Callable[[int], date]:
+    """Always find the last weekday strictly before a date.
+
+    year_offset=1 means the target date is in year+1 (e.g., Jan 1 of next year
+    for New Year's Eve early close).
+    """
+
+    def _compute(year: int) -> date:
+        target = date(year + year_offset, month, day)
+        return weekday_before(target)
+
+    return _compute

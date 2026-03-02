@@ -60,8 +60,8 @@ Fields: `name`, `dates: list[date]`.
 
 ### `EarlyClose` — `rules.py:66`
 
-Fields: `name`, `month`, `day`, `close_time`, `dates`, `start_year`, `end_year`, `observance`.
-Key method: `dates_in_range(start, end)` at `rules.py:75`.
+Fields: `name`, `close_time`, `rule: HolidayRule | None`, `dates: list[date]`, `compute_fn: Callable[[int], date | None] | None`.
+Key method: `dates_in_range(start, end)` at `rules.py:76` -- delegates to `rule.dates_in_range` when `rule` is set, iterates years and calls `compute_fn(year)` when set, then appends any explicit `dates`.
 
 ## Registry (`registry.py`)
 
@@ -72,7 +72,9 @@ Key method: `dates_in_range(start, end)` at `rules.py:75`.
 | `register_exchange()` | `:17` | Register factory + optional aliases |
 | `get_calendar()` | `:25` | Lookup by name or alias, call factory |
 | `_us_special_closures()` | `:37` | Shared: Good Friday closures (delegates to `nyse.good_friday_closures`) |
-| `_us_special_early_closes()` | `:43` | Shared: Black Friday + Independence Day + Christmas Eve early closes at 1 PM |
+| `_cme_special_closures()` | `:46` | Good Friday closures for CME (same as NYSE) |
+
+All 5 factory functions (`_make_nyse`, `_make_lse`, `_make_euronext`, `_make_cme_rth`, `_make_cme_globex`) pass only `special_closures_fn` -- no `special_early_closes_fn`. Early closes are fully declarative via each exchange's `EARLY_CLOSES` list.
 
 ## Registered Exchanges
 
@@ -86,11 +88,23 @@ Key method: `dates_in_range(start, end)` at `rules.py:75`.
 
 ## Helpers
 
-| Function | File |
-|-|-|
-| `easter(year)` | `easter.py:6` |
-| `good_friday(year)` | `easter.py:21` |
-| `parse_date(d)` | `_types.py:16` |
-| `nearest_workday(d)` | `rules.py:89` |
-| `sunday_to_monday(d)` | `rules.py:98` |
-| `previous_friday(d)` | `rules.py:105` |
+| Function | File | Purpose |
+|-|-|-|
+| `easter(year)` | `easter.py:6` | Computus algorithm |
+| `good_friday(year)` | `easter.py:21` | Easter - 2 days |
+| `parse_date(d)` | `_types.py:16` | str/date normalisation |
+| `nearest_workday(d)` | `rules.py:95` | Sat->Fri, Sun->Mon observance |
+| `sunday_to_monday(d)` | `rules.py:104` | Sun->Mon observance |
+| `previous_friday(d)` | `rules.py:111` | Move to previous Friday |
+
+### Early-close `compute_fn` factories (`rules.py`)
+
+| Factory | Line | Returns `None` when |
+|-|-|-|
+| `weekday_before(d)` | `:141` | (helper, not a factory) Last weekday strictly before `d` |
+| `holiday_eve(month, day)` | `:149` | Holiday falls on Sat/Sun/Mon |
+| `fixed_date_if_weekday(month, day, *, start_year)` | `:166` | Date is weekend, or year < `start_year` |
+| `day_after(rule)` | `:182` | `rule.raw_date(year)` is `None` |
+| `last_weekday_before(month, day, *, year_offset)` | `:194` | Never (always returns a date) |
+
+These factories return `Callable[[int], date | None]` and are stored on `EarlyClose.compute_fn`. Each exchange module uses them to build declarative `EARLY_CLOSES` lists instead of imperative date-generation functions.

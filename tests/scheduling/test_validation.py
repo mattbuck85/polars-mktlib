@@ -22,7 +22,10 @@ class ExchangeValidationBase:
         if "year" in metafunc.fixturenames:
             if metafunc.function.__name__ == "test_valid_days_match":
                 metafunc.parametrize("year", self.VALID_DAYS_YEARS)
-            elif metafunc.function.__name__ == "test_early_closes_superset":
+            elif metafunc.function.__name__ in (
+                "test_early_closes_superset",
+                "test_early_closes_match",
+            ):
                 metafunc.parametrize("year", self.EARLY_CLOSE_YEARS)
 
     @pytest.fixture
@@ -72,6 +75,27 @@ class ExchangeValidationBase:
         missing = ec_early_dates - mktlib_early
         assert not missing, f"Year {year}: mktlib missing early closes: {sorted(missing)}"
 
+    def test_early_closes_match(self, cal, ec_cal, year):
+        """Verify mktlib has no extra early closes beyond exchange_calendars."""
+        start = date(year, 1, 1)
+        end = date(year, 12, 31)
+
+        mktlib_schedule = cal.schedule(start, end)
+        normal_close = cal.close_time
+        mktlib_early = set()
+        for row in mktlib_schedule.iter_rows(named=True):
+            if row["market_close"].time() < normal_close:
+                mktlib_early.add(row["date"])
+
+        ec_early_dates = {
+            d.date()
+            for d in ec_cal.early_closes
+            if start <= d.date() <= end
+        }
+
+        extra = mktlib_early - ec_early_dates
+        assert not extra, f"Year {year}: mktlib has extra early closes: {sorted(extra)}"
+
 
 class TestNYSEValidation(ExchangeValidationBase):
     MKTLIB_NAME = "XNYS"
@@ -94,10 +118,6 @@ class TestEuronextValidation(ExchangeValidationBase):
     EARLY_CLOSE_YEARS = range(2014, 2027)
 
 
-@pytest.mark.xfail(
-    reason="CME implementation reuses NYSE holidays; exchange_calendars CMES treats some as early-close instead of closure",
-    strict=False,
-)
 class TestCMERTHValidation(ExchangeValidationBase):
     MKTLIB_NAME = "XCME"
     EC_NAME = "CMES"
