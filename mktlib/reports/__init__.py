@@ -1,8 +1,17 @@
 """Polars-native tearsheet generator — drop-in replacement for quantstats."""
 from __future__ import annotations
 
+from datetime import date
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+from . import _compat, _plots, _stats, _template
 from ._compat import PandasConvertible, ReturnsInput
 from ._types import DrawdownInfo, MetricsResult, ReportConfig
+from ..rates._treasury import fetch_average_rate
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
 
 __all__ = [
     "html", "metrics",
@@ -20,6 +29,9 @@ def html(
     rf: float | str = 0.0,
     periods_per_year: int = 252,
     compounded: bool = True,
+    extra_metrics: dict[str, list[tuple[str, str]]] | None = None,
+    extra_charts: dict[str, go.Figure] | None = None,
+    template: str | Path | None = None,
 ) -> str | None:
     """Generate an interactive HTML tearsheet report.
 
@@ -41,27 +53,29 @@ def html(
         Trading days per year (default 252).
     compounded
         Whether to compute compounded returns (default *True*).
+    extra_metrics
+        Additional metric cards: ``{card_title: [(label, value), ...]}``.
+        Appended to the built-in metrics grid.
+    extra_charts
+        Additional charts: ``{name: plotly.graph_objects.Figure}``.
+        Converted to HTML divs and rendered after the built-in charts.
+    template
+        Custom Jinja2 template.  ``Path`` loads from file, ``str`` is treated
+        as inline Jinja2 source, ``None`` uses the built-in template.
 
     Returns
     -------
     str | None
         The HTML string when *output* is *None*, otherwise *None*.
     """
-    from . import _compat, _plots, _stats, _template
-
     # Coerce inputs
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
 
     rf_resolved: float = rf if isinstance(rf, (int, float)) else 0.0
     if rf == "auto":
-        from datetime import date as _date
-
-        from ..rates._treasury import fetch_average_rate
-
-        start = ret_df["date"].min()
-        end = ret_df["date"].max()
-        assert isinstance(start, _date) and isinstance(end, _date)
+        start = cast(date, ret_df["date"].min())
+        end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
     config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded, title=title)
@@ -100,15 +114,25 @@ def html(
         "distribution": _plots.returns_distribution_chart(ret_series.to_list()),
     }
 
+    # Convert extra plotly figures to HTML divs
+    extra_chart_divs: dict[str, str] = {}
+    if extra_charts:
+        for name, fig in extra_charts.items():
+            extra_chart_divs[name] = _plots._to_div(fig)
+
     # Render
     start_date = str(ret_df["date"].min())
     end_date = str(ret_df["date"].max())
-    html_str = _template.render(result, charts, title, start_date, end_date, len(ret_df))
+    html_str = _template.render(
+        result, charts, title, start_date, end_date, len(ret_df),
+        extra_metrics=extra_metrics,
+        extra_charts=extra_chart_divs,
+        template_override=template,
+    )
 
     if output is not None:
-        import pathlib
-        pathlib.Path(output).parent.mkdir(parents=True, exist_ok=True)
-        pathlib.Path(output).write_text(html_str, encoding="utf-8")
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_text(html_str, encoding="utf-8")
         return None
     return html_str
 
@@ -129,20 +153,13 @@ def metrics(
         Risk-free rate (annualised).  Pass ``"auto"`` to fetch the 3-month
         T-bill average for the returns date range.
     """
-    from . import _compat, _stats
-
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
 
     rf_resolved: float = rf if isinstance(rf, (int, float)) else 0.0
     if rf == "auto":
-        from datetime import date as _date
-
-        from ..rates._treasury import fetch_average_rate
-
-        start = ret_df["date"].min()
-        end = ret_df["date"].max()
-        assert isinstance(start, _date) and isinstance(end, _date)
+        start = cast(date, ret_df["date"].min())
+        end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
     config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded)

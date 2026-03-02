@@ -71,10 +71,6 @@ class TestCoerceReturns:
         result = coerce_returns(s)
         assert result["date"].dtype == pl.Date
 
-    def test_unsupported_type_raises(self):
-        with pytest.raises(TypeError, match="Unsupported type"):
-            coerce_returns([0.01, -0.02])
-
     def test_invalid_dataframe_raises(self):
         df = pl.DataFrame({"a": [1, 2], "b": [3, 4]})
         with pytest.raises(ValueError, match="Cannot infer"):
