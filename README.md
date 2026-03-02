@@ -84,7 +84,7 @@ idx = cal.trading_index("2024-01-02", "2024-01-05", period="1m", closed="right")
 
 ```python
 from datetime import time
-from mktlib.scheduling.calendar import ExchangeCalendar, register_exchange
+from mktlib.scheduling import ExchangeCalendar, register_exchange
 from mktlib.scheduling.rules import HolidayRule, AdhocClosure, EarlyClose
 
 cal = ExchangeCalendar(
