@@ -12,14 +12,33 @@ if TYPE_CHECKING:
 
 _REGISTRY: dict[str, Callable[[], ExchangeCalendar]] = {}
 _ALIASES: dict[str, str] = {}
+_ADHOC_URLS: dict[str, str] = {}
 
 
-def register_exchange(name: str, factory: Callable[[], ExchangeCalendar], aliases: list[str] | None = None) -> None:
+def register_exchange(
+    name: str,
+    factory: Callable[[], ExchangeCalendar],
+    aliases: list[str] | None = None,
+    adhoc_url: str | None = None,
+) -> None:
     """Register an exchange calendar factory."""
     _REGISTRY[name] = factory
     if aliases:
         for alias in aliases:
             _ALIASES[alias] = name
+    if adhoc_url is not None:
+        _ADHOC_URLS[name] = adhoc_url
+
+
+def get_adhoc_url(name: str) -> str | None:
+    """Get the ad-hoc closure announcements URL for an exchange."""
+    canonical = _ALIASES.get(name, name)
+    return _ADHOC_URLS.get(canonical)
+
+
+def get_all_adhoc_urls() -> dict[str, str]:
+    """Get all exchange ad-hoc closure URLs (canonical name -> URL)."""
+    return dict(_ADHOC_URLS)
 
 
 def get_calendar(name: str) -> ExchangeCalendar:
@@ -317,14 +336,16 @@ def _make_hkex() -> ExchangeCalendar:
 
 # --- Register built-in exchanges ---
 
-register_exchange("XNYS", _make_nyse, aliases=["NYSE"])
-register_exchange("XLON", _make_lse, aliases=["LSE", "London"])
-register_exchange("XPAR", _make_euronext, aliases=["Euronext", "Paris"])
-register_exchange("XCME", _make_cme_rth, aliases=["CME", "CME-RTH"])
-register_exchange("GLBX", _make_cme_globex, aliases=["Globex", "CME-GLOBEX"])
-register_exchange("XNAS", _make_nasdaq, aliases=["NASDAQ"])
-register_exchange("XCBO", _make_cboe, aliases=["CBOE"])
-register_exchange("XTSE", _make_tsx, aliases=["TSX", "Toronto"])
-register_exchange("XETR", _make_xetra, aliases=["Xetra", "Frankfurt"])
-register_exchange("XTKS", _make_jpx, aliases=["JPX", "Tokyo", "TSE"])
-register_exchange("XHKG", _make_hkex, aliases=["HKEX", "HongKong"])
+_CME_HOLIDAYS_URL = "https://www.cmegroup.com/tools-information/holiday-calendar.html"
+
+register_exchange("XNYS", _make_nyse, aliases=["NYSE"], adhoc_url="https://www.nyse.com/regulation/closings")
+register_exchange("XLON", _make_lse, aliases=["LSE", "London"], adhoc_url="https://www.londonstockexchange.com/equities-trading/business-days")
+register_exchange("XPAR", _make_euronext, aliases=["Euronext", "Paris"], adhoc_url="https://www.euronext.com/en/trade/trading-hours-holidays")
+register_exchange("XCME", _make_cme_rth, aliases=["CME", "CME-RTH"], adhoc_url=_CME_HOLIDAYS_URL)
+register_exchange("GLBX", _make_cme_globex, aliases=["Globex", "CME-GLOBEX"], adhoc_url=_CME_HOLIDAYS_URL)
+register_exchange("XNAS", _make_nasdaq, aliases=["NASDAQ"], adhoc_url="https://www.nasdaqtrader.com/Trader.aspx?id=Calendar")
+register_exchange("XCBO", _make_cboe, aliases=["CBOE"], adhoc_url="https://www.cboe.com/about/hours/us-equities/")
+register_exchange("XTSE", _make_tsx, aliases=["TSX", "Toronto"], adhoc_url="https://www.tsx.com/trading/calendars-and-trading-hours/calendar")
+register_exchange("XETR", _make_xetra, aliases=["Xetra", "Frankfurt"], adhoc_url="https://www.xetra.com/xetra-en/trading/trading-calendar-and-trading-hours")
+register_exchange("XTKS", _make_jpx, aliases=["JPX", "Tokyo", "TSE"], adhoc_url="https://www.jpx.co.jp/english/equities/trading/domestic/index.html")
+register_exchange("XHKG", _make_hkex, aliases=["HKEX", "HongKong"], adhoc_url="https://www.hkex.com.hk/Services/Trading-hours-and-டhalves?sc_lang=en")
