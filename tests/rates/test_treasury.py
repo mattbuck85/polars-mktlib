@@ -15,6 +15,12 @@ from mktlib.rates._treasury import (
     fetch_daily_rates,
 )
 
+# Save real disk cache functions before any fixture patches them
+from mktlib.rates import _disk_cache as _dc_mod
+
+_orig_dc_load = _dc_mod.load_year
+_orig_dc_save = _dc_mod.save_year
+
 # ---------------------------------------------------------------------------
 # XML fixture — mimics Treasury.gov Atom/OData feed
 # ---------------------------------------------------------------------------
@@ -116,9 +122,14 @@ def _mock_urlopen(xml_by_year: dict[int, str]):
 
 @pytest.fixture(autouse=True)
 def _clear_treasury_cache():
-    """Ensure each test starts with a clean cache."""
+    """Ensure each test starts with a clean cache; isolate disk cache."""
     clear_cache()
-    yield
+    with (
+        patch("mktlib.rates._disk_cache.load_year", return_value=None),
+        patch("mktlib.rates._disk_cache.save_year"),
+        patch("mktlib.rates._treasury._bundled.load_year", return_value=[]),
+    ):
+        yield
     clear_cache()
 
 
@@ -280,6 +291,15 @@ _BUNDLED_2024 = [
     (date(2024, 1, 3), {"BC_3MONTH": 0.0538, "BC_10YEAR": 0.0392}),
 ]
 
+# Current-year fixtures — seed block is skipped for current year, so these
+# let us test the network-error fallback path in isolation.
+_THIS_YEAR = date.today().year
+_XML_THIS_YEAR = _XML_2024.replace("2024", str(_THIS_YEAR))
+_BUNDLED_THIS_YEAR = [
+    (date(_THIS_YEAR, 1, 2), {"BC_3MONTH": 0.054, "BC_10YEAR": 0.0388}),
+    (date(_THIS_YEAR, 1, 3), {"BC_3MONTH": 0.0538, "BC_10YEAR": 0.0392}),
+]
+
 
 class TestBundledFallback:
     def test_fallback_on_network_error(self):
@@ -289,14 +309,14 @@ class TestBundledFallback:
 
         with (
             patch("mktlib.rates._treasury.urlopen", _fail),
-            patch("mktlib.rates._treasury._bundled.load_year", return_value=_BUNDLED_2024),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=_BUNDLED_THIS_YEAR),
             warnings.catch_warnings(record=True) as w,
         ):
             warnings.simplefilter("always")
-            rates = fetch_daily_rates(date(2024, 1, 1), date(2024, 1, 31))
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
 
         assert len(rates) == 2
-        assert rates[0] == (date(2024, 1, 2), pytest.approx(0.054))
+        assert rates[0] == (date(_THIS_YEAR, 1, 2), pytest.approx(0.054))
         assert len(w) == 1
         assert "bundled" in str(w[0].message).lower()
 
@@ -319,10 +339,156 @@ class TestBundledFallback:
     def test_network_success_skips_bundled(self):
         """When network works, bundled data is not consulted."""
         with (
-            patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})),
+            patch("mktlib.rates._treasury.urlopen", _mock_urlopen({_THIS_YEAR: _XML_THIS_YEAR})),
             patch("mktlib.rates._treasury._bundled.load_year") as mock_load,
+        ):
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        assert len(rates) == 3
+        mock_load.assert_not_called()
+
+    def test_stale_disk_cache_preferred_over_bundled(self):
+        """Network fails, stale disk cache has more rows → prefer disk cache."""
+        stale_rows = [
+            (date(_THIS_YEAR, 1, 2), {"BC_3MONTH": 0.054}),
+            (date(_THIS_YEAR, 1, 3), {"BC_3MONTH": 0.0538}),
+            (date(_THIS_YEAR, 1, 4), {"BC_3MONTH": 0.0536}),
+            (date(_THIS_YEAR, 1, 5), {"BC_3MONTH": 0.0534}),
+            (date(_THIS_YEAR, 1, 8), {"BC_3MONTH": 0.0532}),
+        ]
+        bundled_rows = [
+            (date(_THIS_YEAR, 1, 2), {"BC_3MONTH": 0.054}),
+            (date(_THIS_YEAR, 1, 3), {"BC_3MONTH": 0.0538}),
+        ]
+
+        def _fail(url, *, timeout=30):
+            raise OSError("network down")
+
+        with (
+            patch("mktlib.rates._treasury.urlopen", _fail),
+            patch(
+                "mktlib.rates._treasury._disk_cache.load_year",
+                side_effect=lambda year, **kw: stale_rows if kw.get("ignore_stale") else None,
+            ),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=bundled_rows),
+            warnings.catch_warnings(record=True) as w,
+        ):
+            warnings.simplefilter("always")
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        assert len(rates) == 5
+        assert len(w) == 1
+        assert "disk cache" in str(w[0].message).lower()
+
+    def test_bundled_preferred_when_no_disk_cache(self):
+        """Network fails, no disk cache → fall back to bundled data."""
+        def _fail(url, *, timeout=30):
+            raise OSError("network down")
+
+        with (
+            patch("mktlib.rates._treasury.urlopen", _fail),
+            patch(
+                "mktlib.rates._treasury._disk_cache.load_year",
+                return_value=None,
+            ),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=_BUNDLED_THIS_YEAR),
+            warnings.catch_warnings(record=True) as w,
+        ):
+            warnings.simplefilter("always")
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        assert len(rates) == 2
+        assert len(w) == 1
+        assert "bundled data" in str(w[0].message).lower()
+
+
+# ---------------------------------------------------------------------------
+# Disk cache integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestDiskCacheIntegration:
+    """Verify _fetch_year writes/reads disk cache end-to-end.
+
+    These tests override the autouse fixture's disk-cache patches
+    to exercise the real disk cache against a tmp directory.
+    """
+
+    def test_network_fetch_writes_disk_cache(self, tmp_path):
+        """After a network fetch, data is persisted to disk."""
+        with (
+            patch.object(_dc_mod, "_CACHE_DIR", tmp_path),
+            patch("mktlib.rates._disk_cache.load_year", wraps=_orig_dc_load),
+            patch("mktlib.rates._disk_cache.save_year", wraps=_orig_dc_save),
+            patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})),
+        ):
+            clear_cache()
+            fetch_daily_rates(date(2024, 1, 1), date(2024, 1, 31))
+
+        assert (tmp_path / "2024.csv").exists()
+
+    def test_disk_cache_avoids_network_on_cold_start(self, tmp_path):
+        """With warm disk cache, network is not hit."""
+        # Seed disk cache via a real network-mocked fetch
+        with (
+            patch.object(_dc_mod, "_CACHE_DIR", tmp_path),
+            patch("mktlib.rates._disk_cache.load_year", wraps=_orig_dc_load),
+            patch("mktlib.rates._disk_cache.save_year", wraps=_orig_dc_save),
+            patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})),
+        ):
+            clear_cache()
+            fetch_daily_rates(date(2024, 1, 1), date(2024, 1, 31))
+
+        # Now clear in-memory cache and fetch again — should come from disk
+        clear_cache()
+        with (
+            patch.object(_dc_mod, "_CACHE_DIR", tmp_path),
+            patch("mktlib.rates._disk_cache.load_year", wraps=_orig_dc_load),
+            patch("mktlib.rates._disk_cache.save_year", wraps=_orig_dc_save),
+            patch(
+                "mktlib.rates._treasury.urlopen",
+                side_effect=AssertionError("should not fetch from network"),
+            ),
         ):
             rates = fetch_daily_rates(date(2024, 1, 1), date(2024, 1, 31))
 
         assert len(rates) == 3
-        mock_load.assert_not_called()
+        assert rates[0] == (date(2024, 1, 2), pytest.approx(0.054))
+
+
+# ---------------------------------------------------------------------------
+# Bundled → disk cache seeding for past years
+# ---------------------------------------------------------------------------
+
+
+class TestBundledDiskSeed:
+    def test_past_year_seeded_from_bundled(self, tmp_path):
+        """Past year with no disk cache seeds from bundled, skips network."""
+        with (
+            patch.object(_dc_mod, "_CACHE_DIR", tmp_path),
+            patch("mktlib.rates._disk_cache.load_year", wraps=_orig_dc_load),
+            patch("mktlib.rates._disk_cache.save_year", wraps=_orig_dc_save),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=_BUNDLED_2024),
+            patch(
+                "mktlib.rates._treasury.urlopen",
+                side_effect=AssertionError("should not fetch from network"),
+            ),
+        ):
+            clear_cache()
+            rates = fetch_daily_rates(date(2024, 1, 1), date(2024, 1, 31))
+
+        assert len(rates) == 2
+        assert rates[0] == (date(2024, 1, 2), pytest.approx(0.054))
+        assert (tmp_path / "2024.csv").exists()
+
+    def test_current_year_not_seeded(self):
+        """Current year still hits network even when bundled data exists."""
+        with (
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=_BUNDLED_THIS_YEAR) as mock_bundled,
+            patch("mktlib.rates._treasury.urlopen", _mock_urlopen({_THIS_YEAR: _XML_THIS_YEAR})),
+        ):
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        # Bundled should not be consulted before network for current year
+        mock_bundled.assert_not_called()
+        assert len(rates) == 3
