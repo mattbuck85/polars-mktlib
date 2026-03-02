@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from ._compat import PandasConvertible, ReturnsInput
+
 from ._types import DrawdownInfo, MetricsResult, ReportConfig
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
 
 __all__ = [
     "html", "metrics",
@@ -24,7 +28,7 @@ def html(
     periods_per_year: int = 252,
     compounded: bool = True,
     extra_metrics: dict[str, list[tuple[str, str]]] | None = None,
-    extra_charts: dict[str, Any] | None = None,
+    extra_charts: dict[str, go.Figure] | None = None,
     template: str | Path | None = None,
 ) -> str | None:
     """Generate an interactive HTML tearsheet report.
