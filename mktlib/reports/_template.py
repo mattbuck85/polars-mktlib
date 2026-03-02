@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from importlib.resources import files
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import jinja2  # type: ignore[import-untyped]
+from markupsafe import Markup  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from ._types import MetricsResult
@@ -17,9 +19,19 @@ def _get_template() -> Any:
     global _cached_template  # noqa: PLW0603
     if _cached_template is None:
         text = (files("mktlib.reports") / "templates" / "tearsheet.html.j2").read_text(encoding="utf-8")
-        env = jinja2.Environment(autoescape=False)
+        env = jinja2.Environment(autoescape=True)
         _cached_template = env.from_string(text)
     return _cached_template
+
+
+def _resolve_template(override: str | Path | None) -> Any:
+    """Return a Jinja2 template from override or the built-in default."""
+    if override is None:
+        return _get_template()
+    env = jinja2.Environment(autoescape=True)
+    if isinstance(override, Path):
+        return env.from_string(override.read_text(encoding="utf-8"))
+    return env.from_string(override)
 
 
 def render(
@@ -29,16 +41,27 @@ def render(
     start_date: str,
     end_date: str,
     trading_days: int,
+    *,
+    extra_metrics: dict[str, list[tuple[str, str]]] | None = None,
+    extra_charts: dict[str, str] | None = None,
+    template_override: str | Path | None = None,
 ) -> str:
     """Render the full tearsheet HTML."""
-    template = _get_template()
+    template = _resolve_template(template_override)
+    groups = _format_metrics(metrics)
+    if extra_metrics:
+        for category, items in extra_metrics.items():
+            groups.append((category, items))
+    safe_charts = {k: Markup(v) for k, v in charts.items()}
+    safe_extra = {k: Markup(v) for k, v in (extra_charts or {}).items()}
     result: str = template.render(
         title=title,
         start_date=start_date,
         end_date=end_date,
         trading_days=trading_days,
-        metrics_groups=_format_metrics(metrics),
-        charts=charts,
+        metrics_groups=groups,
+        charts=safe_charts,
+        extra_charts=safe_extra,
     )
     return result
 

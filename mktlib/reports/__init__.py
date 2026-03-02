@@ -1,6 +1,9 @@
 """Polars-native tearsheet generator — drop-in replacement for quantstats."""
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from ._compat import PandasConvertible, ReturnsInput
 from ._types import DrawdownInfo, MetricsResult, ReportConfig
 
@@ -20,6 +23,9 @@ def html(
     rf: float | str = 0.0,
     periods_per_year: int = 252,
     compounded: bool = True,
+    extra_metrics: dict[str, list[tuple[str, str]]] | None = None,
+    extra_charts: dict[str, Any] | None = None,
+    template: str | Path | None = None,
 ) -> str | None:
     """Generate an interactive HTML tearsheet report.
 
@@ -41,6 +47,15 @@ def html(
         Trading days per year (default 252).
     compounded
         Whether to compute compounded returns (default *True*).
+    extra_metrics
+        Additional metric cards: ``{card_title: [(label, value), ...]}``.
+        Appended to the built-in metrics grid.
+    extra_charts
+        Additional charts: ``{name: plotly.graph_objects.Figure}``.
+        Converted to HTML divs and rendered after the built-in charts.
+    template
+        Custom Jinja2 template.  ``Path`` loads from file, ``str`` is treated
+        as inline Jinja2 source, ``None`` uses the built-in template.
 
     Returns
     -------
@@ -100,10 +115,21 @@ def html(
         "distribution": _plots.returns_distribution_chart(ret_series.to_list()),
     }
 
+    # Convert extra plotly figures to HTML divs
+    extra_chart_divs: dict[str, str] = {}
+    if extra_charts:
+        for name, fig in extra_charts.items():
+            extra_chart_divs[name] = _plots._to_div(fig)
+
     # Render
     start_date = str(ret_df["date"].min())
     end_date = str(ret_df["date"].max())
-    html_str = _template.render(result, charts, title, start_date, end_date, len(ret_df))
+    html_str = _template.render(
+        result, charts, title, start_date, end_date, len(ret_df),
+        extra_metrics=extra_metrics,
+        extra_charts=extra_chart_divs,
+        template_override=template,
+    )
 
     if output is not None:
         import pathlib

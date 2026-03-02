@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 import polars as pl
 
 
-@runtime_checkable
 class PandasConvertible(Protocol):
     """Duck-type protocol for objects convertible via ``to_frame()`` (e.g. ``pd.Series``)."""
 
@@ -27,11 +26,6 @@ def coerce_returns(data: ReturnsInput) -> pl.DataFrame:
         return _validate_returns_df(data)
     if isinstance(data, pl.Series):
         return _series_to_df(data)
-    # At this point pyright knows `data` is PandasConvertible, but at runtime
-    # callers may pass an unsupported type (the union is not enforced).
-    if not isinstance(data, PandasConvertible):  # type: ignore[unnecessary-isinstance]
-        msg = f"Unsupported type: {type(data).__name__}. Expected pl.Series, pl.DataFrame, or pd.Series."
-        raise TypeError(msg)
     return _pandas_to_df(data)
 
 

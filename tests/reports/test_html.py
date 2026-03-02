@@ -104,6 +104,85 @@ class TestMetricsFunction:
         assert r1.sharpe != r2.sharpe
 
 
+class TestExtensibility:
+    def test_extra_metrics_appear_in_html(self):
+        returns = _make_returns()
+        result = html(returns, extra_metrics={"Custom": [("Foo", "42")]})
+        assert result is not None
+        assert "Custom" in result
+        assert "Foo" in result
+        assert "42" in result
+
+    def test_extra_charts_rendered(self):
+        go = pytest.importorskip("plotly.graph_objects")
+        returns = _make_returns()
+        fig = go.Figure(data=go.Scatter(x=[1, 2, 3], y=[4, 5, 6]))
+        result = html(returns, extra_charts={"pnl": fig})
+        assert result is not None
+        assert "plotly" in result.lower() or "<div" in result
+
+    def test_custom_template_string(self):
+        returns = _make_returns()
+        tpl = "<html>{{ title }} {{ trading_days }}</html>"
+        result = html(returns, template=tpl, title="Custom Title")
+        assert result is not None
+        assert "Custom Title" in result
+        assert "<!DOCTYPE html>" not in result  # no built-in layout
+
+    def test_custom_template_path(self, tmp_path: Path):
+        returns = _make_returns()
+        tpl_file = tmp_path / "my.j2"
+        tpl_file.write_text("<html>{{ title }} {{ start_date }}</html>")
+        result = html(returns, template=tpl_file, title="Path Title")
+        assert result is not None
+        assert "Path Title" in result
+        assert "2024" in result
+
+    def test_custom_template_receives_all_vars(self):
+        go = pytest.importorskip("plotly.graph_objects")
+        returns = _make_returns()
+        fig = go.Figure()
+        tpl = (
+            "groups={{ metrics_groups | length }}"
+            " charts={{ charts | length }}"
+            " extra={{ extra_charts | length }}"
+        )
+        result = html(
+            returns,
+            template=tpl,
+            extra_metrics={"X": [("a", "1")]},
+            extra_charts={"c": fig},
+        )
+        assert result is not None
+        assert "groups=7" in result  # 6 built-in + 1 extra
+        assert "charts=8" in result
+        assert "extra=1" in result
+
+    def test_all_three_combined(self):
+        go = pytest.importorskip("plotly.graph_objects")
+        returns = _make_returns()
+        fig = go.Figure(data=go.Scatter(x=[1], y=[1]))
+        result = html(
+            returns,
+            extra_metrics={"Execution": [("Trades", "142")]},
+            extra_charts={"pnl": fig},
+        )
+        assert result is not None
+        assert "Execution" in result
+        assert "Trades" in result
+        assert "142" in result
+
+    def test_defaults_unchanged(self):
+        """html() with no new params produces the same output as before."""
+        returns = _make_returns(50)
+        result = html(returns, title="Regression")
+        assert result is not None
+        assert "<!DOCTYPE html>" in result
+        assert "Regression" in result
+        for section in ["Returns", "Ratios", "Risk", "Win/Loss", "Benchmark"]:
+            assert section in result
+
+
 class TestPandasIntegration:
     def test_html_with_pandas_series(self):
         pd = pytest.importorskip("pandas")
