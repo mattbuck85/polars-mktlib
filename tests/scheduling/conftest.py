@@ -18,3 +18,13 @@ def lse():
 @pytest.fixture
 def euronext():
     return get_calendar("XPAR")
+
+
+@pytest.fixture
+def cme():
+    return get_calendar("XCME")
+
+
+@pytest.fixture
+def globex():
+    return get_calendar("GLBX")

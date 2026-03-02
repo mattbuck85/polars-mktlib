@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     class _CalendarProtocol(Protocol):
         tz: ZoneInfo
         timezone: str
+        open_offset: int
         def is_session(self, day: date | str) -> bool: ...
         def valid_days(self, start: date | str, end: date | str) -> pl.Series: ...
         def get_schedule(self, day: date | str) -> MarketDailySchedule | None: ...
@@ -93,10 +94,16 @@ class MinuteQueryMixin:
     def is_open_on_minute(self: _CalendarProtocol, dt: datetime) -> bool:
         """Check if the exchange is open at *dt*.  Uses ``[open, close)`` semantics."""
         aware = _ensure_aware(dt, self.tz)
-        sched = self.get_schedule(aware.date())
-        if sched is None:
-            return False
-        return sched.market_open <= aware < sched.market_close
+        d = aware.date()
+        sched = self.get_schedule(d)
+        if sched is not None and sched.market_open <= aware < sched.market_close:
+            return True
+        if self.open_offset < 0:
+            next_d = self.next_session(d)
+            next_sched = self.get_schedule(next_d)
+            if next_sched is not None and next_sched.market_open <= aware < next_sched.market_close:
+                return True
+        return False
 
     def next_open(self: _CalendarProtocol, dt: datetime) -> datetime:
         """Next market open strictly after *dt* (or today's open if before it)."""
@@ -105,10 +112,14 @@ class MinuteQueryMixin:
         sched = self.get_schedule(d)
         if sched is not None and aware < sched.market_open:
             return sched.market_open
-        next_d = self.next_session(d)
-        next_sched = self.get_schedule(next_d)
-        assert next_sched is not None
-        return next_sched.market_open
+        d = self.next_session(d)
+        sched = self.get_schedule(d)
+        assert sched is not None
+        while sched.market_open <= aware:
+            d = self.next_session(d)
+            sched = self.get_schedule(d)
+            assert sched is not None
+        return sched.market_open
 
     def next_close(self: _CalendarProtocol, dt: datetime) -> datetime:
         """Next market close at or after *dt* (today's close if still open)."""
@@ -153,6 +164,11 @@ class MinuteQueryMixin:
         sched = self.get_schedule(d)
         if sched is not None and sched.market_open <= aware < sched.market_close:
             return d
+        if self.open_offset < 0:
+            next_d = self.next_session(d)
+            next_sched = self.get_schedule(next_d)
+            if next_sched is not None and next_sched.market_open <= aware < next_sched.market_close:
+                return next_d
         return None
 
 

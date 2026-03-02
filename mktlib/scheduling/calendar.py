@@ -30,6 +30,7 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         special_closures_fn: Callable[[date, date], list[date]] | None = None,
         special_early_closes_fn: Callable[[date, date], dict[date, time]] | None = None,
         exclusions: set[date] | None = None,
+        open_offset: int = 0,
     ):
         self.name = name
         self.timezone = timezone
@@ -42,6 +43,7 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         self._special_closures_fn = special_closures_fn
         self._special_early_closes_fn = special_early_closes_fn
         self._exclusions = exclusions or set()
+        self.open_offset = open_offset
 
     def _closure_dates(self, start: date, end: date) -> set[date]:
         """Collect all closure dates (holidays + adhoc) within [start, end]."""
@@ -95,7 +97,8 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         while current <= end_d:
             if current.weekday() < 5 and current not in closures:
                 dates.append(current)
-                opens.append(datetime.combine(current, self.open_time, tzinfo=self.tz))
+                open_date = current + timedelta(days=self.open_offset)
+                opens.append(datetime.combine(open_date, self.open_time, tzinfo=self.tz))
                 close_t = ec_map.get(current, self.close_time)
                 closes.append(datetime.combine(current, close_t, tzinfo=self.tz))
             current += timedelta(days=1)
@@ -121,9 +124,10 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
             return None
         ec_map = self._early_close_map(d, d)
         close_t = ec_map.get(d, self.close_time)
+        open_date = d + timedelta(days=self.open_offset)
         return MarketDailySchedule(
             date=d,
-            market_open=datetime.combine(d, self.open_time, tzinfo=self.tz),
+            market_open=datetime.combine(open_date, self.open_time, tzinfo=self.tz),
             market_close=datetime.combine(d, close_t, tzinfo=self.tz),
         )
 
@@ -254,3 +258,78 @@ def _make_euronext() -> ExchangeCalendar:
 
 
 register_exchange("XPAR", _make_euronext, aliases=["Euronext", "Paris"])
+
+
+def _cme_special_closures(start: date, end: date) -> list[date]:
+    from mktlib.scheduling.exchanges.cme import good_friday_closures
+
+    return good_friday_closures(start, end)
+
+
+def _cme_special_early_closes(start: date, end: date) -> dict[date, time]:
+    from mktlib.scheduling.exchanges.cme import (
+        CME_EARLY_CLOSE_TIME,
+        black_friday_early_closes,
+        christmas_eve_early_closes,
+        independence_day_early_closes,
+    )
+
+    result: dict[date, time] = {}
+    for d in black_friday_early_closes(start, end):
+        result[d] = CME_EARLY_CLOSE_TIME
+    for d in independence_day_early_closes(start, end):
+        result[d] = CME_EARLY_CLOSE_TIME
+    for d in christmas_eve_early_closes(start, end):
+        result[d] = CME_EARLY_CLOSE_TIME
+    return result
+
+
+def _make_cme_rth() -> ExchangeCalendar:
+    from mktlib.scheduling.exchanges.cme import (
+        ADHOC_CLOSURES,
+        CME_RTH_CLOSE,
+        CME_RTH_OPEN,
+        CME_TZ,
+        EARLY_CLOSES,
+        RECURRING_HOLIDAYS,
+    )
+
+    return ExchangeCalendar(
+        name="XCME",
+        timezone=CME_TZ,
+        open_time=CME_RTH_OPEN,
+        close_time=CME_RTH_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=_cme_special_closures,
+        special_early_closes_fn=_cme_special_early_closes,
+    )
+
+
+def _make_cme_globex() -> ExchangeCalendar:
+    from mktlib.scheduling.exchanges.cme import (
+        ADHOC_CLOSURES,
+        CME_GLOBEX_CLOSE,
+        CME_GLOBEX_OPEN,
+        CME_TZ,
+        EARLY_CLOSES,
+        RECURRING_HOLIDAYS,
+    )
+
+    return ExchangeCalendar(
+        name="GLBX",
+        timezone=CME_TZ,
+        open_time=CME_GLOBEX_OPEN,
+        close_time=CME_GLOBEX_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        special_closures_fn=_cme_special_closures,
+        special_early_closes_fn=_cme_special_early_closes,
+        open_offset=-1,
+    )
+
+
+register_exchange("XCME", _make_cme_rth, aliases=["CME", "CME-RTH"])
+register_exchange("GLBX", _make_cme_globex, aliases=["Globex", "CME-GLOBEX"])
