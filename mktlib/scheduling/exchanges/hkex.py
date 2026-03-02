@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, time, timedelta
 
 from mktlib.scheduling.easter import easter, good_friday
-from mktlib.scheduling.rules import AdhocClosure, EarlyClose, HolidayRule, sunday_to_monday
+from mktlib.scheduling.rules import AdhocClosure, EarlyClose, HolidayRule, fixed_date_if_weekday, sunday_to_monday
 
 # --- Hong Kong holidays ---
 # HKEX follows Hong Kong public holidays. Many are lunar-calendar based
@@ -317,12 +317,8 @@ def _lny_eve(year: int) -> date | None:
 
 
 EARLY_CLOSES: list[EarlyClose] = [
-    EarlyClose("Christmas Eve", HKEX_EARLY_CLOSE_TIME, compute_fn=lambda year: (
-        d if (d := date(year, 12, 24)).weekday() < 5 else None
-    )),
-    EarlyClose("New Year's Eve", HKEX_EARLY_CLOSE_TIME, compute_fn=lambda year: (
-        d if (d := date(year, 12, 31)).weekday() < 5 else None
-    )),
+    EarlyClose("Christmas Eve", HKEX_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 24)),
+    EarlyClose("New Year's Eve", HKEX_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 31)),
     EarlyClose("Lunar New Year's Eve", HKEX_EARLY_CLOSE_TIME, compute_fn=_lny_eve),
 ]
 
