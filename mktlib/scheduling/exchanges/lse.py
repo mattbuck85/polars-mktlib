@@ -7,6 +7,7 @@ from mktlib.scheduling.rules import (
     AdhocClosure,
     EarlyClose,
     HolidayRule,
+    last_weekday_before,
 )
 
 
@@ -148,36 +149,14 @@ def special_closures_with_moves(start: date, end: date) -> list[date]:
     return results
 
 
-# --- Early close helpers ---
+# --- Early closes ---
 
 LSE_EARLY_CLOSE_TIME = time(12, 30)
 
-
-def _last_weekday_before(target: date) -> date:
-    """Find the last weekday strictly before target date."""
-    d = target - timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
-
-
-def special_early_closes(start: date, end: date) -> dict[date, time]:
-    """Early close on last trading day before Christmas and New Year's."""
-    result: dict[date, time] = {}
-    for year in range(start.year, end.year + 1):
-        # Last weekday before Christmas
-        christmas_early = _last_weekday_before(date(year, 12, 25))
-        if start <= christmas_early <= end:
-            result[christmas_early] = LSE_EARLY_CLOSE_TIME
-
-        # Last weekday before New Year's
-        nye_early = _last_weekday_before(date(year + 1, 1, 1))
-        if start <= nye_early <= end:
-            result[nye_early] = LSE_EARLY_CLOSE_TIME
-    return result
-
-
-EARLY_CLOSES: list[EarlyClose] = []
+EARLY_CLOSES: list[EarlyClose] = [
+    EarlyClose("Christmas Eve", LSE_EARLY_CLOSE_TIME, compute_fn=last_weekday_before(12, 25)),
+    EarlyClose("New Year's Eve", LSE_EARLY_CLOSE_TIME, compute_fn=last_weekday_before(1, 1, year_offset=1)),
+]
 
 # --- Exchange constants ---
 

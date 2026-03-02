@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from datetime import date, time, timedelta
+from datetime import date, time
 
 from mktlib.scheduling.easter import good_friday
 from mktlib.scheduling.rules import (
     AdhocClosure,
     EarlyClose,
     HolidayRule,
+    day_after,
+    fixed_date_if_weekday,
+    holiday_eve,
     nearest_workday,
     sunday_to_monday,
 )
@@ -121,76 +124,15 @@ ADHOC_CLOSURES: list[AdhocClosure] = [
     AdhocClosure(name="President Carter National Day of Mourning", dates=[date(2025, 1, 9)]),
 ]
 
-# --- Early close helpers ---
+# --- Early closes ---
 
 EARLY_CLOSE_TIME = time(13, 0)  # 1:00 PM
 
-def _compute_black_friday(year: int) -> date:
-    """Black Friday = day after Thanksgiving (4th Thursday of November)."""
-    thanksgiving = THANKSGIVING.raw_date(year)
-    assert thanksgiving is not None
-    return thanksgiving + timedelta(days=1)
-
-
-def _compute_independence_day_early_close(year: int) -> date | None:
-    """Compute the early-close date before Independence Day.
-
-    If July 4 falls on Sat (observed Fri Jul 3): early close Thu Jul 2.
-    If July 4 falls on Sun (observed Mon Jul 5): early close Fri Jul 2.
-    Otherwise: early close on July 3 (if it's a weekday).
-    """
-    july4 = date(year, 7, 4)
-    wd = july4.weekday()
-
-    if wd == 5:  # Saturday
-        return date(year, 7, 2)
-    if wd == 6:  # Sunday
-        return date(year, 7, 2)
-    july3 = date(year, 7, 3)
-    if july3.weekday() >= 5:
-        return date(year, 7, 2)
-    return july3
-
-
-def _compute_christmas_eve_early_close(year: int) -> date | None:
-    """Compute Christmas Eve early close. Skip if Dec 24 is a weekend."""
-    dec24 = date(year, 12, 24)
-    if dec24.weekday() >= 5:
-        return None
-    return dec24
-
-
-def independence_day_early_closes(start: date, end: date) -> list[date]:
-    """Generate early close dates for day before Independence Day."""
-    results: list[date] = []
-    for year in range(start.year, end.year + 1):
-        d = _compute_independence_day_early_close(year)
-        if d is not None and start <= d <= end:
-            results.append(d)
-    return results
-
-
-def black_friday_early_closes(start: date, end: date) -> list[date]:
-    """Generate Black Friday early close dates."""
-    results: list[date] = []
-    for year in range(start.year, end.year + 1):
-        d = _compute_black_friday(year)
-        if start <= d <= end:
-            results.append(d)
-    return results
-
-
-def christmas_eve_early_closes(start: date, end: date) -> list[date]:
-    """Generate Christmas Eve early close dates (post-1993)."""
-    results: list[date] = []
-    for year in range(max(start.year, 1993), end.year + 1):
-        d = _compute_christmas_eve_early_close(year)
-        if d is not None and start <= d <= end:
-            results.append(d)
-    return results
-
-
-EARLY_CLOSES: list[EarlyClose] = []
+EARLY_CLOSES: list[EarlyClose] = [
+    EarlyClose("Independence Day Eve", EARLY_CLOSE_TIME, compute_fn=holiday_eve(7, 4)),
+    EarlyClose("Black Friday", EARLY_CLOSE_TIME, compute_fn=day_after(THANKSGIVING)),
+    EarlyClose("Christmas Eve", EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 24, start_year=1993)),
+]
 
 # --- Exchange constants ---
 

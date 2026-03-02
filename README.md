@@ -5,24 +5,54 @@
 
 Polars-native financial market toolkit. Zero pandas dependency.
 
+## Table of Contents
+
+- [Installation](#installation)
+- [Scheduling](#scheduling)
+  - [Supported Exchanges](#supported-exchanges)
+  - [Schedule & Trading Days](#schedule--trading-days)
+  - [Session Navigation](#session-navigation)
+  - [Minute-Level Queries](#minute-level-queries)
+  - [Trading Index](#trading-index)
+  - [Custom Calendars](#custom-calendars)
+  - [Holiday Rules](#holiday-rules)
+  - [ExchangeCalendar API](#exchangecalendar)
+- [Rates](#rates---treasury-yield-curves)
+  - [Quick Start](#rates-quick-start)
+  - [Available Instruments](#available-instruments)
+  - [Caching](#caching)
+  - [Rates API](#rates-api)
+- [Reports](#reports---tearsheet-generation)
+  - [Quick Start](#reports-quick-start)
+  - [Input Types](#input-types)
+  - [Auto Risk-Free Rate](#auto-risk-free-rate)
+  - [Metrics](#metrics-25)
+  - [Charts](#charts-8)
+  - [Reports API](#reports-api)
+  - [Migration from quantstats](#migration-from-quantstats)
+- [Development](#development)
+- [License](#license)
+
 ## Installation
 
 ```bash
-pip install mktlib              # core (scheduling only)
+pip install mktlib              # core (scheduling + rates)
 pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 ```
 
-## Supported Exchanges
+## Scheduling
+
+### Supported Exchanges
 
 | Exchange | ID | Aliases | Hours | Timezone |
 |-|-|-|-|-|
 | NYSE | `XNYS` | `NYSE` | 09:30 - 16:00 | America/New_York |
 | LSE | `XLON` | `LSE`, `London` | 08:00 - 16:30 | Europe/London |
 | Euronext | `XPAR` | `Euronext`, `Paris` | 09:00 - 17:30 | Europe/Paris |
+| CME RTH | `XCME` | `CME`, `CME-RTH` | 09:30 - 16:15 | America/New_York |
+| CME Globex | `GLBX` | `Globex`, `CME-GLOBEX` | 18:00 - 17:00 | America/New_York |
 
 Each calendar includes holidays, ad-hoc closures, and early closes with full observance rules.
-
-## Usage
 
 ### Schedule & Trading Days
 
@@ -112,8 +142,6 @@ register_exchange("XTKS", lambda: cal, aliases=["TSE", "Tokyo"])
 | `AdhocClosure` | One-off closure dates (e.g. 9/11, Hurricane Sandy) |
 | `EarlyClose` | Early close with specific close time, by rule or explicit dates |
 
-## API Reference
-
 ### `ExchangeCalendar`
 
 | Method | Returns | Description |
@@ -137,11 +165,62 @@ register_exchange("XTKS", lambda: cal, aliases=["TSE", "Tokyo"])
 
 All date parameters accept `date` objects or ISO-format strings (`"2024-01-02"`).
 
+## Rates — Treasury Yield Curves
+
+`mktlib.rates` fetches daily Treasury yield curve data from Treasury.gov with a 3-tier caching strategy and bundled historical fallback. No API key required.
+
+### Rates Quick Start
+
+```python
+from mktlib.rates import get_risk_free_rate, TreasuryRate
+
+# Average 3-month T-bill rate for 2024 (default instrument)
+rf = get_risk_free_rate("2024-01-01", "2024-12-31")
+# Returns 0.0523 (i.e. 5.23%)
+
+# Use a different instrument
+rf_10y = get_risk_free_rate("2024-01-01", "2024-12-31", TreasuryRate.TEN_YEAR)
+```
+
+### Available Instruments
+
+| Enum Member | Treasury Field | Description |
+|-|-|-|
+| `TreasuryRate.THREE_MONTH` | `BC_3MONTH` | 3-month T-bill (default, standard risk-free proxy) |
+| `TreasuryRate.SIX_MONTH` | `BC_6MONTH` | 6-month T-bill |
+| `TreasuryRate.ONE_YEAR` | `BC_1YEAR` | 1-year Treasury |
+| `TreasuryRate.TWO_YEAR` | `BC_2YEAR` | 2-year Treasury |
+| `TreasuryRate.FIVE_YEAR` | `BC_5YEAR` | 5-year Treasury |
+| `TreasuryRate.TEN_YEAR` | `BC_10YEAR` | 10-year Treasury |
+| `TreasuryRate.THIRTY_YEAR` | `BC_30YEAR` | 30-year Treasury |
+
+### Caching
+
+Data is cached at three levels to minimize network requests:
+
+1. **In-memory** — per-year data cached for the process lifetime
+2. **Disk** — `~/.cache/mktlib/rates/{year}.csv` with 7-day TTL for the current year; past years never expire
+3. **Bundled** — historical CSVs (2006-2026) shipped with the package for offline use
+
+On network failure, the library falls back to stale disk cache or bundled data and emits a `UserWarning`.
+
+### Rates API
+
+```python
+def get_risk_free_rate(
+    start: date | str,
+    end: date | str,
+    instrument: TreasuryRate = TreasuryRate.THREE_MONTH,
+) -> float: ...
+```
+
+Returns the arithmetic mean of daily Treasury yields as a decimal (e.g. `0.0436` for 4.36%).
+
 ## Reports — Tearsheet Generation
 
 `mktlib.reports` is a Polars-native replacement for quantstats. It computes 25 performance metrics and renders an interactive HTML tearsheet with Plotly charts — no pandas, matplotlib, or seaborn required.
 
-### Quick Start
+### Reports Quick Start
 
 ```python
 from mktlib.reports import html, metrics
@@ -167,6 +246,15 @@ Both `html()` and `metrics()` accept any of:
 | `pl.Series` | Bare returns; synthetic business-day dates are generated starting from 2000-01-03 |
 | `pd.Series` | Duck-typed via `PandasConvertible` protocol; DatetimeIndex is converted to `pl.Date` automatically |
 
+### Auto Risk-Free Rate
+
+Pass `rf="auto"` to automatically fetch the 3-month T-bill average for the returns period via `mktlib.rates`:
+
+```python
+html(returns_df, rf="auto", output="tearsheet.html")
+result = metrics(returns_df, rf="auto")
+```
+
 ### Metrics (25)
 
 | Category | Metrics |
@@ -184,7 +272,7 @@ Cumulative returns (with optional benchmark overlay), drawdown underwater, month
 
 All charts are interactive Plotly — hover for values, zoom, pan. Plotly JS is loaded via CDN.
 
-### API
+### Reports API
 
 ```python
 def html(
@@ -193,7 +281,7 @@ def html(
     benchmark: ReturnsInput | None = None,
     output: str | None = None,          # file path; None → return HTML string
     title: str = "Strategy Tearsheet",
-    rf: float = 0.0,                    # annualised risk-free rate
+    rf: float | str = 0.0,              # float or "auto"
     periods_per_year: int = 252,
     compounded: bool = True,
 ) -> str | None: ...
@@ -202,7 +290,7 @@ def metrics(
     returns: ReturnsInput,
     *,
     benchmark: ReturnsInput | None = None,
-    rf: float = 0.0,
+    rf: float | str = 0.0,
     periods_per_year: int = 252,
     compounded: bool = True,
 ) -> MetricsResult: ...

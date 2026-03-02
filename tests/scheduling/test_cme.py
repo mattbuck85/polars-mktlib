@@ -20,12 +20,51 @@ class TestCMERTHSchedule:
         assert sched.market_open.time() == time(9, 30)
         assert sched.market_close.time() == time(16, 15)
 
-    def test_holidays_match_nyse(self, cme):
-        # Spot-check shared holidays
+    def test_cme_closures(self, cme):
+        """CME fully closes only for New Year's, Christmas, and Good Friday."""
+        # Full closures
         assert not cme.is_session(date(2024, 1, 1))   # New Year's
-        assert not cme.is_session(date(2024, 1, 15))  # MLK
-        assert not cme.is_session(date(2024, 12, 25)) # Christmas
-        assert not cme.is_session(date(2024, 3, 29))  # Good Friday
+        assert not cme.is_session(date(2024, 12, 25))  # Christmas
+        assert not cme.is_session(date(2024, 3, 29))   # Good Friday
+
+        # These are early-close sessions, NOT closures
+        assert cme.is_session(date(2024, 1, 15))   # MLK Day
+        assert cme.is_session(date(2024, 2, 19))   # Presidents Day
+        assert cme.is_session(date(2024, 5, 27))   # Memorial Day
+        assert cme.is_session(date(2024, 7, 4))    # Independence Day (Thu)
+        assert cme.is_session(date(2024, 9, 2))    # Labor Day
+        assert cme.is_session(date(2024, 11, 28))  # Thanksgiving
+
+    def test_early_close_mlk(self, cme):
+        sched = cme.get_schedule(date(2024, 1, 15))
+        assert sched is not None
+        assert sched.market_close.hour == 13
+
+    def test_early_close_presidents_day(self, cme):
+        sched = cme.get_schedule(date(2024, 2, 19))
+        assert sched is not None
+        assert sched.market_close.hour == 13
+
+    def test_early_close_memorial_day(self, cme):
+        sched = cme.get_schedule(date(2024, 5, 27))
+        assert sched is not None
+        assert sched.market_close.hour == 13
+
+    def test_early_close_independence_day(self, cme):
+        # 2024: July 4 is Thursday — it's an early-close session at 13:00
+        sched = cme.get_schedule(date(2024, 7, 4))
+        assert sched is not None
+        assert sched.market_close.hour == 13
+
+    def test_early_close_labor_day(self, cme):
+        sched = cme.get_schedule(date(2024, 9, 2))
+        assert sched is not None
+        assert sched.market_close.hour == 13
+
+    def test_early_close_thanksgiving(self, cme):
+        sched = cme.get_schedule(date(2024, 11, 28))
+        assert sched is not None
+        assert sched.market_close.hour == 13
 
     def test_early_close_black_friday(self, cme):
         sched = cme.get_schedule(date(2024, 11, 29))
@@ -37,16 +76,10 @@ class TestCMERTHSchedule:
         assert sched is not None
         assert sched.market_close.hour == 13
 
-    def test_early_close_independence_day(self, cme):
-        # 2024: July 4 Thu, early close July 3 Wed
-        sched = cme.get_schedule(date(2024, 7, 3))
-        assert sched is not None
-        assert sched.market_close.hour == 13
-
     @pytest.mark.parametrize("year", [2020, 2021, 2022, 2023, 2024])
     def test_trading_days_in_range(self, cme, year):
         days = cme.valid_days(date(year, 1, 1), date(year, 12, 31))
-        assert 248 <= len(days) <= 253, f"Year {year}: {len(days)} trading days"
+        assert 255 <= len(days) <= 260, f"Year {year}: {len(days)} trading days"
 
 
 # --- CME Globex ---
@@ -65,10 +98,18 @@ class TestGlobexSchedule:
         assert sched is not None
         assert sched.market_close.time() == time(17, 0)
 
-    def test_holidays_match_nyse(self, globex):
+    def test_globex_closures(self, globex):
+        """Globex fully closes only for New Year's, Christmas, and Good Friday."""
         assert not globex.is_session(date(2024, 1, 1))
         assert not globex.is_session(date(2024, 12, 25))
         assert not globex.is_session(date(2024, 3, 29))
+
+        # Early-close sessions, not closures
+        assert globex.is_session(date(2024, 1, 15))   # MLK
+        assert globex.is_session(date(2024, 2, 19))   # Presidents Day
+        assert globex.is_session(date(2024, 5, 27))   # Memorial Day
+        assert globex.is_session(date(2024, 9, 2))    # Labor Day
+        assert globex.is_session(date(2024, 11, 28))  # Thanksgiving
 
     def test_early_close(self, globex):
         sched = globex.get_schedule(date(2024, 11, 29))  # Black Friday
@@ -78,7 +119,7 @@ class TestGlobexSchedule:
     @pytest.mark.parametrize("year", [2020, 2021, 2022, 2023, 2024])
     def test_trading_days_in_range(self, globex, year):
         days = globex.valid_days(date(year, 1, 1), date(year, 12, 31))
-        assert 248 <= len(days) <= 253, f"Year {year}: {len(days)} trading days"
+        assert 255 <= len(days) <= 260, f"Year {year}: {len(days)} trading days"
 
 
 class TestGlobexMinuteQueries:
