@@ -28,6 +28,7 @@ Polars-native financial market toolkit. Zero pandas dependency.
   - [Auto Risk-Free Rate](#auto-risk-free-rate)
   - [Metrics](#metrics-25)
   - [Charts](#charts-8)
+  - [Custom Metrics, Charts & Templates](#custom-metrics-charts--templates)
   - [Reports API](#reports-api)
   - [Migration from quantstats](#migration-from-quantstats)
 - [Development](#development)
@@ -278,6 +279,31 @@ Cumulative returns (with optional benchmark overlay), drawdown underwater, month
 
 All charts are interactive Plotly — hover for values, zoom, pan. Plotly JS is loaded via CDN.
 
+### Custom Metrics, Charts & Templates
+
+```python
+import plotly.graph_objects as go
+from pathlib import Path
+
+# Add custom metric cards alongside the built-in 25
+html(returns_df, extra_metrics={
+    "Execution": [("Trades", "142"), ("Avg Slippage", "0.02%")],
+    "Custom": [("Foo", "42")],
+})
+
+# Append extra Plotly charts after the built-in 8
+fig = go.Figure(data=go.Scatter(x=dates, y=pnl))
+fig.update_layout(title="PnL Curve")
+html(returns_df, extra_charts={"pnl": fig})
+
+# Full control with a custom Jinja2 template
+html(returns_df, template=Path("my_tearsheet.j2"),
+     extra_metrics={"Custom": [("Foo", "42")]},
+     extra_charts={"pnl": fig})
+```
+
+Custom templates receive: `title`, `start_date`, `end_date`, `trading_days`, `metrics_groups` (list of `(category, [(label, value), ...])` tuples including extras), `charts` (built-in HTML divs), and `extra_charts` (extra HTML divs). Pass a `Path` to load from file or a `str` for inline Jinja2.
+
 ### Reports API
 
 ```python
@@ -290,6 +316,9 @@ def html(
     rf: float | str = 0.0,              # float or "auto"
     periods_per_year: int = 252,
     compounded: bool = True,
+    extra_metrics: dict[str, list[tuple[str, str]]] | None = None,
+    extra_charts: dict[str, go.Figure] | None = None,
+    template: str | Path | None = None,
 ) -> str | None: ...
 
 def metrics(
