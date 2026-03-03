@@ -306,6 +306,29 @@ def _make_jpx() -> ExchangeCalendar:
     )
 
 
+def _make_fx() -> ExchangeCalendar:
+    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.exchanges.fx import (
+        ADHOC_CLOSURES,
+        EARLY_CLOSES,
+        FX_CLOSE,
+        FX_OPEN,
+        FX_TZ,
+        RECURRING_HOLIDAYS,
+    )
+
+    return ExchangeCalendar(
+        name="CMES",
+        timezone=FX_TZ,
+        open_time=FX_OPEN,
+        close_time=FX_CLOSE,
+        holidays=RECURRING_HOLIDAYS,
+        adhoc_closures=ADHOC_CLOSURES,
+        early_closes=EARLY_CLOSES,
+        open_offset=-1,
+    )
+
+
 def _make_hkex() -> ExchangeCalendar:
     from mktlib.scheduling.calendar import ExchangeCalendarWithBreaks
     from mktlib.scheduling.exchanges.hkex import (
@@ -349,3 +372,4 @@ register_exchange("XTSE", _make_tsx, aliases=["TSX", "Toronto"], adhoc_url="http
 register_exchange("XETR", _make_xetra, aliases=["Xetra", "Frankfurt"], adhoc_url="https://www.xetra.com/xetra-en/trading/trading-calendar-and-trading-hours")
 register_exchange("XTKS", _make_jpx, aliases=["JPX", "Tokyo", "TSE"], adhoc_url="https://www.jpx.co.jp/english/equities/trading/domestic/index.html")
 register_exchange("XHKG", _make_hkex, aliases=["HKEX", "HongKong"], adhoc_url="https://www.hkex.com.hk/Services/Trading-hours-and-டhalves?sc_lang=en")
+register_exchange("CMES", _make_fx, aliases=["CME-FX", "FX"])

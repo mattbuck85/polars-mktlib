@@ -28,3 +28,8 @@ def cme():
 @pytest.fixture
 def globex():
     return get_calendar("GLBX")
+
+
+@pytest.fixture
+def fx():
+    return get_calendar("CMES")

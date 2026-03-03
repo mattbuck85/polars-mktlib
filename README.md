@@ -58,6 +58,9 @@ pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 | CME Globex | `GLBX` | `Globex`, `CME-GLOBEX` | 18:00 - 17:00 | America/New_York |
 | JPX (Tokyo) | `XTKS` | `JPX`, `Tokyo`, `TSE` | 09:00 - 15:00 | Asia/Tokyo |
 | HKEX | `XHKG` | `HKEX`, `HongKong` | 09:30 - 16:00 | Asia/Hong_Kong |
+| FX (24/5) | `CMES` | `CME-FX`, `FX` | 17:00 - 17:00 | America/New_York |
+
+FX is a pure weekday calendar (no holidays) with 24-hour sessions (5pm-5pm ET).
 
 Each calendar includes holidays, ad-hoc closures, and early closes with full observance rules. JPX and HKEX include lunch break support — `schedule()` returns `break_start`/`break_end` columns, and `is_open_on_minute()` returns `False` during breaks.
 

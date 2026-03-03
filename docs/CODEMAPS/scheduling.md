@@ -85,6 +85,7 @@ All 5 factory functions (`_make_nyse`, `_make_lse`, `_make_euronext`, `_make_cme
 | XPAR | Euronext, Paris | `exchanges/euronext.py` | 09:00 | 17:30 | Europe/Paris |
 | XCME | CME, CME-RTH | `exchanges/cme.py` | 09:30 | 16:15 | America/New_York |
 | GLBX | Globex, CME-GLOBEX | `exchanges/cme.py` | 18:00 | 17:00 | America/New_York |
+| CMES | CME-FX, FX | `exchanges/fx.py` | 17:00 | 17:00 | America/New_York |
 
 ## Helpers
 
