@@ -277,7 +277,7 @@ def _make_xetra() -> ExchangeCalendar:
 
 
 def _make_jpx() -> ExchangeCalendar:
-    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.calendar import ExchangeCalendarWithBreaks
     from mktlib.scheduling.exchanges.jpx import (
         ADHOC_CLOSURES,
         EARLY_CLOSES,
@@ -291,7 +291,7 @@ def _make_jpx() -> ExchangeCalendar:
         special_closures,
     )
 
-    return ExchangeCalendar(
+    return ExchangeCalendarWithBreaks(
         name="XTKS",
         timezone=JPX_TZ,
         open_time=JPX_OPEN,
@@ -307,7 +307,7 @@ def _make_jpx() -> ExchangeCalendar:
 
 
 def _make_hkex() -> ExchangeCalendar:
-    from mktlib.scheduling.calendar import ExchangeCalendar
+    from mktlib.scheduling.calendar import ExchangeCalendarWithBreaks
     from mktlib.scheduling.exchanges.hkex import (
         ADHOC_CLOSURES,
         EARLY_CLOSES,
@@ -320,7 +320,7 @@ def _make_hkex() -> ExchangeCalendar:
         special_closures,
     )
 
-    return ExchangeCalendar(
+    return ExchangeCalendarWithBreaks(
         name="XHKG",
         timezone=HKEX_TZ,
         open_time=HKEX_OPEN,

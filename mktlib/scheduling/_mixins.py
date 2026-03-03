@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
@@ -15,8 +15,6 @@ if TYPE_CHECKING:
         tz: ZoneInfo
         timezone: str
         open_offset: int
-        break_start: time | None
-        break_end: time | None
         def is_session(self, day: date | str) -> bool: ...
         def valid_days(self, start: date | str, end: date | str) -> pl.Series: ...
         def get_schedule(self, day: date | str) -> MarketDailySchedule | None: ...
@@ -94,25 +92,16 @@ class MinuteQueryMixin:
     """Minute-resolution queries: open/close lookup, session membership."""
 
     def is_open_on_minute(self: _CalendarProtocol, dt: datetime) -> bool:
-        """Check if the exchange is open at *dt*.  Uses ``[open, close)`` semantics.
-
-        Returns ``False`` during lunch breaks for exchanges with break times.
-        """
+        """Check if the exchange is open at *dt*.  Uses ``[open, close)`` semantics."""
         aware = _ensure_aware(dt, self.tz)
         d = aware.date()
         sched = self.get_schedule(d)
         if sched is not None and sched.market_open <= aware < sched.market_close:
-            if sched.break_start and sched.break_end:
-                if sched.break_start <= aware < sched.break_end:
-                    return False
             return True
         if self.open_offset < 0:
             next_d = self.next_session(d)
             next_sched = self.get_schedule(next_d)
             if next_sched is not None and next_sched.market_open <= aware < next_sched.market_close:
-                if next_sched.break_start and next_sched.break_end:
-                    if next_sched.break_start <= aware < next_sched.break_end:
-                        return False
                 return True
         return False
 
@@ -199,34 +188,15 @@ class TradingIndexMixin:
         ``"right"`` = ``(open, close]``,
         ``"both"`` = ``[open, close]``,
         ``"none"`` = ``(open, close)``.
-
-        For exchanges with lunch breaks, two ranges per day are generated
-        (open→break_start, break_end→close) so the break period is excluded.
         """
         sched = self.schedule(start, end)
         parts: list[pl.Series] = []
         for row in sched.iter_rows(named=True):
-            bs = row["break_start"]
-            be = row["break_end"]
-            if bs is not None and be is not None:
-                # Morning session: open → break_start
-                morning = pl.datetime_range(
-                    row["market_open"], bs,
-                    interval=period, eager=True, closed=closed,
-                )
-                # Afternoon session: break_end → close
-                afternoon = pl.datetime_range(
-                    be, row["market_close"],
-                    interval=period, eager=True, closed=closed,
-                )
-                parts.append(morning)
-                parts.append(afternoon)
-            else:
-                ts = pl.datetime_range(
-                    row["market_open"], row["market_close"],
-                    interval=period, eager=True, closed=closed,
-                )
-                parts.append(ts)
+            ts = pl.datetime_range(
+                row["market_open"], row["market_close"],
+                interval=period, eager=True, closed=closed,
+            )
+            parts.append(ts)
         if not parts:
             return pl.Series("datetime", [], dtype=pl.Datetime("us", self.timezone))
         return pl.concat(parts).alias("datetime")
