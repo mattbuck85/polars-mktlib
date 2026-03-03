@@ -77,24 +77,24 @@ class BreakMixin:
     ) -> pl.Series:
         """Two ranges per day: open->break_start, break_end->close."""
         sched = self.schedule(start, end)
-        parts: list[pl.Series] = []
-        for row in sched.iter_rows(named=True):
-            morning = pl.datetime_range(
-                row["market_open"],
-                row["break_start"],
-                interval=period,
-                eager=True,
-                closed=closed,
-            )
-            afternoon = pl.datetime_range(
-                row["break_end"],
-                row["market_close"],
-                interval=period,
-                eager=True,
-                closed=closed,
-            )
-            parts.append(morning)
-            parts.append(afternoon)
-        if not parts:
+        if sched.is_empty():
             return pl.Series("datetime", [], dtype=pl.Datetime("us", self.timezone))
-        return pl.concat(parts).alias("datetime")
+        return (
+            sched
+            .with_columns(
+                pl.datetime_ranges(
+                    "market_open", "break_start",
+                    interval=period, closed=closed,
+                ).alias("morning"),
+                pl.datetime_ranges(
+                    "break_end", "market_close",
+                    interval=period, closed=closed,
+                ).alias("afternoon"),
+            )
+            .with_columns(
+                pl.col("morning").list.concat(pl.col("afternoon")).alias("datetime")
+            )
+            .select("datetime")
+            .explode("datetime")
+            .to_series()
+        )

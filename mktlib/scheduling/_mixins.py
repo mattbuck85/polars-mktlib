@@ -190,13 +190,17 @@ class TradingIndexMixin:
         ``"none"`` = ``(open, close)``.
         """
         sched = self.schedule(start, end)
-        parts: list[pl.Series] = []
-        for row in sched.iter_rows(named=True):
-            ts = pl.datetime_range(
-                row["market_open"], row["market_close"],
-                interval=period, eager=True, closed=closed,
-            )
-            parts.append(ts)
-        if not parts:
+        if sched.is_empty():
             return pl.Series("datetime", [], dtype=pl.Datetime("us", self.timezone))
-        return pl.concat(parts).alias("datetime")
+        return (
+            sched
+            .with_columns(
+                pl.datetime_ranges(
+                    "market_open", "market_close",
+                    interval=period, closed=closed,
+                ).alias("datetime")
+            )
+            .select("datetime")
+            .explode("datetime")
+            .to_series()
+        )
