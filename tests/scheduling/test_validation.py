@@ -165,3 +165,10 @@ class TestHKEXValidation(ExchangeValidationBase):
     EC_NAME = "XHKG"
     VALID_DAYS_YEARS = range(2007, 2027)
     EARLY_CLOSE_YEARS = range(2014, 2027)
+
+
+class TestFXValidation(ExchangeValidationBase):
+    MKTLIB_NAME = "CMES"
+    EC_NAME = "24/5"
+    VALID_DAYS_YEARS = range(2007, 2027)
+    EARLY_CLOSE_YEARS = range(2014, 2027)

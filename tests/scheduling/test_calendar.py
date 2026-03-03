@@ -1,9 +1,74 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import polars as pl
+
+
+class TestFXCalendar:
+    """FX (24/5) calendar: every weekday is a session, no holidays."""
+
+    def test_every_weekday_is_session(self, fx):
+        """All weekdays in a week are sessions."""
+        days = fx.valid_days("2024-01-08", "2024-01-12")  # Mon-Fri
+        assert len(days) == 5
+
+    def test_no_holidays(self, fx):
+        """Christmas and New Year's are regular sessions for FX."""
+        assert fx.is_session(date(2024, 12, 25)) is True  # Christmas (Wed)
+        assert fx.is_session(date(2025, 1, 1)) is True  # New Year's (Wed)
+
+    def test_weekends_excluded(self, fx):
+        assert fx.is_session(date(2024, 1, 6)) is False  # Saturday
+        assert fx.is_session(date(2024, 1, 7)) is False  # Sunday
+
+    def test_open_offset_monday_opens_sunday(self, fx):
+        """Monday session opens Sunday 17:00 ET via open_offset=-1."""
+        sched = fx.get_schedule(date(2024, 1, 8))  # Monday
+        assert sched is not None
+        assert sched.market_open.weekday() == 6  # Sunday
+        assert sched.market_open.hour == 17
+        assert sched.market_open.minute == 0
+
+    def test_24h_session(self, fx):
+        """Open and close are both 17:00, spanning 24 hours across days."""
+        sched = fx.get_schedule(date(2024, 1, 9))  # Tuesday
+        assert sched is not None
+        assert sched.market_open.hour == 17
+        assert sched.market_close.hour == 17
+        # Open is previous day (Monday), close is Tuesday
+        assert sched.market_open.day == 8
+        assert sched.market_close.day == 9
+
+    def test_is_open_on_minute_overnight(self, fx):
+        """is_open_on_minute works for overnight sessions."""
+        tz = ZoneInfo("America/New_York")
+        # Monday 2024-01-08 session opens Sunday 17:00
+        dt_open = datetime(2024, 1, 7, 17, 0, tzinfo=tz)
+        assert fx.is_open_on_minute(dt_open) is True
+        # Still open Monday morning
+        dt_morning = datetime(2024, 1, 8, 10, 0, tzinfo=tz)
+        assert fx.is_open_on_minute(dt_morning) is True
+
+    def test_full_year_all_weekdays(self, fx):
+        """Full year should have every weekday as a session."""
+        days = fx.valid_days("2024-01-01", "2024-12-31")
+        # Every weekday in 2024 (leap year, 366 days)
+        expected = sum(
+            1 for d in (date(2024, 1, 1) + timedelta(days=i) for i in range(366))
+            if d.weekday() < 5
+        )
+        assert len(days) == expected
+
+    def test_aliases(self):
+        """FX calendar is accessible via all registered aliases."""
+        from mktlib.scheduling import get_calendar
+
+        fx1 = get_calendar("CMES")
+        fx2 = get_calendar("CME-FX")
+        fx3 = get_calendar("FX")
+        assert fx1.name == fx2.name == fx3.name == "CMES"
 
 
 class TestValidDays:
@@ -34,7 +99,7 @@ class TestValidDays:
 class TestSchedule:
     def test_columns(self, nyse):
         df = nyse.schedule("2024-01-02", "2024-01-05")
-        assert set(df.columns) == {"date", "market_open", "market_close", "break_start", "break_end"}
+        assert set(df.columns) == {"date", "market_open", "market_close"}
 
     def test_open_close_times(self, nyse):
         df = nyse.schedule("2024-01-02", "2024-01-02")

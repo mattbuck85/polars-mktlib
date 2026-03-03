@@ -157,15 +157,11 @@ class TestNoBreakExchange:
     def cal(self):
         return get_calendar("XNYS")
 
-    def test_schedule_break_columns_null(self, cal):
-        """NYSE schedule has break columns but all null."""
+    def test_schedule_no_break_columns(self, cal):
+        """NYSE schedule does not have break columns."""
         sched = cal.schedule("2024-01-02", "2024-01-02")
-        assert "break_start" in sched.columns
-        assert "break_end" in sched.columns
-
-        row = sched.row(0, named=True)
-        assert row["break_start"] is None
-        assert row["break_end"] is None
+        assert "break_start" not in sched.columns
+        assert "break_end" not in sched.columns
 
     def test_get_schedule_break_fields_none(self, cal):
         """NYSE get_schedule returns None for break fields."""
