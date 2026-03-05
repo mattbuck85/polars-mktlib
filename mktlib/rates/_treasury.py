@@ -49,7 +49,37 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
     url = _BASE_URL.format(year=year)
     try:
         with urlopen(url, timeout=30) as resp:  # noqa: S310
+            if resp.status != 200:
+                raise ConnectionError(f"HTTP {resp.status}")  # noqa: TRY301
             data = resp.read()
+
+        root = ET.fromstring(data)  # noqa: S314
+        rows: list[tuple[date, dict[str, float]]] = []
+
+        for entry in root.findall("atom:entry", _NS):
+            props = entry.find("atom:content/m:properties", _NS)
+            if props is None:
+                continue
+
+            date_el = props.find("d:NEW_DATE", _NS)
+            if date_el is None or not date_el.text:
+                continue
+
+            row_date = datetime.fromisoformat(date_el.text).date()
+            rates: dict[str, float] = {}
+
+            for child in props:
+                tag = child.tag.split("}")[-1]  # strip namespace
+                if tag.startswith("BC_") and child.text:
+                    try:
+                        rates[tag] = float(child.text) / 100.0
+                    except ValueError:
+                        continue
+
+            if rates:
+                rows.append((row_date, rates))
+
+        rows.sort(key=lambda x: x[0])
     except Exception as exc:
         stale = _disk_cache.load_year(year, ignore_stale=True)
         bundled = _bundled.load_year(year)
@@ -63,38 +93,13 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
             _disk_cache.save_year(year, fallback)
             _cache[year] = fallback
             return fallback
-        raise ConnectionError(
+        raise type(exc)(
             f"Failed to fetch Treasury yield data for {year} from {url}: {exc}"
         ) from exc
 
-    root = ET.fromstring(data)  # noqa: S314
-    rows: list[tuple[date, dict[str, float]]] = []
-
-    for entry in root.findall("atom:entry", _NS):
-        props = entry.find("atom:content/m:properties", _NS)
-        if props is None:
-            continue
-
-        date_el = props.find("d:NEW_DATE", _NS)
-        if date_el is None or not date_el.text:
-            continue
-
-        row_date = datetime.fromisoformat(date_el.text).date()
-        rates: dict[str, float] = {}
-
-        for child in props:
-            tag = child.tag.split("}")[-1]  # strip namespace
-            if tag.startswith("BC_") and child.text:
-                try:
-                    rates[tag] = float(child.text) / 100.0
-                except ValueError:
-                    continue
-
-        if rates:
-            rows.append((row_date, rates))
-
-    rows.sort(key=lambda x: x[0])
-    _disk_cache.save_year(year, rows)
+    existing = _disk_cache.load_year(year, ignore_stale=True)
+    if existing is None or len(rows) >= len(existing):
+        _disk_cache.save_year(year, rows)
     _cache[year] = rows
     return rows
 

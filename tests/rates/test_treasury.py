@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import warnings
+import xml.etree.ElementTree as ET
 from datetime import date
 from unittest.mock import patch
 
@@ -125,6 +126,7 @@ def _mock_urlopen(xml_by_year: dict[int, str]):
         for year, xml in xml_by_year.items():
             if str(year) in url:
                 cm = io.BytesIO(xml.encode())
+                cm.status = 200  # type: ignore[attr-defined]
                 cm.__enter__ = lambda s: s  # type: ignore[attr-defined]
                 cm.__exit__ = lambda s, *a: None  # type: ignore[attr-defined]
                 return cm
@@ -222,7 +224,7 @@ class TestFetchAverageRate:
         assert avg == 0.0
 
     def test_network_error_no_bundled(self):
-        """Network failure with no bundled data raises ConnectionError."""
+        """Network failure with no bundled data re-raises original exception."""
         def _fail(url, *, timeout=30):
             raise OSError("network down")
 
@@ -230,7 +232,7 @@ class TestFetchAverageRate:
             patch("mktlib.rates._treasury.urlopen", _fail),
             patch("mktlib.rates._treasury._bundled.load_year", return_value=[]),
         ):
-            with pytest.raises(ConnectionError, match="Failed to fetch"):
+            with pytest.raises(OSError, match="Failed to fetch"):
                 fetch_average_rate(date(2024, 1, 1), date(2024, 1, 31))
 
 
@@ -755,3 +757,155 @@ class TestGetTreasurySpread:
 
         # Jun 3 only has 3M, Jun 4 only has 10Y — no day has both
         assert df.shape[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Robustness / hardening tests
+# ---------------------------------------------------------------------------
+
+_TRUNCATED_XML = """\
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices">
+  <entry>
+    <content type="application/xml">
+      <m:properties>
+        <d:NEW_DATE>2024-01-02T00:00:00</d:NEW_DATE>
+        <d:BC_3MONTH>5.40</d:BC_3MONTH>
+"""
+
+
+class TestFetchYearHardening:
+    def test_truncated_xml_falls_back_to_stale_cache(self):
+        """ParseError from truncated XML triggers fallback to stale disk cache."""
+        stale = [(date(_THIS_YEAR, 1, 2), {"BC_3MONTH": 0.054})]
+
+        def _urlopen_truncated(url, *, timeout=30):
+            cm = io.BytesIO(_TRUNCATED_XML.encode())
+            cm.status = 200  # type: ignore[attr-defined]
+            cm.__enter__ = lambda s: s  # type: ignore[attr-defined]
+            cm.__exit__ = lambda s, *a: None  # type: ignore[attr-defined]
+            return cm
+
+        with (
+            patch("mktlib.rates._treasury.urlopen", _urlopen_truncated),
+            patch(
+                "mktlib.rates._treasury._disk_cache.load_year",
+                side_effect=lambda year, **kw: stale if kw.get("ignore_stale") else None,
+            ),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=[]),
+            warnings.catch_warnings(record=True) as w,
+        ):
+            warnings.simplefilter("always")
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        assert len(rates) == 1
+        assert len(w) == 1
+        assert "disk cache" in str(w[0].message).lower()
+
+    def test_truncated_xml_falls_back_to_bundled(self):
+        """ParseError with no disk cache falls back to bundled data."""
+        def _urlopen_truncated(url, *, timeout=30):
+            cm = io.BytesIO(_TRUNCATED_XML.encode())
+            cm.status = 200  # type: ignore[attr-defined]
+            cm.__enter__ = lambda s: s  # type: ignore[attr-defined]
+            cm.__exit__ = lambda s, *a: None  # type: ignore[attr-defined]
+            return cm
+
+        with (
+            patch("mktlib.rates._treasury.urlopen", _urlopen_truncated),
+            patch("mktlib.rates._treasury._disk_cache.load_year", return_value=None),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=_BUNDLED_THIS_YEAR),
+            warnings.catch_warnings(record=True) as w,
+        ):
+            warnings.simplefilter("always")
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        assert len(rates) == 2
+        assert len(w) == 1
+        assert "bundled" in str(w[0].message).lower()
+
+    def test_truncated_xml_no_fallback_raises(self):
+        """ParseError with no fallback data re-raises as ParseError."""
+        def _urlopen_truncated(url, *, timeout=30):
+            cm = io.BytesIO(_TRUNCATED_XML.encode())
+            cm.status = 200  # type: ignore[attr-defined]
+            cm.__enter__ = lambda s: s  # type: ignore[attr-defined]
+            cm.__exit__ = lambda s, *a: None  # type: ignore[attr-defined]
+            return cm
+
+        with (
+            patch("mktlib.rates._treasury.urlopen", _urlopen_truncated),
+            patch("mktlib.rates._treasury._disk_cache.load_year", return_value=None),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=[]),
+        ):
+            with pytest.raises(ET.ParseError, match="Failed to fetch"):
+                fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+    def test_http_error_falls_back(self):
+        """Non-200 HTTP status triggers the fallback path."""
+        def _urlopen_500(url, *, timeout=30):
+            cm = io.BytesIO(b"<html>Internal Server Error</html>")
+            cm.status = 500  # type: ignore[attr-defined]
+            cm.__enter__ = lambda s: s  # type: ignore[attr-defined]
+            cm.__exit__ = lambda s, *a: None  # type: ignore[attr-defined]
+            return cm
+
+        with (
+            patch("mktlib.rates._treasury.urlopen", _urlopen_500),
+            patch("mktlib.rates._treasury._bundled.load_year", return_value=_BUNDLED_THIS_YEAR),
+            warnings.catch_warnings(record=True) as w,
+        ):
+            warnings.simplefilter("always")
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        assert len(rates) == 2
+        assert len(w) == 1
+
+    def test_partial_fetch_does_not_overwrite_fuller_cache(self):
+        """A fetch returning fewer rows than existing disk cache does not overwrite it."""
+        fuller_cache = [
+            (date(_THIS_YEAR, 1, 2), {"BC_3MONTH": 0.054}),
+            (date(_THIS_YEAR, 1, 3), {"BC_3MONTH": 0.0538}),
+            (date(_THIS_YEAR, 1, 4), {"BC_3MONTH": 0.0536}),
+        ]
+
+        # XML with only 1 entry
+        _XML_PARTIAL = _XML_2025.replace("2025", str(_THIS_YEAR))
+        # _XML_2025 has 1 entry
+
+        save_mock = patch("mktlib.rates._treasury._disk_cache.save_year")
+        with (
+            patch("mktlib.rates._treasury.urlopen", _mock_urlopen({_THIS_YEAR: _XML_PARTIAL})),
+            patch(
+                "mktlib.rates._treasury._disk_cache.load_year",
+                side_effect=lambda year, **kw: fuller_cache if kw.get("ignore_stale") else None,
+            ),
+            save_mock as mock_save,
+        ):
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        # Function returns the new (partial) data for in-memory use
+        assert len(rates) == 1
+        # save_year should NOT have been called — partial data is smaller
+        mock_save.assert_not_called()
+
+    def test_equal_or_larger_fetch_overwrites_cache(self):
+        """A fetch with >= rows than existing disk cache does overwrite it."""
+        existing_cache = [
+            (date(_THIS_YEAR, 1, 2), {"BC_3MONTH": 0.054}),
+        ]
+
+        with (
+            patch("mktlib.rates._treasury.urlopen", _mock_urlopen({_THIS_YEAR: _XML_THIS_YEAR})),
+            patch(
+                "mktlib.rates._treasury._disk_cache.load_year",
+                side_effect=lambda year, **kw: existing_cache if kw.get("ignore_stale") else None,
+            ),
+            patch("mktlib.rates._treasury._disk_cache.save_year") as mock_save,
+        ):
+            rates = fetch_daily_rates(date(_THIS_YEAR, 1, 1), date(_THIS_YEAR, 1, 31))
+
+        assert len(rates) == 3
+        mock_save.assert_called_once()
