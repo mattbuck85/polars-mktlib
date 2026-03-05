@@ -8,11 +8,21 @@ from unittest.mock import patch
 
 import pytest
 
-from mktlib.rates import TreasuryRate, get_risk_free_rate
+from mktlib.rates import (
+    MeanMethod,
+    TreasuryRate,
+    get_mean_treasury_rate,
+    get_risk_free_rate,
+    get_treasury_rates,
+    get_treasury_spread,
+)
 from mktlib.rates._treasury import (
     clear_cache,
     fetch_average_rate,
     fetch_daily_rates,
+    fetch_daily_rates_multi,
+    fetch_mean_rate,
+    fetch_spread,
 )
 
 # Save real disk cache functions before any fixture patches them
@@ -36,6 +46,7 @@ _XML_2024 = """\
         <d:NEW_DATE>2024-01-02T00:00:00</d:NEW_DATE>
         <d:BC_3MONTH>5.40</d:BC_3MONTH>
         <d:BC_6MONTH>5.26</d:BC_6MONTH>
+        <d:BC_2YEAR>4.32</d:BC_2YEAR>
         <d:BC_10YEAR>3.88</d:BC_10YEAR>
       </m:properties>
     </content>
@@ -46,6 +57,7 @@ _XML_2024 = """\
         <d:NEW_DATE>2024-01-03T00:00:00</d:NEW_DATE>
         <d:BC_3MONTH>5.38</d:BC_3MONTH>
         <d:BC_6MONTH>5.24</d:BC_6MONTH>
+        <d:BC_2YEAR>4.34</d:BC_2YEAR>
         <d:BC_10YEAR>3.92</d:BC_10YEAR>
       </m:properties>
     </content>
@@ -55,6 +67,7 @@ _XML_2024 = """\
       <m:properties>
         <d:NEW_DATE>2024-01-04T00:00:00</d:NEW_DATE>
         <d:BC_3MONTH>5.36</d:BC_3MONTH>
+        <d:BC_2YEAR>4.36</d:BC_2YEAR>
         <d:BC_10YEAR>3.95</d:BC_10YEAR>
       </m:properties>
     </content>
@@ -243,6 +256,93 @@ class TestGetRiskFreeRate:
         with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
             rate = get_risk_free_rate(
                 "2024-01-02", "2024-01-04", instrument=TreasuryRate.TEN_YEAR
+            )
+
+        expected = (0.0388 + 0.0392 + 0.0395) / 3
+        assert rate == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# fetch_mean_rate tests
+# ---------------------------------------------------------------------------
+
+
+class TestFetchMeanRate:
+    def test_arithmetic_matches_fetch_average_rate(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            arith = fetch_mean_rate(date(2024, 1, 1), date(2024, 1, 31), method="arithmetic")
+            avg = fetch_average_rate(date(2024, 1, 1), date(2024, 1, 31))
+
+        assert arith == pytest.approx(avg)
+
+    def test_geometric_hand_calculated(self):
+        """Geometric mean of 5.40%, 5.38%, 5.36% (as decimals)."""
+        import math
+
+        r1, r2, r3 = 0.054, 0.0538, 0.0536
+        expected = math.exp((math.log(1 + r1) + math.log(1 + r2) + math.log(1 + r3)) / 3) - 1
+
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            geo = fetch_mean_rate(date(2024, 1, 1), date(2024, 1, 31), method="geometric")
+
+        assert geo == pytest.approx(expected)
+
+    def test_geometric_less_than_arithmetic(self):
+        """AM-GM inequality: geometric mean < arithmetic mean for non-uniform rates."""
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            arith = fetch_mean_rate(date(2024, 1, 1), date(2024, 1, 31), method="arithmetic")
+            geo = fetch_mean_rate(date(2024, 1, 1), date(2024, 1, 31), method="geometric")
+
+        assert geo < arith
+
+    def test_empty_range_arithmetic(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            assert fetch_mean_rate(date(2024, 7, 1), date(2024, 7, 31), method="arithmetic") == 0.0
+
+    def test_empty_range_geometric(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            assert fetch_mean_rate(date(2024, 7, 1), date(2024, 7, 31), method="geometric") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_mean_treasury_rate public API tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetMeanTreasuryRate:
+    def test_arithmetic_enum(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rate = get_mean_treasury_rate(
+                date(2024, 1, 1), date(2024, 1, 31), method=MeanMethod.ARITHMETIC,
+            )
+
+        expected = (0.054 + 0.0538 + 0.0536) / 3
+        assert rate == pytest.approx(expected)
+
+    def test_geometric_enum(self):
+        import math
+
+        r1, r2, r3 = 0.054, 0.0538, 0.0536
+        expected = math.exp((math.log(1 + r1) + math.log(1 + r2) + math.log(1 + r3)) / 3) - 1
+
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rate = get_mean_treasury_rate(
+                date(2024, 1, 1), date(2024, 1, 31), method=MeanMethod.GEOMETRIC,
+            )
+
+        assert rate == pytest.approx(expected)
+
+    def test_string_dates(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rate = get_mean_treasury_rate("2024-01-01", "2024-01-31")
+
+        expected = (0.054 + 0.0538 + 0.0536) / 3
+        assert rate == pytest.approx(expected)
+
+    def test_instrument_enum(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rate = get_mean_treasury_rate(
+                "2024-01-02", "2024-01-04", instrument=TreasuryRate.TEN_YEAR,
             )
 
         expected = (0.0388 + 0.0392 + 0.0395) / 3
@@ -492,3 +592,166 @@ class TestBundledDiskSeed:
         # Bundled should not be consulted before network for current year
         mock_bundled.assert_not_called()
         assert len(rates) == 3
+
+
+# ---------------------------------------------------------------------------
+# TreasuryRate enum tests
+# ---------------------------------------------------------------------------
+
+
+class TestTreasuryRateEnum:
+    def test_all_14_members(self):
+        assert len(TreasuryRate) == 14
+
+    def test_values_match_disk_cache_fields(self):
+        from mktlib.rates._disk_cache import _FIELDS
+
+        enum_values = sorted(m.value for m in TreasuryRate)
+        assert enum_values == sorted(_FIELDS)
+
+    def test_original_members_unchanged(self):
+        """The 7 original members keep their names and values."""
+        assert TreasuryRate.THREE_MONTH == "BC_3MONTH"
+        assert TreasuryRate.SIX_MONTH == "BC_6MONTH"
+        assert TreasuryRate.ONE_YEAR == "BC_1YEAR"
+        assert TreasuryRate.TWO_YEAR == "BC_2YEAR"
+        assert TreasuryRate.FIVE_YEAR == "BC_5YEAR"
+        assert TreasuryRate.TEN_YEAR == "BC_10YEAR"
+        assert TreasuryRate.THIRTY_YEAR == "BC_30YEAR"
+
+
+# ---------------------------------------------------------------------------
+# fetch_daily_rates_multi tests
+# ---------------------------------------------------------------------------
+
+
+class TestFetchDailyRatesMulti:
+    def test_filter_by_instrument_list(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rows = fetch_daily_rates_multi(
+                date(2024, 1, 1), date(2024, 1, 31), ["BC_3MONTH", "BC_10YEAR"]
+            )
+
+        assert len(rows) == 3
+        for _, rates in rows:
+            assert set(rates.keys()) <= {"BC_3MONTH", "BC_10YEAR"}
+
+    def test_none_returns_all_fields(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rows = fetch_daily_rates_multi(date(2024, 1, 1), date(2024, 1, 31), None)
+
+        assert len(rows) == 3
+        # First entry has 4 fields (3MONTH, 6MONTH, 2YEAR, 10YEAR)
+        assert len(rows[0][1]) == 4
+
+    def test_date_range_filtering(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rows = fetch_daily_rates_multi(date(2024, 1, 3), date(2024, 1, 3))
+
+        assert len(rows) == 1
+        assert rows[0][0] == date(2024, 1, 3)
+
+    def test_skips_days_without_requested_instruments(self):
+        """Entry on Jan 4 has no BC_6MONTH — should still appear if it has BC_3MONTH."""
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            rows = fetch_daily_rates_multi(
+                date(2024, 1, 1), date(2024, 1, 31), ["BC_6MONTH"]
+            )
+
+        # Only Jan 2 and Jan 3 have BC_6MONTH
+        assert len(rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_treasury_rates tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetTreasuryRates:
+    def test_single_instrument(self):
+        import polars as pl
+
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            df = get_treasury_rates(date(2024, 1, 1), date(2024, 1, 31), TreasuryRate.THREE_MONTH)
+
+        assert df.columns == ["date", "rate"]
+        assert df.shape == (3, 2)
+        assert df.dtypes == [pl.Date, pl.Float64]
+        assert df["rate"][0] == pytest.approx(0.054)
+
+    def test_multi_instrument(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            df = get_treasury_rates(
+                date(2024, 1, 1), date(2024, 1, 31),
+                [TreasuryRate.THREE_MONTH, TreasuryRate.TEN_YEAR],
+            )
+
+        assert "date" in df.columns
+        assert "three_month" in df.columns
+        assert "ten_year" in df.columns
+        assert df.shape[0] == 3
+
+    def test_none_returns_all_columns(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            df = get_treasury_rates(date(2024, 1, 1), date(2024, 1, 31), None)
+
+        # 1 date column + 14 instrument columns
+        assert len(df.columns) == 15
+        assert df.columns[0] == "date"
+
+    def test_string_dates(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            df = get_treasury_rates("2024-01-01", "2024-01-31", TreasuryRate.TEN_YEAR)
+
+        assert df.shape == (3, 2)
+        assert df["rate"][0] == pytest.approx(0.0388)
+
+    def test_empty_range(self):
+        import polars as pl
+
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            df = get_treasury_rates(date(2024, 7, 1), date(2024, 7, 31), TreasuryRate.THREE_MONTH)
+
+        assert df.shape == (0, 2)
+        assert df.dtypes == [pl.Date, pl.Float64]
+
+
+# ---------------------------------------------------------------------------
+# get_treasury_spread tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetTreasurySpread:
+    def test_default_10y_2y(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            df = get_treasury_spread(date(2024, 1, 1), date(2024, 1, 31))
+
+        assert df.columns == ["date", "spread"]
+        assert df.shape[0] == 3
+        # Jan 2: 10Y=0.0388, 2Y=0.0432 → spread = -0.0044
+        assert df["spread"][0] == pytest.approx(0.0388 - 0.0432)
+
+    def test_custom_long_short(self):
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})):
+            df = get_treasury_spread(
+                date(2024, 1, 1), date(2024, 1, 31),
+                long=TreasuryRate.SIX_MONTH,
+                short=TreasuryRate.THREE_MONTH,
+            )
+
+        # Jan 4 has no BC_6MONTH, so only 2 rows
+        assert df.shape[0] == 2
+        # Jan 2: 6M=0.0526, 3M=0.054 → spread = -0.0014
+        assert df["spread"][0] == pytest.approx(0.0526 - 0.054)
+
+    def test_missing_one_instrument_excluded(self):
+        """Days where one instrument is missing should be excluded."""
+        with patch("mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_MISSING})):
+            df = get_treasury_spread(
+                date(2024, 6, 1), date(2024, 6, 30),
+                long=TreasuryRate.TEN_YEAR,
+                short=TreasuryRate.THREE_MONTH,
+            )
+
+        # Jun 3 only has 3M, Jun 4 only has 10Y — no day has both
+        assert df.shape[0] == 0

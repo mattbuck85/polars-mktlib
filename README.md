@@ -220,27 +220,56 @@ All date parameters accept `date` objects or ISO-format strings (`"2024-01-02"`)
 ### Rates Quick Start
 
 ```python
-from mktlib.rates import get_risk_free_rate, TreasuryRate
+from mktlib.rates import (
+    TreasuryRate, MeanMethod,
+    get_risk_free_rate, get_mean_treasury_rate,
+    get_treasury_rates, get_treasury_spread,
+)
 
 # Average 3-month T-bill rate for 2024 (default instrument)
 rf = get_risk_free_rate("2024-01-01", "2024-12-31")
 # Returns 0.0523 (i.e. 5.23%)
 
-# Use a different instrument
-rf_10y = get_risk_free_rate("2024-01-01", "2024-12-31", TreasuryRate.TEN_YEAR)
+# Geometric mean of 10-year yield
+geo = get_mean_treasury_rate("2024-01-01", "2024-12-31",
+                             TreasuryRate.TEN_YEAR, MeanMethod.GEOMETRIC)
+
+# Daily rates as a Polars DataFrame
+df = get_treasury_rates("2024-01-01", "2024-03-31", TreasuryRate.TEN_YEAR)
+# shape: (N, 2) — columns: date, rate
+
+# Multiple instruments → wide DataFrame
+df = get_treasury_rates("2024-01-01", "2024-03-31",
+                        [TreasuryRate.TWO_YEAR, TreasuryRate.TEN_YEAR])
+# columns: date, two_year, ten_year
+
+# All 14 instruments
+df = get_treasury_rates("2024-01-01", "2024-03-31")
+# columns: date, one_month, two_month, ..., thirty_year_display
+
+# Yield curve spread (10Y - 2Y by default)
+spread = get_treasury_spread("2024-01-01", "2024-03-31")
+# columns: date, spread
 ```
 
 ### Available Instruments
 
 | Enum Member | Treasury Field | Description |
 |-|-|-|
+| `TreasuryRate.ONE_MONTH` | `BC_1MONTH` | 1-month T-bill |
+| `TreasuryRate.TWO_MONTH` | `BC_2MONTH` | 2-month T-bill |
 | `TreasuryRate.THREE_MONTH` | `BC_3MONTH` | 3-month T-bill (default, standard risk-free proxy) |
+| `TreasuryRate.FOUR_MONTH` | `BC_4MONTH` | 4-month T-bill |
 | `TreasuryRate.SIX_MONTH` | `BC_6MONTH` | 6-month T-bill |
 | `TreasuryRate.ONE_YEAR` | `BC_1YEAR` | 1-year Treasury |
 | `TreasuryRate.TWO_YEAR` | `BC_2YEAR` | 2-year Treasury |
+| `TreasuryRate.THREE_YEAR` | `BC_3YEAR` | 3-year Treasury |
 | `TreasuryRate.FIVE_YEAR` | `BC_5YEAR` | 5-year Treasury |
+| `TreasuryRate.SEVEN_YEAR` | `BC_7YEAR` | 7-year Treasury |
 | `TreasuryRate.TEN_YEAR` | `BC_10YEAR` | 10-year Treasury |
+| `TreasuryRate.TWENTY_YEAR` | `BC_20YEAR` | 20-year Treasury |
 | `TreasuryRate.THIRTY_YEAR` | `BC_30YEAR` | 30-year Treasury |
+| `TreasuryRate.THIRTY_YEAR_DISPLAY` | `BC_30YEARDISPLAY` | 30-year Treasury (display) |
 
 ### Caching
 
@@ -260,9 +289,34 @@ def get_risk_free_rate(
     end: date | str,
     instrument: TreasuryRate = TreasuryRate.THREE_MONTH,
 ) -> float: ...
+
+def get_mean_treasury_rate(
+    start: date | str,
+    end: date | str,
+    instrument: TreasuryRate = TreasuryRate.THREE_MONTH,
+    method: MeanMethod = MeanMethod.ARITHMETIC,
+) -> float: ...
+
+def get_treasury_rates(
+    start: date | str,
+    end: date | str,
+    instrument: TreasuryRate | Sequence[TreasuryRate] | None = None,
+) -> pl.DataFrame: ...
+
+def get_treasury_spread(
+    start: date | str,
+    end: date | str,
+    long: TreasuryRate = TreasuryRate.TEN_YEAR,
+    short: TreasuryRate = TreasuryRate.TWO_YEAR,
+) -> pl.DataFrame: ...
 ```
 
-Returns the arithmetic mean of daily Treasury yields as a decimal (e.g. `0.0436` for 4.36%).
+| Function | Returns | Description |
+|-|-|-|
+| `get_risk_free_rate` | `float` | Arithmetic mean of daily yields as a decimal (e.g. `0.0436`) |
+| `get_mean_treasury_rate` | `float` | Mean rate with configurable method (arithmetic or geometric) |
+| `get_treasury_rates` | `pl.DataFrame` | Daily rates — single (`date`, `rate`), multi/all (wide, one col per instrument) |
+| `get_treasury_spread` | `pl.DataFrame` | Daily spread (`date`, `spread`) between two instruments |
 
 ## Reports — Tearsheet Generation
 
