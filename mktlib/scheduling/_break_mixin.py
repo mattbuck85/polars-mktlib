@@ -21,9 +21,15 @@ if TYPE_CHECKING:
         break_end: time
 
         def is_session(self, day: date | str) -> bool: ...
-        def valid_days(self, start: date | str, end: date | str) -> pl.Series: ...
-        def get_schedule(self, day: date | str) -> MarketDailySchedule | None: ...
-        def schedule(self, start: date | str, end: date | str) -> pl.DataFrame: ...
+        def valid_days(
+            self, start: date | str, end: date | str
+        ) -> pl.Series: ...
+        def get_schedule(
+            self, day: date | str
+        ) -> MarketDailySchedule | None: ...
+        def schedule(
+            self, start: date | str, end: date | str
+        ) -> pl.DataFrame: ...
         def next_session(self, day: date | str) -> date: ...
         def is_open_on_minute(self, dt: datetime) -> bool: ...
         def previous_session(self, day: date | str) -> date: ...
@@ -40,22 +46,36 @@ class BreakMixin:
     (just ``object`` for a mixin), not the runtime MRO.
     """
 
-    def schedule(self: _BreakCalendarProtocol, start: date | str, end: date | str) -> pl.DataFrame:
+    def schedule(
+        self: _BreakCalendarProtocol, start: date | str, end: date | str
+    ) -> pl.DataFrame:
         """Base schedule + break_start/break_end columns."""
         df = cast("_BreakCalendarProtocol", super()).schedule(start, end)
 
         return df.with_columns(
-            pl.col("date").dt.combine(self.break_start).dt.replace_time_zone(self.timezone).alias("break_start"),
-            pl.col("date").dt.combine(self.break_end).dt.replace_time_zone(self.timezone).alias("break_end"),
+            pl.col("date")
+            .dt.combine(self.break_start)
+            .dt.replace_time_zone(self.timezone)
+            .alias("break_start"),
+            pl.col("date")
+            .dt.combine(self.break_end)
+            .dt.replace_time_zone(self.timezone)
+            .alias("break_end"),
         )
 
-    def get_schedule(self: _BreakCalendarProtocol, day: date | str) -> MarketDailySchedule | None:
+    def get_schedule(
+        self: _BreakCalendarProtocol, day: date | str
+    ) -> MarketDailySchedule | None:
         """Base schedule + break fields populated."""
         sched = cast("_BreakCalendarProtocol", super()).get_schedule(day)
         if sched is None:
             return None
-        sched.break_start = datetime.combine(sched.date, self.break_start, tzinfo=self.tz)
-        sched.break_end = datetime.combine(sched.date, self.break_end, tzinfo=self.tz)
+        sched.break_start = datetime.combine(
+            sched.date, self.break_start, tzinfo=self.tz
+        )
+        sched.break_end = datetime.combine(
+            sched.date, self.break_end, tzinfo=self.tz
+        )
         return sched
 
     def is_open_on_minute(self: _BreakCalendarProtocol, dt: datetime) -> bool:
@@ -78,21 +98,28 @@ class BreakMixin:
         """Two ranges per day: open->break_start, break_end->close."""
         sched = self.schedule(start, end)
         if sched.is_empty():
-            return pl.Series("datetime", [], dtype=pl.Datetime("us", self.timezone))
+            return pl.Series(
+                "datetime", [], dtype=pl.Datetime("us", self.timezone)
+            )
         return (
-            sched
-            .with_columns(
+            sched.with_columns(
                 pl.datetime_ranges(
-                    "market_open", "break_start",
-                    interval=period, closed=closed,
+                    "market_open",
+                    "break_start",
+                    interval=period,
+                    closed=closed,
                 ).alias("morning"),
                 pl.datetime_ranges(
-                    "break_end", "market_close",
-                    interval=period, closed=closed,
+                    "break_end",
+                    "market_close",
+                    interval=period,
+                    closed=closed,
                 ).alias("afternoon"),
             )
             .with_columns(
-                pl.col("morning").list.concat(pl.col("afternoon")).alias("datetime")
+                pl.col("morning")
+                .list.concat(pl.col("afternoon"))
+                .alias("datetime")
             )
             .select("datetime")
             .explode("datetime")

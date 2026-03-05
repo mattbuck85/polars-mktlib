@@ -1,15 +1,16 @@
 """Treasury.gov daily yield curve XML feed — fetch and parse."""
+
 from __future__ import annotations
 
 import math
 import warnings
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
 from datetime import date, datetime
 from statistics import mean
 from urllib.request import urlopen
 
 from . import _bundled, _disk_cache
+from ._disk_cache import RateRow
 
 _NS = {
     "atom": "http://www.w3.org/2005/Atom",
@@ -23,11 +24,11 @@ _BASE_URL = (
     "&field_tdr_date_value={year}"
 )
 
-# Module-level cache: year -> list of (date, {field: rate_decimal})
-_cache: dict[int, list[tuple[date, dict[str, float]]]] = {}
+# Module-level cache: year -> list of flat rate dicts
+_cache: dict[int, list[RateRow]] = {}
 
 
-def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
+def fetch_year(year: int) -> list[RateRow]:
     """Fetch and parse one year of Treasury yield data. Cached per-year."""
     if year in _cache:
         return _cache[year]
@@ -54,7 +55,7 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
             data = resp.read()
 
         root = ET.fromstring(data)  # noqa: S314
-        rows: list[tuple[date, dict[str, float]]] = []
+        rows: list[RateRow] = []
 
         for entry in root.findall("atom:entry", _NS):
             props = entry.find("atom:content/m:properties", _NS)
@@ -66,7 +67,7 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
                 continue
 
             row_date = datetime.fromisoformat(date_el.text).date()
-            rates: dict[str, float] = {}
+            rates: RateRow = {"date": row_date}
 
             for child in props:
                 tag = child.tag.split("}")[-1]  # strip namespace
@@ -76,10 +77,10 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
                     except ValueError:
                         continue
 
-            if rates:
-                rows.append((row_date, rates))
+            if len(rates) > 1:  # has rate keys beyond "date"
+                rows.append(rates)
 
-        rows.sort(key=lambda x: x[0])
+        rows.sort(key=lambda x: x["date"])  # type: ignore[type-var]
     except Exception as exc:
         stale = _disk_cache.load_year(year, ignore_stale=True)
         bundled = _bundled.load_year(year)
@@ -104,68 +105,19 @@ def _fetch_year(year: int) -> list[tuple[date, dict[str, float]]]:
     return rows
 
 
-def fetch_daily_rates_multi(
+def _daily_rates(
     start: date,
     end: date,
-    instruments: Sequence[str] | None = None,
-) -> list[tuple[date, dict[str, float]]]:
-    """Return daily rate dicts for multiple instruments within [start, end].
-
-    If *instruments* is ``None``, all available fields are included.
-    Days where none of the requested instruments have data are skipped.
-    """
+    instrument: str,
+) -> list[float]:
+    """Collect daily rate values for *instrument* within [start, end]."""
     years = range(start.year, end.year + 1)
-    result: list[tuple[date, dict[str, float]]] = []
-
-    for year in years:
-        if instruments is None:
-            # Fast path: no filtering needed, just date-range slice
-            for row_date, rates in _fetch_year(year):
-                if start <= row_date <= end:
-                    result.append((row_date, rates))
-        else:
-            for row_date, rates in _fetch_year(year):
-                if start <= row_date <= end:
-                    filtered = {k: rates[k] for k in instruments if k in rates}
-                    if filtered:
-                        result.append((row_date, filtered))
-
-    return result
-
-
-def fetch_spread(
-    start: date,
-    end: date,
-    long: str = "BC_10YEAR",
-    short: str = "BC_2YEAR",
-) -> list[tuple[date, float]]:
-    """Return the daily spread between two instruments within [start, end].
-
-    Only includes days where both instruments have data.
-    """
-    raw = fetch_daily_rates_multi(start, end, [long, short])
-    result: list[tuple[date, float]] = []
-    for row_date, rates in raw:
-        if long in rates and short in rates:
-            result.append((row_date, rates[long] - rates[short]))
-    return result
-
-
-def fetch_daily_rates(
-    start: date,
-    end: date,
-    instrument: str = "BC_3MONTH",
-) -> list[tuple[date, float]]:
-    """Return daily rates for *instrument* within [start, end]."""
-    years = range(start.year, end.year + 1)
-    result: list[tuple[date, float]] = []
-
-    for year in years:
-        for row_date, rates in _fetch_year(year):
-            if start <= row_date <= end and instrument in rates:
-                result.append((row_date, rates[instrument]))
-
-    return result
+    return [
+        row[instrument]  # type: ignore[index]
+        for year in years
+        for row in fetch_year(year)
+        if start <= row["date"] <= end and instrument in row  # type: ignore[operator]
+    ]
 
 
 def fetch_average_rate(
@@ -174,10 +126,10 @@ def fetch_average_rate(
     instrument: str = "BC_3MONTH",
 ) -> float:
     """Return the arithmetic mean of daily rates for the period."""
-    daily = fetch_daily_rates(start, end, instrument)
+    daily = _daily_rates(start, end, instrument)
     if not daily:
         return 0.0
-    return mean(r for _, r in daily)
+    return mean(daily)
 
 
 def fetch_mean_rate(
@@ -192,10 +144,9 @@ def fetch_mean_rate(
     ``"geometric"`` — geometric mean of gross returns, converted back to a rate:
     ``exp(mean(log(1 + r))) - 1``.
     """
-    daily = fetch_daily_rates(start, end, instrument)
-    if not daily:
+    rates = _daily_rates(start, end, instrument)
+    if not rates:
         return 0.0
-    rates = [r for _, r in daily]
     if method == "geometric":
         for r in rates:
             if r <= -1.0:

@@ -13,9 +13,12 @@ jinja2 = pytest.importorskip("jinja2")
 from mktlib.reports import html, metrics
 
 
-def _make_returns(n: int = 100, start: dt.date = dt.date(2024, 1, 2)) -> pl.DataFrame:
+def _make_returns(
+    n: int = 100, start: dt.date = dt.date(2024, 1, 2)
+) -> pl.DataFrame:
     """Generate *n* days of small positive returns."""
     import math
+
     dates: list[dt.date] = []
     current = start
     for _ in range(n):
@@ -186,7 +189,13 @@ class TestExtensibility:
 class TestPandasIntegration:
     def test_html_with_pandas_series(self):
         pd = pytest.importorskip("pandas")
-        idx = pd.DatetimeIndex([dt.datetime(2024, 1, i) for i in range(2, 32) if dt.date(2024, 1, i).weekday() < 5])
+        idx = pd.DatetimeIndex(
+            [
+                dt.datetime(2024, 1, i)
+                for i in range(2, 32)
+                if dt.date(2024, 1, i).weekday() < 5
+            ]
+        )
         values = [0.001 * (i % 5 - 2) for i in range(len(idx))]
         s = pd.Series(values, index=idx, name="returns")
         result = html(s, title="Pandas Test")

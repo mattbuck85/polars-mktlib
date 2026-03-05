@@ -47,7 +47,7 @@ pythonVersion = "3.14"
 include = ["mktlib"]
 
 [tool.black]
-line-length = 127
+line-length = 79
 
 [tool.setuptools.package-data]
 "mktlib.reports" = ["templates/*.j2"]

@@ -17,15 +17,12 @@ Fetches daily Treasury yield data from Treasury.gov with 3-tier caching and bund
 
 | Function | Line | Purpose |
 |-|-|-|
-| `_fetch_year(year)` | `:30` | Fetch + parse one year. 3-tier cache: in-memory → disk → bundled (past years) → Treasury.gov XML. Falls back gracefully on network error. Sorts by date and filters empty-rates rows before caching. |
-| `fetch_daily_rates_multi(start, end, instruments)` | `:102` | Daily `(date, {field: rate})` dicts within range. Fast path when `instruments=None`. |
-| `fetch_spread(start, end, long, short)` | `:131` | Daily `(date, spread)` pairs for two instruments |
-| `fetch_daily_rates(start, end, instrument)` | `:149` | Daily `(date, rate)` pairs within range |
-| `fetch_average_rate(start, end, instrument)` | `:166` | Arithmetic mean of daily rates |
-| `fetch_mean_rate(start, end, instrument, method)` | `:178` | Mean of daily rates (arithmetic or geometric) |
-| `clear_cache(*, disk)` | `:203` | Reset in-memory `_cache`; `disk=True` also deletes persistent CSVs |
+| `fetch_year(year)` | `:30` | Fetch + parse one year. 3-tier cache: in-memory → disk → bundled (past years) → Treasury.gov XML. Falls back gracefully on network error. Sorts by date and filters empty-rates rows before caching. |
+| `fetch_average_rate(start, end, instrument)` | `:122` | Arithmetic mean of daily rates |
+| `fetch_mean_rate(start, end, instrument, method)` | `:134` | Mean of daily rates (arithmetic or geometric) |
+| `clear_cache(*, disk)` | `:158` | Reset in-memory `_cache`; `disk=True` also deletes persistent CSVs |
 
-Module-level `_cache: dict[int, list[tuple[date, dict[str, float]]]]` at `:27`.
+Module-level `_cache: dict[int, list[RateRow]]` at `:27`. `RateRow = dict[str, date | float]` imported from `_disk_cache`.
 
 XML namespace constants `_NS` at `:12`, URL template `_BASE_URL` at `:18`.
 
@@ -33,10 +30,12 @@ XML namespace constants `_NS` at `:12`, URL template `_BASE_URL` at `:18`.
 
 Persistent storage at `~/.cache/mktlib/rates/{year}.csv`. 7-day TTL for current-year files; past years never stale.
 
+`type RateRow = dict[str, date | float]` — flat row dict with `"date"` key alongside `BC_*` rate keys. Defined here and imported by `_bundled.py` and `_treasury.py`.
+
 | Function | Line | Purpose |
 |-|-|-|
-| `load_year(year, *, ignore_stale)` | — | Load cached CSV. Returns `None` if missing or stale. `ignore_stale=True` for network-failure fallback. |
-| `save_year(year, rows)` | — | Write CSV (rates as percentages). |
+| `load_year(year, *, ignore_stale)` | — | Load cached CSV → `list[RateRow] \| None`. `ignore_stale=True` for network-failure fallback. |
+| `save_year(year, rows)` | — | Write `list[RateRow]` as CSV (rates as percentages). |
 | `clear()` | — | Delete all cached CSVs. |
 | `_is_stale(path, year)` | — | `True` if current-year file older than 7 days. |
 
@@ -44,7 +43,7 @@ Persistent storage at `~/.cache/mktlib/rates/{year}.csv`. 7-day TTL for current-
 
 | Function | Line | Purpose |
 |-|-|-|
-| `load_year(year)` | — | Load `_data/{year}.csv` via `importlib.resources`. Returns `[]` if missing. |
+| `load_year(year)` | — | Load `_data/{year}.csv` via `importlib.resources`. Returns `list[RateRow]` (empty if missing). |
 
 CSV files in `_data/` store rates as percentages (raw Treasury.gov values). `load_year` divides by 100 at parse time.
 
@@ -53,7 +52,7 @@ Data range: 2006-2026 (~420KB total). Refreshed by `scripts/refresh_treasury_dat
 ## Fallback Flow
 
 ```
-_fetch_year(year)
+fetch_year(year)
   ├─ in-memory cache hit? → return
   ├─ disk cache fresh? → load → cache → return
   ├─ past year + bundled data? → seed disk cache → cache → return

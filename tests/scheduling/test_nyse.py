@@ -151,4 +151,6 @@ class TestNYSETradingDayCount:
     def test_trading_days_in_range(self, nyse, year):
         days = nyse.valid_days(date(year, 1, 1), date(year, 12, 31))
         # NYSE typically has 250-253 trading days per year
-        assert 248 <= len(days) <= 253, f"Year {year}: {len(days)} trading days"
+        assert (
+            248 <= len(days) <= 253
+        ), f"Year {year}: {len(days)} trading days"

@@ -6,7 +6,11 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from mktlib.scheduling._mixins import MinuteQueryMixin, SessionNavigationMixin, TradingIndexMixin
+from mktlib.scheduling._mixins import (
+    MinuteQueryMixin,
+    SessionNavigationMixin,
+    TradingIndexMixin,
+)
 from mktlib.scheduling._types import MarketDailySchedule, parse_date
 from mktlib.scheduling.rules import AdhocClosure, EarlyClose, HolidayRule
 
@@ -16,7 +20,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMixin):
+class ExchangeCalendar(
+    SessionNavigationMixin, MinuteQueryMixin, TradingIndexMixin
+):
     """Polars-native exchange calendar with holiday/early-close support."""
 
     def __init__(
@@ -30,7 +36,9 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         adhoc_closures: list[AdhocClosure] | None = None,
         early_closes: list[EarlyClose] | None = None,
         special_closures_fn: Callable[[date, date], list[date]] | None = None,
-        special_early_closes_fn: Callable[[date, date], dict[date, time]] | None = None,
+        special_early_closes_fn: (
+            Callable[[date, date], dict[date, time]] | None
+        ) = None,
         exclusions: set[date] | None = None,
         open_offset: int = 0,
     ):
@@ -108,18 +116,26 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
             .alias("market_open")
         )
         if ec_map:
-            ec_df = pl.DataFrame({
-                "date": pl.Series(list(ec_map.keys()), dtype=pl.Date),
-                "_ec_time": pl.Series(list(ec_map.values()), dtype=pl.Time),
-            })
+            ec_df = pl.DataFrame(
+                {
+                    "date": pl.Series(list(ec_map.keys()), dtype=pl.Date),
+                    "_ec_time": pl.Series(
+                        list(ec_map.values()), dtype=pl.Time
+                    ),
+                }
+            )
             df = df.join(ec_df, on="date", how="left")
             close_expr = (
                 pl.col("date")
-                .dt.combine(pl.coalesce(pl.col("_ec_time"), pl.lit(self.close_time)))
+                .dt.combine(
+                    pl.coalesce(pl.col("_ec_time"), pl.lit(self.close_time))
+                )
                 .dt.replace_time_zone(self.timezone)
                 .alias("market_close")
             )
-            return df.with_columns(open_expr, close_expr).select("date", "market_open", "market_close")
+            return df.with_columns(open_expr, close_expr).select(
+                "date", "market_open", "market_close"
+            )
 
         close_expr = (
             pl.col("date")
@@ -147,7 +163,9 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
         open_date = d + timedelta(days=self.open_offset)
         return MarketDailySchedule(
             date=d,
-            market_open=datetime.combine(open_date, self.open_time, tzinfo=self.tz),
+            market_open=datetime.combine(
+                open_date, self.open_time, tzinfo=self.tz
+            ),
             market_close=datetime.combine(d, close_t, tzinfo=self.tz),
         )
 
@@ -155,7 +173,9 @@ class ExchangeCalendar(SessionNavigationMixin, MinuteQueryMixin, TradingIndexMix
 class ExchangeCalendarWithBreaks(BreakMixin, ExchangeCalendar):
     """Exchange calendar with lunch break support (e.g. JPX, HKEX)."""
 
-    def __init__(self, name: str, *, break_start: time, break_end: time, **kwargs: Any):
+    def __init__(
+        self, name: str, *, break_start: time, break_end: time, **kwargs: Any
+    ):
         self.break_start = break_start
         self.break_end = break_end
         super().__init__(name, **kwargs)

@@ -18,7 +18,9 @@ from mktlib.reports._stats import (
 from mktlib.reports._types import ReportConfig
 
 
-def _make_returns(values: list[float], start: dt.date = dt.date(2024, 1, 2)) -> pl.DataFrame:
+def _make_returns(
+    values: list[float], start: dt.date = dt.date(2024, 1, 2)
+) -> pl.DataFrame:
     """Build a returns DataFrame with business-day dates."""
     dates: list[dt.date] = []
     current = start
@@ -33,6 +35,7 @@ def _make_returns(values: list[float], start: dt.date = dt.date(2024, 1, 2)) -> 
 # ---------------------------------------------------------------------------
 # Cumulative helpers
 # ---------------------------------------------------------------------------
+
 
 class TestCumulativeReturns:
     def test_compounded(self):
@@ -69,13 +72,16 @@ class TestDrawdownSeries:
 # Grouped returns
 # ---------------------------------------------------------------------------
 
+
 class TestMonthlyReturns:
     def test_groups_by_month(self):
         returns = _make_returns([0.01, 0.02, -0.01], start=dt.date(2024, 1, 2))
         monthly = monthly_returns(returns, compounded=True)
         assert len(monthly) == 1  # All in Jan 2024
         expected = (1.01 * 1.02 * 0.99) - 1
-        assert monthly["monthly_return"][0] == pytest.approx(expected, abs=1e-6)
+        assert monthly["monthly_return"][0] == pytest.approx(
+            expected, abs=1e-6
+        )
 
 
 class TestYearlyReturns:
@@ -90,6 +96,7 @@ class TestYearlyReturns:
 # ---------------------------------------------------------------------------
 # Rolling
 # ---------------------------------------------------------------------------
+
 
 class TestRolling:
     def test_rolling_sharpe_short_series(self):
@@ -114,43 +121,61 @@ class TestRolling:
 # Full metrics computation
 # ---------------------------------------------------------------------------
 
+
 class TestComputeMetrics:
     @pytest.fixture
     def daily_returns(self) -> pl.DataFrame:
         """252 days of returns with slight variation (mostly positive, some negative)."""
         import math
-        return _make_returns([0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+
+        return _make_returns(
+            [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)]
+        )
 
     @pytest.fixture
     def config(self) -> ReportConfig:
         return ReportConfig()
 
-    def test_cumulative_return(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_cumulative_return(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         result = compute_metrics(daily_returns, None, config)
         assert result.cumulative_return > 0  # Net positive returns
 
-    def test_cagr_one_year(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_cagr_one_year(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         result = compute_metrics(daily_returns, None, config)
         # 1 year of data → CAGR ≈ cumulative return
         assert result.cagr == pytest.approx(result.cumulative_return, rel=1e-4)
 
-    def test_sharpe_positive(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_sharpe_positive(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         result = compute_metrics(daily_returns, None, config)
         assert result.sharpe > 0
 
-    def test_sortino_positive(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_sortino_positive(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         result = compute_metrics(daily_returns, None, config)
         assert result.sortino > 0
 
-    def test_max_drawdown_bounded(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_max_drawdown_bounded(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         result = compute_metrics(daily_returns, None, config)
         assert -1.0 <= result.max_drawdown <= 0.0
 
-    def test_win_rate_reasonable(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_win_rate_reasonable(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         result = compute_metrics(daily_returns, None, config)
         assert 0.0 < result.win_rate < 1.0
 
-    def test_benchmark_metrics(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_benchmark_metrics(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         bench = _make_returns([0.0005] * 252)
         result = compute_metrics(daily_returns, bench, config)
         assert result.alpha is not None
@@ -158,13 +183,18 @@ class TestComputeMetrics:
         assert result.r_squared is not None
         assert result.information_ratio is not None
 
-    def test_no_benchmark(self, daily_returns: pl.DataFrame, config: ReportConfig):
+    def test_no_benchmark(
+        self, daily_returns: pl.DataFrame, config: ReportConfig
+    ):
         result = compute_metrics(daily_returns, None, config)
         assert result.alpha is None
         assert result.beta is None
 
     def test_empty_returns(self, config: ReportConfig):
-        empty = pl.DataFrame({"date": [], "return": []}, schema={"date": pl.Date, "return": pl.Float64})
+        empty = pl.DataFrame(
+            {"date": [], "return": []},
+            schema={"date": pl.Date, "return": pl.Float64},
+        )
         result = compute_metrics(empty, None, config)
         assert result.cumulative_return == 0.0
         assert result.sharpe == 0.0
@@ -183,7 +213,18 @@ class TestMetricsWithDrawdowns:
         assert result.avg_drawdown < 0
 
     def test_var_cvar(self):
-        values = [0.02, -0.05, 0.01, -0.03, 0.015, -0.04, 0.005, -0.02, 0.01, -0.01]
+        values = [
+            0.02,
+            -0.05,
+            0.01,
+            -0.03,
+            0.015,
+            -0.04,
+            0.005,
+            -0.02,
+            0.01,
+            -0.01,
+        ]
         returns = _make_returns(values)
         config = ReportConfig()
         result = compute_metrics(returns, None, config)

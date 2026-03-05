@@ -49,7 +49,9 @@ class TestJPXBreaks:
         lunch_start = time(11, 30)
         lunch_end = time(12, 30)
         lunch_times = [t for t in times if lunch_start <= t < lunch_end]
-        assert lunch_times == [], f"Found lunch minutes in trading_index: {lunch_times}"
+        assert (
+            lunch_times == []
+        ), f"Found lunch minutes in trading_index: {lunch_times}"
 
         # Should contain minutes before and after lunch
         assert time(9, 30) in times
@@ -120,7 +122,9 @@ class TestHKEXBreaks:
         lunch_start = time(12, 0)
         lunch_end = time(13, 0)
         lunch_times = [t for t in times if lunch_start <= t < lunch_end]
-        assert lunch_times == [], f"Found lunch minutes in trading_index: {lunch_times}"
+        assert (
+            lunch_times == []
+        ), f"Found lunch minutes in trading_index: {lunch_times}"
 
         # Should contain minutes before and after lunch
         assert time(9, 30) in times

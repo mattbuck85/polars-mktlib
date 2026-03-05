@@ -1,10 +1,13 @@
 """Persistent disk cache for Treasury yield data (~/.cache/mktlib/rates/)."""
+
 from __future__ import annotations
 
 import csv
 import time
 from datetime import date
 from pathlib import Path
+
+type RateRow = dict[str, date | float]
 
 _CACHE_DIR = Path.home() / ".cache" / "mktlib" / "rates"
 _MAX_AGE = 7 * 86400  # 1 week in seconds
@@ -37,7 +40,7 @@ def _is_stale(path: Path, year: int) -> bool:
 
 def load_year(
     year: int, *, ignore_stale: bool = False
-) -> list[tuple[date, dict[str, float]]] | None:
+) -> list[RateRow] | None:
     """Load year data from disk cache. Returns None if missing or stale.
 
     If *ignore_stale* is True, skip the staleness check and return data
@@ -49,38 +52,40 @@ def load_year(
     if not ignore_stale and _is_stale(path, year):
         return None
 
-    rows: list[tuple[date, dict[str, float]]] = []
+    rows: list[RateRow] = []
     text = path.read_text(encoding="utf-8")
     for row in csv.DictReader(text.splitlines()):
         row_date = date.fromisoformat(row["date"])
-        rates: dict[str, float] = {}
+        rates: RateRow = {"date": row_date}
         for key, val in row.items():
             if key.startswith("BC_") and val:
                 try:
                     rates[key] = float(val) / 100.0
                 except ValueError:
                     continue
-        rows.append((row_date, rates))
+        rows.append(rates)
     return rows
 
 
-def save_year(year: int, rows: list[tuple[date, dict[str, float]]]) -> None:
+def save_year(year: int, rows: list[RateRow]) -> None:
     """Write year data to disk cache as CSV (values stored as percentages)."""
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     # Determine which fields actually have data
-    used_fields = [f for f in _FIELDS if any(f in rates for _, rates in rows)]
+    used_fields = [f for f in _FIELDS if any(f in row for row in rows)]
     fieldnames = ["date", *used_fields]
 
     path = _CACHE_DIR / f"{year}.csv"
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(
+            f, fieldnames=fieldnames, extrasaction="ignore"
+        )
         writer.writeheader()
-        for row_date, rates in rows:
-            csv_row: dict[str, str] = {"date": row_date.isoformat()}
+        for row in rows:
+            csv_row: dict[str, str] = {"date": row["date"].isoformat()}  # type: ignore[union-attr]
             for field in used_fields:
-                if field in rates:
-                    csv_row[field] = f"{rates[field] * 100:.2f}"
+                if field in row:
+                    csv_row[field] = f"{row[field] * 100:.2f}"  # type: ignore[str-bytes-safe]
             writer.writerow(csv_row)
 
 

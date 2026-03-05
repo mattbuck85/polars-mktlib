@@ -19,6 +19,7 @@ def _weekend_to_monday(d: date) -> date:
         return d + timedelta(days=1)
     return d
 
+
 # --- Recurring Canadian holidays ---
 
 NEW_YEARS_DAY = HolidayRule(
@@ -74,6 +75,7 @@ CHRISTMAS = HolidayRule(
     observance=_weekend_to_monday,
 )
 
+
 def _boxing_day_observance(d: date) -> date:
     """Canadian Boxing Day: next available weekday after Christmas observance."""
     christmas_observed = _weekend_to_monday(date(d.year, 12, 25))
@@ -128,7 +130,12 @@ def special_closures(start: date, end: date) -> list[date]:
 ADHOC_CLOSURES: list[AdhocClosure] = [
     AdhocClosure(
         name="September 11, 2001",
-        dates=[date(2001, 9, 11), date(2001, 9, 12), date(2001, 9, 13), date(2001, 9, 14)],
+        dates=[
+            date(2001, 9, 11),
+            date(2001, 9, 12),
+            date(2001, 9, 13),
+            date(2001, 9, 14),
+        ],
     ),
 ]
 
@@ -137,7 +144,11 @@ ADHOC_CLOSURES: list[AdhocClosure] = [
 TSX_EARLY_CLOSE_TIME = time(13, 0)
 
 EARLY_CLOSES: list[EarlyClose] = [
-    EarlyClose("Christmas Eve", TSX_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 24)),
+    EarlyClose(
+        "Christmas Eve",
+        TSX_EARLY_CLOSE_TIME,
+        compute_fn=fixed_date_if_weekday(12, 24),
+    ),
 ]
 
 # --- Exchange constants ---

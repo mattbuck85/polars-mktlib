@@ -1,4 +1,5 @@
 """Tests for mktlib.rates._disk_cache — persistent disk cache."""
+
 from __future__ import annotations
 
 import os
@@ -10,9 +11,9 @@ import pytest
 
 from mktlib.rates import _disk_cache
 
-_SAMPLE_ROWS: list[tuple[date, dict[str, float]]] = [
-    (date(2024, 1, 2), {"BC_3MONTH": 0.054, "BC_10YEAR": 0.0388}),
-    (date(2024, 1, 3), {"BC_3MONTH": 0.0538, "BC_10YEAR": 0.0392}),
+_SAMPLE_ROWS: list[dict[str, date | float]] = [
+    {"date": date(2024, 1, 2), "BC_3MONTH": 0.054, "BC_10YEAR": 0.0388},
+    {"date": date(2024, 1, 3), "BC_3MONTH": 0.0538, "BC_10YEAR": 0.0392},
 ]
 
 
@@ -30,11 +31,11 @@ class TestSaveAndLoad:
 
         assert result is not None
         assert len(result) == 2
-        assert result[0][0] == date(2024, 1, 2)
-        assert result[0][1]["BC_3MONTH"] == pytest.approx(0.054)
-        assert result[0][1]["BC_10YEAR"] == pytest.approx(0.0388)
-        assert result[1][0] == date(2024, 1, 3)
-        assert result[1][1]["BC_3MONTH"] == pytest.approx(0.0538)
+        assert result[0]["date"] == date(2024, 1, 2)
+        assert result[0]["BC_3MONTH"] == pytest.approx(0.054)
+        assert result[0]["BC_10YEAR"] == pytest.approx(0.0388)
+        assert result[1]["date"] == date(2024, 1, 3)
+        assert result[1]["BC_3MONTH"] == pytest.approx(0.0538)
 
     def test_missing_file_returns_none(self):
         assert _disk_cache.load_year(1999) is None

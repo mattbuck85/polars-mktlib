@@ -25,7 +25,9 @@ def ornstein_uhlenbeck(
     for i in range(1, n):
         x[i] = x[i - 1] + theta * (mu - x[i - 1]) * dt + noise[i - 1]
 
-    return pl.DataFrame({
-        "step": range(n),
-        "value": x,
-    })
+    return pl.DataFrame(
+        {
+            "step": range(n),
+            "value": x,
+        }
+    )

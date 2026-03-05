@@ -127,15 +127,21 @@ ADHOC_CLOSURES: list[AdhocClosure] = [
 
 # Dates where normally-recurring bank holidays were moved away
 BANK_HOLIDAY_MOVES: dict[date, str] = {
-    date(2012, 5, 28): "Spring Bank Holiday moved to June 4 for Diamond Jubilee",
+    date(
+        2012, 5, 28
+    ): "Spring Bank Holiday moved to June 4 for Diamond Jubilee",
     date(2020, 5, 4): "Early May Bank Holiday moved to May 8 for VE Day 75th",
-    date(2022, 5, 30): "Spring Bank Holiday moved to June 2 for Platinum Jubilee",
+    date(
+        2022, 5, 30
+    ): "Spring Bank Holiday moved to June 2 for Platinum Jubilee",
 }
 
 # Extra closure dates from moved bank holidays (the new dates)
 MOVED_HOLIDAY_CLOSURES: list[AdhocClosure] = [
     AdhocClosure(name="VE Day 75th Anniversary", dates=[date(2020, 5, 8)]),
-    AdhocClosure(name="Spring Bank Holiday (Platinum Jubilee)", dates=[date(2022, 6, 2)]),
+    AdhocClosure(
+        name="Spring Bank Holiday (Platinum Jubilee)", dates=[date(2022, 6, 2)]
+    ),
 ]
 
 
@@ -154,8 +160,16 @@ def special_closures_with_moves(start: date, end: date) -> list[date]:
 LSE_EARLY_CLOSE_TIME = time(12, 30)
 
 EARLY_CLOSES: list[EarlyClose] = [
-    EarlyClose("Christmas Eve", LSE_EARLY_CLOSE_TIME, compute_fn=last_weekday_before(12, 25)),
-    EarlyClose("New Year's Eve", LSE_EARLY_CLOSE_TIME, compute_fn=last_weekday_before(1, 1, year_offset=1)),
+    EarlyClose(
+        "Christmas Eve",
+        LSE_EARLY_CLOSE_TIME,
+        compute_fn=last_weekday_before(12, 25),
+    ),
+    EarlyClose(
+        "New Year's Eve",
+        LSE_EARLY_CLOSE_TIME,
+        compute_fn=last_weekday_before(1, 1, year_offset=1),
+    ),
 ]
 
 # --- Exchange constants ---

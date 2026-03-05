@@ -100,4 +100,6 @@ class TestLSETradingDayCount:
     def test_trading_days_in_range(self, lse, year):
         days = lse.valid_days(date(year, 1, 1), date(year, 12, 31))
         # LSE typically has 250-254 trading days per year
-        assert 248 <= len(days) <= 255, f"Year {year}: {len(days)} trading days"
+        assert (
+            248 <= len(days) <= 255
+        ), f"Year {year}: {len(days)} trading days"

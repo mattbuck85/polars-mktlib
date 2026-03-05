@@ -43,9 +43,11 @@ _FIELDS = [
     "BC_30YEARDISPLAY",
 ]
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "mktlib" / "rates" / "_data"
+_DATA_DIR = (
+    Path(__file__).resolve().parent.parent / "mktlib" / "rates" / "_data"
+)
 
-_START_YEAR = 2006
+_START_YEAR = 2000
 
 
 def _fetch_and_parse(year: int) -> list[dict[str, str]]:
@@ -94,7 +96,9 @@ def _write_csv(year: int, rows: list[dict[str, str]]) -> Path:
 
     path = _DATA_DIR / f"{year}.csv"
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(
+            f, fieldnames=fieldnames, extrasaction="ignore"
+        )
         writer.writeheader()
         writer.writerows(rows)
     return path
