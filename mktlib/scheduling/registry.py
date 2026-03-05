@@ -54,7 +54,9 @@ def get_calendar(name: str) -> ExchangeCalendar:
 
 
 def _good_friday_closures(start: date, end: date) -> list[date]:
-    from mktlib.scheduling.exchanges._us_holidays import us_good_friday_closures
+    from mktlib.scheduling.exchanges._us_holidays import (
+        us_good_friday_closures,
+    )
 
     return us_good_friday_closures(start, end)
 
@@ -359,17 +361,74 @@ def _make_hkex() -> ExchangeCalendar:
 
 # --- Register built-in exchanges ---
 
-_CME_HOLIDAYS_URL = "https://www.cmegroup.com/tools-information/holiday-calendar.html"
+_CME_HOLIDAYS_URL = (
+    "https://www.cmegroup.com/tools-information/holiday-calendar.html"
+)
 
-register_exchange("XNYS", _make_nyse, aliases=["NYSE"], adhoc_url="https://www.nyse.com/regulation/closings")
-register_exchange("XLON", _make_lse, aliases=["LSE", "London"], adhoc_url="https://www.londonstockexchange.com/equities-trading/business-days")
-register_exchange("XPAR", _make_euronext, aliases=["Euronext", "Paris"], adhoc_url="https://www.euronext.com/en/trade/trading-hours-holidays")
-register_exchange("XCME", _make_cme_rth, aliases=["CME", "CME-RTH"], adhoc_url=_CME_HOLIDAYS_URL)
-register_exchange("GLBX", _make_cme_globex, aliases=["Globex", "CME-GLOBEX"], adhoc_url=_CME_HOLIDAYS_URL)
-register_exchange("XNAS", _make_nasdaq, aliases=["NASDAQ"], adhoc_url="https://www.nasdaqtrader.com/Trader.aspx?id=Calendar")
-register_exchange("XCBO", _make_cboe, aliases=["CBOE"], adhoc_url="https://www.cboe.com/about/hours/us-equities/")
-register_exchange("XTSE", _make_tsx, aliases=["TSX", "Toronto"], adhoc_url="https://www.tsx.com/trading/calendars-and-trading-hours/calendar")
-register_exchange("XETR", _make_xetra, aliases=["Xetra", "Frankfurt"], adhoc_url="https://www.xetra.com/xetra-en/trading/trading-calendar-and-trading-hours")
-register_exchange("XTKS", _make_jpx, aliases=["JPX", "Tokyo", "TSE"], adhoc_url="https://www.jpx.co.jp/english/equities/trading/domestic/index.html")
-register_exchange("XHKG", _make_hkex, aliases=["HKEX", "HongKong"], adhoc_url="https://www.hkex.com.hk/Services/Trading-hours-and-டhalves?sc_lang=en")
+register_exchange(
+    "XNYS",
+    _make_nyse,
+    aliases=["NYSE"],
+    adhoc_url="https://www.nyse.com/regulation/closings",
+)
+register_exchange(
+    "XLON",
+    _make_lse,
+    aliases=["LSE", "London"],
+    adhoc_url="https://www.londonstockexchange.com/equities-trading/business-days",
+)
+register_exchange(
+    "XPAR",
+    _make_euronext,
+    aliases=["Euronext", "Paris"],
+    adhoc_url="https://www.euronext.com/en/trade/trading-hours-holidays",
+)
+register_exchange(
+    "XCME",
+    _make_cme_rth,
+    aliases=["CME", "CME-RTH"],
+    adhoc_url=_CME_HOLIDAYS_URL,
+)
+register_exchange(
+    "GLBX",
+    _make_cme_globex,
+    aliases=["Globex", "CME-GLOBEX"],
+    adhoc_url=_CME_HOLIDAYS_URL,
+)
+register_exchange(
+    "XNAS",
+    _make_nasdaq,
+    aliases=["NASDAQ"],
+    adhoc_url="https://www.nasdaqtrader.com/Trader.aspx?id=Calendar",
+)
+register_exchange(
+    "XCBO",
+    _make_cboe,
+    aliases=["CBOE"],
+    adhoc_url="https://www.cboe.com/about/hours/us-equities/",
+)
+register_exchange(
+    "XTSE",
+    _make_tsx,
+    aliases=["TSX", "Toronto"],
+    adhoc_url="https://www.tsx.com/trading/calendars-and-trading-hours/calendar",
+)
+register_exchange(
+    "XETR",
+    _make_xetra,
+    aliases=["Xetra", "Frankfurt"],
+    adhoc_url="https://www.xetra.com/xetra-en/trading/trading-calendar-and-trading-hours",
+)
+register_exchange(
+    "XTKS",
+    _make_jpx,
+    aliases=["JPX", "Tokyo", "TSE"],
+    adhoc_url="https://www.jpx.co.jp/english/equities/trading/domestic/index.html",
+)
+register_exchange(
+    "XHKG",
+    _make_hkex,
+    aliases=["HKEX", "HongKong"],
+    adhoc_url="https://www.hkex.com.hk/Services/Trading-hours-and-டhalves?sc_lang=en",
+)
 register_exchange("CMES", _make_fx, aliases=["CME-FX", "FX"])

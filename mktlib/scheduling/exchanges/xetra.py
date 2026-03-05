@@ -15,7 +15,11 @@ from mktlib.scheduling.rules import (
 NEW_YEARS_DAY = HolidayRule(name="New Year's Day", month=1, day=1)
 LABOUR_DAY = HolidayRule(name="Labour Day", month=5, day=1)
 GERMAN_UNITY_DAY = HolidayRule(
-    name="German Reunification Day", month=10, day=3, start_year=2014, end_year=2021,
+    name="German Reunification Day",
+    month=10,
+    day=3,
+    start_year=2014,
+    end_year=2021,
 )
 CHRISTMAS = HolidayRule(name="Christmas Day", month=12, day=25)
 BOXING_DAY = HolidayRule(name="Boxing Day", month=12, day=26)
@@ -73,7 +77,9 @@ def special_closures(start: date, end: date) -> list[date]:
 ADHOC_CLOSURES: list[AdhocClosure] = [
     # Whit Monday was observed as a one-off in 2007
     AdhocClosure("Whit Monday 2007", dates=[date(2007, 5, 28)]),
-    AdhocClosure("Reformation Day 500th Anniversary", dates=[date(2017, 10, 31)]),
+    AdhocClosure(
+        "Reformation Day 500th Anniversary", dates=[date(2017, 10, 31)]
+    ),
 ]
 
 # --- Early closes ---
@@ -89,7 +95,11 @@ def _last_workday_before_nye(year: int) -> date | None:
 
 
 EARLY_CLOSES: list[EarlyClose] = [
-    EarlyClose("Last Working Day of Year", XETR_EARLY_CLOSE_TIME, compute_fn=_last_workday_before_nye),
+    EarlyClose(
+        "Last Working Day of Year",
+        XETR_EARLY_CLOSE_TIME,
+        compute_fn=_last_workday_before_nye,
+    ),
 ]
 
 # --- Exchange constants ---

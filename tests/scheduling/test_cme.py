@@ -23,16 +23,16 @@ class TestCMERTHSchedule:
     def test_cme_closures(self, cme):
         """CME fully closes only for New Year's, Christmas, and Good Friday."""
         # Full closures
-        assert not cme.is_session(date(2024, 1, 1))   # New Year's
+        assert not cme.is_session(date(2024, 1, 1))  # New Year's
         assert not cme.is_session(date(2024, 12, 25))  # Christmas
-        assert not cme.is_session(date(2024, 3, 29))   # Good Friday
+        assert not cme.is_session(date(2024, 3, 29))  # Good Friday
 
         # These are early-close sessions, NOT closures
-        assert cme.is_session(date(2024, 1, 15))   # MLK Day
-        assert cme.is_session(date(2024, 2, 19))   # Presidents Day
-        assert cme.is_session(date(2024, 5, 27))   # Memorial Day
-        assert cme.is_session(date(2024, 7, 4))    # Independence Day (Thu)
-        assert cme.is_session(date(2024, 9, 2))    # Labor Day
+        assert cme.is_session(date(2024, 1, 15))  # MLK Day
+        assert cme.is_session(date(2024, 2, 19))  # Presidents Day
+        assert cme.is_session(date(2024, 5, 27))  # Memorial Day
+        assert cme.is_session(date(2024, 7, 4))  # Independence Day (Thu)
+        assert cme.is_session(date(2024, 9, 2))  # Labor Day
         assert cme.is_session(date(2024, 11, 28))  # Thanksgiving
 
     def test_early_close_mlk(self, cme):
@@ -79,7 +79,9 @@ class TestCMERTHSchedule:
     @pytest.mark.parametrize("year", [2020, 2021, 2022, 2023, 2024])
     def test_trading_days_in_range(self, cme, year):
         days = cme.valid_days(date(year, 1, 1), date(year, 12, 31))
-        assert 255 <= len(days) <= 260, f"Year {year}: {len(days)} trading days"
+        assert (
+            255 <= len(days) <= 260
+        ), f"Year {year}: {len(days)} trading days"
 
 
 # --- CME Globex ---
@@ -90,8 +92,12 @@ class TestGlobexSchedule:
         """Monday session opens Sunday 6 PM."""
         sched = globex.get_schedule(date(2024, 6, 3))  # Monday
         assert sched is not None
-        assert sched.market_open == datetime(2024, 6, 2, 18, 0, tzinfo=ET)  # Sunday 6 PM
-        assert sched.market_close == datetime(2024, 6, 3, 17, 0, tzinfo=ET)  # Monday 5 PM
+        assert sched.market_open == datetime(
+            2024, 6, 2, 18, 0, tzinfo=ET
+        )  # Sunday 6 PM
+        assert sched.market_close == datetime(
+            2024, 6, 3, 17, 0, tzinfo=ET
+        )  # Monday 5 PM
 
     def test_close_time(self, globex):
         sched = globex.get_schedule(date(2024, 6, 4))  # Tuesday
@@ -105,10 +111,10 @@ class TestGlobexSchedule:
         assert not globex.is_session(date(2024, 3, 29))
 
         # Early-close sessions, not closures
-        assert globex.is_session(date(2024, 1, 15))   # MLK
-        assert globex.is_session(date(2024, 2, 19))   # Presidents Day
-        assert globex.is_session(date(2024, 5, 27))   # Memorial Day
-        assert globex.is_session(date(2024, 9, 2))    # Labor Day
+        assert globex.is_session(date(2024, 1, 15))  # MLK
+        assert globex.is_session(date(2024, 2, 19))  # Presidents Day
+        assert globex.is_session(date(2024, 5, 27))  # Memorial Day
+        assert globex.is_session(date(2024, 9, 2))  # Labor Day
         assert globex.is_session(date(2024, 11, 28))  # Thanksgiving
 
     def test_early_close(self, globex):
@@ -119,7 +125,9 @@ class TestGlobexSchedule:
     @pytest.mark.parametrize("year", [2020, 2021, 2022, 2023, 2024])
     def test_trading_days_in_range(self, globex, year):
         days = globex.valid_days(date(year, 1, 1), date(year, 12, 31))
-        assert 255 <= len(days) <= 260, f"Year {year}: {len(days)} trading days"
+        assert (
+            255 <= len(days) <= 260
+        ), f"Year {year}: {len(days)} trading days"
 
 
 class TestGlobexMinuteQueries:
@@ -151,13 +159,17 @@ class TestGlobexMinuteQueries:
         """From Sunday 7 PM (already past Monday session's open), next open is Tuesday session's open (Monday 6 PM)."""
         dt = datetime(2024, 6, 2, 19, 0, tzinfo=ET)  # Sunday 7 PM
         result = globex.next_open(dt)
-        assert result == datetime(2024, 6, 3, 18, 0, tzinfo=ET)  # Monday 6 PM (Tue session)
+        assert result == datetime(
+            2024, 6, 3, 18, 0, tzinfo=ET
+        )  # Monday 6 PM (Tue session)
 
     def test_next_open_before_session_open(self, globex):
         """Sunday 5 PM is before Monday session's open (Sunday 6 PM)."""
         dt = datetime(2024, 6, 2, 17, 0, tzinfo=ET)  # Sunday 5 PM
         result = globex.next_open(dt)
-        assert result == datetime(2024, 6, 2, 18, 0, tzinfo=ET)  # Sunday 6 PM (Mon session)
+        assert result == datetime(
+            2024, 6, 2, 18, 0, tzinfo=ET
+        )  # Sunday 6 PM (Mon session)
 
     def test_next_open_from_gap(self, globex):
         """From Mon 5:30 PM (gap), next open is Mon 6 PM (Tue session)."""

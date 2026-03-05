@@ -1,10 +1,15 @@
 """Treasury yield curve rates for risk-free rate estimation."""
+
 from __future__ import annotations
 
+import operator
 from collections.abc import Sequence
 from datetime import date
 from enum import StrEnum
+from functools import partial, reduce
 from typing import TYPE_CHECKING
+
+from . import _treasury
 
 if TYPE_CHECKING:
     import polars as pl
@@ -68,9 +73,9 @@ def get_risk_free_rate(
         Which Treasury yield to use. Defaults to the 3-month T-bill,
         the standard academic proxy for the risk-free rate.
     """
-    from . import _treasury
-
-    return _treasury.fetch_average_rate(_parse_date(start), _parse_date(end), instrument.value)
+    return _treasury.fetch_average_rate(
+        _parse_date(start), _parse_date(end), instrument.value
+    )
 
 
 def get_mean_treasury_rate(
@@ -90,11 +95,12 @@ def get_mean_treasury_rate(
     method
         Averaging method — arithmetic (default) or geometric.
     """
-    from . import _treasury
-
     return _treasury.fetch_mean_rate(
         _parse_date(start), _parse_date(end), instrument.value, method.value
     )
+
+
+_fetch_years = partial(map, _treasury.fetch_year)
 
 
 def get_treasury_rates(
@@ -116,28 +122,31 @@ def get_treasury_rates(
     """
     import polars as pl
 
-    from . import _treasury
-
     start, end = _parse_date(start), _parse_date(end)
 
-    # Single instrument — delegate to existing fetch_daily_rates
-    if isinstance(instrument, TreasuryRate):
-        rows = _treasury.fetch_daily_rates(start, end, instrument.value)
-        return pl.DataFrame(
-            [{"date": d, "rate": r} for d, r in rows],
-            schema={"date": pl.Date, "rate": pl.Float64},
+    df = pl.DataFrame(
+        reduce(
+            operator.iadd, _fetch_years(range(start.year, end.year + 1)), []
         )
+    ).filter(pl.col("date").is_between(start, end))
+
+    # Single instrument → 2-column DataFrame (date, rate)
+    if isinstance(instrument, TreasuryRate):
+        key = instrument.value
+        if df.is_empty():
+            return pl.DataFrame(schema={"date": pl.Date, "rate": pl.Float64})
+        if key not in df.columns:
+            return pl.DataFrame(schema={"date": pl.Date, "rate": pl.Float64})
+        return df.select(
+            pl.col("date").cast(pl.Date),
+            pl.col(key).cast(pl.Float64).alias("rate"),
+        ).drop_nulls("rate")
 
     # Multi-instrument or all
     if instrument is not None:
         keys = [i.value for i in instrument]
     else:
         keys = None
-
-    raw = _treasury.fetch_daily_rates_multi(start, end, keys)
-
-    # One-pass DataFrame from row-dicts
-    rows = [{"date": row_date, **rates} for row_date, rates in raw]
 
     # Determine rename mapping and desired column order
     value_to_name = {m.value: m.name.lower() for m in TreasuryRate}
@@ -146,11 +155,10 @@ def get_treasury_rates(
     else:
         rename = {m.value: m.name.lower() for m in TreasuryRate}
 
-    if not rows:
+    if df.is_empty():
         schema = {"date": pl.Date} | {n: pl.Float64 for n in rename.values()}
         return pl.DataFrame(schema=schema)
 
-    df = pl.DataFrame(rows)
     # Only rename columns that exist in the data
     actual_rename = {k: v for k, v in rename.items() if k in df.columns}
     df = df.rename(actual_rename)

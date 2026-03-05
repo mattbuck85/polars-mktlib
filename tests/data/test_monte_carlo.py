@@ -2,28 +2,44 @@ from __future__ import annotations
 
 import pytest
 
-from mktlib.data import geometric_brownian_motion, monte_carlo, ornstein_uhlenbeck
+from mktlib.data import (
+    geometric_brownian_motion,
+    monte_carlo,
+    ornstein_uhlenbeck,
+)
 
 
 class TestMonteCarlo:
     def test_output_shape(self):
-        df = monte_carlo(geometric_brownian_motion, n_simulations=10, n=50, seed=42)
+        df = monte_carlo(
+            geometric_brownian_motion, n_simulations=10, n=50, seed=42
+        )
         assert df.shape == (500, 3)  # 10 sims * 50 steps
         assert df.columns == ["simulation", "step", "price"]
 
     def test_simulation_column_values(self):
-        df = monte_carlo(geometric_brownian_motion, n_simulations=5, n=20, seed=42)
+        df = monte_carlo(
+            geometric_brownian_motion, n_simulations=5, n=20, seed=42
+        )
         sims = df["simulation"].unique().sort().to_list()
         assert sims == [0, 1, 2, 3, 4]
 
     def test_reproducibility(self):
-        df1 = monte_carlo(geometric_brownian_motion, n_simulations=5, n=50, seed=99)
-        df2 = monte_carlo(geometric_brownian_motion, n_simulations=5, n=50, seed=99)
+        df1 = monte_carlo(
+            geometric_brownian_motion, n_simulations=5, n=50, seed=99
+        )
+        df2 = monte_carlo(
+            geometric_brownian_motion, n_simulations=5, n=50, seed=99
+        )
         assert df1.equals(df2)
 
     def test_different_seeds_differ(self):
-        df1 = monte_carlo(geometric_brownian_motion, n_simulations=3, n=50, seed=1)
-        df2 = monte_carlo(geometric_brownian_motion, n_simulations=3, n=50, seed=2)
+        df1 = monte_carlo(
+            geometric_brownian_motion, n_simulations=3, n=50, seed=1
+        )
+        df2 = monte_carlo(
+            geometric_brownian_motion, n_simulations=3, n=50, seed=2
+        )
         assert not df1.equals(df2)
 
     def test_works_with_ou(self):

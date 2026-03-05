@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2
+
+### Changed
+
+- Treasury cache internal format changed from `list[tuple[date, dict]]` to `list[RateRow]` (`RateRow = dict[str, date | float]`), eliminating redundant dict-merge conversions when building DataFrames.
+- `get_treasury_rates` DataFrame construction uses `reduce(operator.iadd, ...)` instead of nested list comprehension.
+- Black line length reduced from 127 to 79 characters project-wide.
+
+### Added
+
+- `RateRow` type alias exported from `_disk_cache` and used across all three cache layers.
+- Bundled Treasury fallback data extended back to 2000 (previously 2006).
+- Test coverage for `get_treasury_rates` edge cases (missing column, multi-instrument empty range) — `__init__.py` now at 100%.
+
 ## 0.5.1
 
 ### Fixed

@@ -1,4 +1,5 @@
 """Polars-native tearsheet generator — drop-in replacement for quantstats."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -14,9 +15,13 @@ if TYPE_CHECKING:
     import plotly.graph_objects as go
 
 __all__ = [
-    "html", "metrics",
-    "DrawdownInfo", "MetricsResult", "ReportConfig",
-    "PandasConvertible", "ReturnsInput",
+    "html",
+    "metrics",
+    "DrawdownInfo",
+    "MetricsResult",
+    "ReportConfig",
+    "PandasConvertible",
+    "ReturnsInput",
 ]
 
 
@@ -78,7 +83,12 @@ def html(
         end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
-    config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded, title=title)
+    config = ReportConfig(
+        rf=rf_resolved,
+        periods_per_year=periods_per_year,
+        compounded=compounded,
+        title=title,
+    )
 
     # Compute metrics
     result = _stats.compute_metrics(ret_df, bench_df, config)
@@ -91,18 +101,28 @@ def html(
     bench_dates = bench_cum = None
     if bench_df is not None:
         bench_dates = bench_df["date"].to_list()
-        bench_cum = _stats.cumulative_returns(bench_df["return"], compounded).to_list()
+        bench_cum = _stats.cumulative_returns(
+            bench_df["return"], compounded
+        ).to_list()
 
     dd = _stats.drawdown_series(ret_series, compounded).to_list()
     monthly = _stats.monthly_returns(ret_df, compounded)
     yearly = _stats.yearly_returns(ret_df, compounded)
-    r_sharpe = _stats.rolling_sharpe(ret_series, ppy=periods_per_year).to_list()
-    r_vol = _stats.rolling_volatility(ret_series, ppy=periods_per_year).to_list()
+    r_sharpe = _stats.rolling_sharpe(
+        ret_series, ppy=periods_per_year
+    ).to_list()
+    r_vol = _stats.rolling_volatility(
+        ret_series, ppy=periods_per_year
+    ).to_list()
 
     charts = {
-        "cumulative": _plots.cumulative_returns_chart(dates_list, cum_ret, bench_dates, bench_cum),
+        "cumulative": _plots.cumulative_returns_chart(
+            dates_list, cum_ret, bench_dates, bench_cum
+        ),
         "drawdown": _plots.drawdown_chart(dates_list, dd),
-        "yearly_bar": _plots.yearly_returns_chart(yearly["year"].to_list(), yearly["yearly_return"].to_list()),
+        "yearly_bar": _plots.yearly_returns_chart(
+            yearly["year"].to_list(), yearly["yearly_return"].to_list()
+        ),
         "monthly_heatmap": _plots.monthly_heatmap_chart(
             years=monthly["year"].to_list(),
             months=monthly["month"].to_list(),
@@ -110,8 +130,12 @@ def html(
         ),
         "rolling_sharpe": _plots.rolling_sharpe_chart(dates_list, r_sharpe),
         "rolling_vol": _plots.rolling_volatility_chart(dates_list, r_vol),
-        "daily_scatter": _plots.daily_returns_scatter(dates_list, ret_series.to_list()),
-        "distribution": _plots.returns_distribution_chart(ret_series.to_list()),
+        "daily_scatter": _plots.daily_returns_scatter(
+            dates_list, ret_series.to_list()
+        ),
+        "distribution": _plots.returns_distribution_chart(
+            ret_series.to_list()
+        ),
     }
 
     # Convert extra plotly figures to HTML divs
@@ -124,7 +148,12 @@ def html(
     start_date = str(ret_df["date"].min())
     end_date = str(ret_df["date"].max())
     html_str = _template.render(
-        result, charts, title, start_date, end_date, len(ret_df),
+        result,
+        charts,
+        title,
+        start_date,
+        end_date,
+        len(ret_df),
         extra_metrics=extra_metrics,
         extra_charts=extra_chart_divs,
         template_override=template,
@@ -162,5 +191,9 @@ def metrics(
         end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
-    config = ReportConfig(rf=rf_resolved, periods_per_year=periods_per_year, compounded=compounded)
+    config = ReportConfig(
+        rf=rf_resolved,
+        periods_per_year=periods_per_year,
+        compounded=compounded,
+    )
     return _stats.compute_metrics(ret_df, bench_df, config)

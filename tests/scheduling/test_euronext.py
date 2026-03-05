@@ -75,4 +75,6 @@ class TestEuronextTradingDayCount:
     def test_trading_days_in_range(self, euronext, year):
         days = euronext.valid_days(date(year, 1, 1), date(year, 12, 31))
         # Euronext typically has 252-257 trading days per year
-        assert 250 <= len(days) <= 258, f"Year {year}: {len(days)} trading days"
+        assert (
+            250 <= len(days) <= 258
+        ), f"Year {year}: {len(days)} trading days"

@@ -18,7 +18,9 @@ RECURRING_HOLIDAYS = US_RECURRING_HOLIDAYS
 ADHOC_CLOSURES = US_ADHOC_CLOSURES
 
 EARLY_CLOSES: list[EarlyClose] = [
-    EarlyClose("Black Friday", US_EARLY_CLOSE_TIME, compute_fn=day_after(THANKSGIVING)),
+    EarlyClose(
+        "Black Friday", US_EARLY_CLOSE_TIME, compute_fn=day_after(THANKSGIVING)
+    ),
 ]
 
 # --- Exchange constants ---

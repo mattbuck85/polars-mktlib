@@ -31,7 +31,9 @@ class TestGeometricBrownianMotion:
         assert not df1.equals(df2)
 
     def test_zero_volatility_pure_drift(self):
-        df = geometric_brownian_motion(10, base_price=100.0, drift=0.05, volatility=0.0, dt=1.0, seed=42)
+        df = geometric_brownian_motion(
+            10, base_price=100.0, drift=0.05, volatility=0.0, dt=1.0, seed=42
+        )
         prices = df["price"].to_numpy()
         # With zero vol: S_t = S_0 * exp(drift * t)
         expected = 100.0 * np.exp(0.05 * np.arange(10))
@@ -39,8 +41,12 @@ class TestGeometricBrownianMotion:
 
     def test_drift_affects_mean(self):
         n = 5000
-        pos_drift = geometric_brownian_motion(n, drift=0.1, volatility=0.01, seed=42)
-        neg_drift = geometric_brownian_motion(n, drift=-0.1, volatility=0.01, seed=42)
+        pos_drift = geometric_brownian_motion(
+            n, drift=0.1, volatility=0.01, seed=42
+        )
+        neg_drift = geometric_brownian_motion(
+            n, drift=-0.1, volatility=0.01, seed=42
+        )
         assert pos_drift["price"][-1] > neg_drift["price"][-1]
 
     def test_invalid_n(self):

@@ -32,7 +32,11 @@ def compute_metrics(
     max_dd = float(dd.min()) if len(dd) > 0 else 0.0  # type: ignore[arg-type]
     max_dd_idx = dd.arg_min()
     dates = returns["date"]
-    max_dd_date = str(dates[max_dd_idx]) if max_dd_idx is not None and max_dd_idx < len(dates) else None
+    max_dd_date = (
+        str(dates[max_dd_idx])
+        if max_dd_idx is not None and max_dd_idx < len(dates)
+        else None
+    )
     longest_dd = _longest_drawdown_days(dd, dates)
     avg_dd = _avg_drawdown(dd)
 
@@ -66,19 +70,38 @@ def compute_metrics(
         info_ratio = _information_ratio(r, b, ppy)
 
     return MetricsResult(
-        cumulative_return=cumulative, cagr=cagr, mtd=mtd, ytd=ytd, one_year=one_year,
-        sharpe=sharpe, sortino=sortino, calmar=calmar, omega=omega, romad=romad,
-        max_drawdown=max_dd, max_drawdown_date=max_dd_date,
-        longest_drawdown_days=longest_dd, avg_drawdown=avg_dd, volatility=vol,
-        var_95=var_95, cvar_95=cvar_95,
-        win_rate=wr, payoff_ratio=payoff, profit_factor=pf, kelly_criterion=kelly,
-        alpha=alpha, beta=beta, r_squared=r_sq, information_ratio=info_ratio,
+        cumulative_return=cumulative,
+        cagr=cagr,
+        mtd=mtd,
+        ytd=ytd,
+        one_year=one_year,
+        sharpe=sharpe,
+        sortino=sortino,
+        calmar=calmar,
+        omega=omega,
+        romad=romad,
+        max_drawdown=max_dd,
+        max_drawdown_date=max_dd_date,
+        longest_drawdown_days=longest_dd,
+        avg_drawdown=avg_dd,
+        volatility=vol,
+        var_95=var_95,
+        cvar_95=cvar_95,
+        win_rate=wr,
+        payoff_ratio=payoff,
+        profit_factor=pf,
+        kelly_criterion=kelly,
+        alpha=alpha,
+        beta=beta,
+        r_squared=r_sq,
+        information_ratio=info_ratio,
     )
 
 
 # ---------------------------------------------------------------------------
 # Cumulative / Growth
 # ---------------------------------------------------------------------------
+
 
 def _cumulative_return(ret: pl.Series, compounded: bool) -> float:
     if len(ret) == 0:
@@ -94,14 +117,18 @@ def _cagr(cumulative: float, n_years: float) -> float:
     return (1 + cumulative) ** (1 / n_years) - 1
 
 
-def _period_return(returns: pl.DataFrame, period: str, compounded: bool) -> float:
+def _period_return(
+    returns: pl.DataFrame, period: str, compounded: bool
+) -> float:
     """Return for a sub-period: mtd, ytd, or 1y."""
     if returns.is_empty():
         return 0.0
     last_date: date = returns["date"].max()  # type: ignore[assignment]
     match period:
         case "mtd":
-            mask = (pl.col("date").dt.year() == last_date.year) & (pl.col("date").dt.month() == last_date.month)
+            mask = (pl.col("date").dt.year() == last_date.year) & (
+                pl.col("date").dt.month() == last_date.month
+            )
         case "ytd":
             mask = pl.col("date").dt.year() == last_date.year
         case "1y":
@@ -119,6 +146,7 @@ def _period_return(returns: pl.DataFrame, period: str, compounded: bool) -> floa
 # ---------------------------------------------------------------------------
 # Volatility / Drawdown
 # ---------------------------------------------------------------------------
+
 
 def _annualized_volatility(ret: pl.Series, ppy: int) -> float:
     if len(ret) < 2:
@@ -142,15 +170,26 @@ def _longest_drawdown_days(dd: pl.Series, dates: pl.Series) -> int:
     """Longest drawdown duration in calendar days (vectorised)."""
     if len(dd) == 0:
         return 0
-    df = pl.DataFrame({"dd": dd, "date": dates}).with_columns(
-        (pl.col("dd") < 0).alias("in_dd"),
-    ).with_columns(
-        (pl.col("in_dd") != pl.col("in_dd").shift(1)).fill_null(True).cum_sum().alias("group"),
+    df = (
+        pl.DataFrame({"dd": dd, "date": dates})
+        .with_columns(
+            (pl.col("dd") < 0).alias("in_dd"),
+        )
+        .with_columns(
+            (pl.col("in_dd") != pl.col("in_dd").shift(1))
+            .fill_null(True)
+            .cum_sum()
+            .alias("group"),
+        )
     )
     dd_groups = (
         df.filter(pl.col("in_dd"))
         .group_by("group")
-        .agg((pl.col("date").max() - pl.col("date").min()).dt.total_days().alias("days"))
+        .agg(
+            (pl.col("date").max() - pl.col("date").min())
+            .dt.total_days()
+            .alias("days")
+        )
     )
     if dd_groups.is_empty():
         return 0
@@ -171,6 +210,7 @@ def _avg_drawdown(dd: pl.Series) -> float:
 # Ratios
 # ---------------------------------------------------------------------------
 
+
 def _sharpe(excess: pl.Series, ppy: int) -> float:
     if len(excess) < 2:
         return 0.0
@@ -180,7 +220,9 @@ def _sharpe(excess: pl.Series, ppy: int) -> float:
     return float(excess.mean()) / std * math.sqrt(ppy)  # type: ignore[arg-type]
 
 
-def _sortino(excess: pl.Series, ret: pl.Series, rf_daily: float, ppy: int) -> float:
+def _sortino(
+    excess: pl.Series, ret: pl.Series, rf_daily: float, ppy: int
+) -> float:
     if len(ret) < 2:
         return 0.0
     diff = ret - rf_daily
@@ -206,6 +248,7 @@ def _omega(ret: pl.Series, threshold: float) -> float:
 # Tail Risk
 # ---------------------------------------------------------------------------
 
+
 def _var(ret: pl.Series, alpha: float) -> float:
     if len(ret) == 0:
         return 0.0
@@ -225,6 +268,7 @@ def _cvar(ret: pl.Series, alpha: float) -> float:
 # ---------------------------------------------------------------------------
 # Win / Loss
 # ---------------------------------------------------------------------------
+
 
 def _win_rate(ret: pl.Series) -> float:
     if len(ret) == 0:
@@ -261,6 +305,7 @@ def _kelly_criterion(win_rate: float, payoff_ratio: float) -> float:
 # Benchmark
 # ---------------------------------------------------------------------------
 
+
 def _beta(ret: pl.Series, bench: pl.Series) -> float:
     if len(ret) < 2:
         return 0.0
@@ -274,7 +319,9 @@ def _beta(ret: pl.Series, bench: pl.Series) -> float:
     return cov / var_b
 
 
-def _alpha(ret: pl.Series, bench: pl.Series, beta: float, rf: float, ppy: int) -> float:
+def _alpha(
+    ret: pl.Series, bench: pl.Series, beta: float, rf: float, ppy: int
+) -> float:
     rf_daily = rf / ppy
     ann_ret = (float(ret.mean()) - rf_daily) * ppy  # type: ignore[arg-type]
     ann_bench = (float(bench.mean()) - rf_daily) * ppy  # type: ignore[arg-type]
@@ -305,24 +352,38 @@ def _information_ratio(ret: pl.Series, bench: pl.Series, ppy: int) -> float:
 # Grouping helpers (used by _plots and consumers)
 # ---------------------------------------------------------------------------
 
-def monthly_returns(returns: pl.DataFrame, compounded: bool = True) -> pl.DataFrame:
+
+def monthly_returns(
+    returns: pl.DataFrame, compounded: bool = True
+) -> pl.DataFrame:
     """Group returns by year/month → DataFrame with ``year``, ``month``, ``monthly_return``."""
-    agg_expr = ((1 + pl.col("return")).product() - 1) if compounded else pl.col("return").sum()
+    agg_expr = (
+        ((1 + pl.col("return")).product() - 1)
+        if compounded
+        else pl.col("return").sum()
+    )
     return (
-        returns
-        .with_columns(pl.col("date").dt.year().alias("year"), pl.col("date").dt.month().alias("month"))
+        returns.with_columns(
+            pl.col("date").dt.year().alias("year"),
+            pl.col("date").dt.month().alias("month"),
+        )
         .group_by("year", "month")
         .agg(agg_expr.alias("monthly_return"))
         .sort("year", "month")
     )
 
 
-def yearly_returns(returns: pl.DataFrame, compounded: bool = True) -> pl.DataFrame:
+def yearly_returns(
+    returns: pl.DataFrame, compounded: bool = True
+) -> pl.DataFrame:
     """Group returns by year → DataFrame with ``year``, ``yearly_return``."""
-    agg_expr = ((1 + pl.col("return")).product() - 1) if compounded else pl.col("return").sum()
+    agg_expr = (
+        ((1 + pl.col("return")).product() - 1)
+        if compounded
+        else pl.col("return").sum()
+    )
     return (
-        returns
-        .with_columns(pl.col("date").dt.year().alias("year"))
+        returns.with_columns(pl.col("date").dt.year().alias("year"))
         .group_by("year")
         .agg(agg_expr.alias("yearly_return"))
         .sort("year")
@@ -338,7 +399,9 @@ def cumulative_returns(ret: pl.Series, compounded: bool = True) -> pl.Series:
     return ret.cum_sum().alias("cumulative")
 
 
-def rolling_sharpe(ret: pl.Series, window: int = 126, ppy: int = 252) -> pl.Series:
+def rolling_sharpe(
+    ret: pl.Series, window: int = 126, ppy: int = 252
+) -> pl.Series:
     """Rolling Sharpe ratio with *window*-day lookback."""
     if len(ret) < window:
         return pl.Series("rolling_sharpe", [None] * len(ret), dtype=pl.Float64)
@@ -347,8 +410,12 @@ def rolling_sharpe(ret: pl.Series, window: int = 126, ppy: int = 252) -> pl.Seri
     return (mean / std * math.sqrt(ppy)).alias("rolling_sharpe")
 
 
-def rolling_volatility(ret: pl.Series, window: int = 126, ppy: int = 252) -> pl.Series:
+def rolling_volatility(
+    ret: pl.Series, window: int = 126, ppy: int = 252
+) -> pl.Series:
     """Rolling annualised volatility with *window*-day lookback."""
     if len(ret) < window:
         return pl.Series("rolling_vol", [None] * len(ret), dtype=pl.Float64)
-    return (ret.rolling_std(window_size=window) * math.sqrt(ppy)).alias("rolling_vol")
+    return (ret.rolling_std(window_size=window) * math.sqrt(ppy)).alias(
+        "rolling_vol"
+    )

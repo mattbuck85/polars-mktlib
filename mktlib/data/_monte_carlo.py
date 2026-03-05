@@ -33,4 +33,6 @@ def monte_carlo(
     result = pl.concat(frames)
     # Reorder so simulation is first
     cols = result.columns
-    return result.select(["simulation"] + [c for c in cols if c != "simulation"])
+    return result.select(
+        ["simulation"] + [c for c in cols if c != "simulation"]
+    )

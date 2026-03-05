@@ -40,6 +40,7 @@ def coerce_benchmark(data: ReturnsInput | None) -> pl.DataFrame | None:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _pandas_to_df(series: PandasConvertible) -> pl.DataFrame:
     """Convert a pandas Series with DatetimeIndex to pl.DataFrame."""
     frame = series.to_frame()
@@ -72,14 +73,20 @@ def _validate_returns_df(df: pl.DataFrame) -> pl.DataFrame:
     date_col = return_col = None
     for col in df.columns:
         dtype = df[col].dtype
-        if date_col is None and (dtype == pl.Date or isinstance(dtype, pl.Datetime)):
+        if date_col is None and (
+            dtype == pl.Date or isinstance(dtype, pl.Datetime)
+        ):
             date_col = col
         elif return_col is None and dtype.is_float():
             return_col = col
     if date_col is None or return_col is None:
         msg = f"Cannot infer 'date' and 'return' columns from: {df.columns}"
         raise ValueError(msg)
-    return _normalize_date_col(df.select(pl.col(date_col).alias("date"), pl.col(return_col).alias("return")))
+    return _normalize_date_col(
+        df.select(
+            pl.col(date_col).alias("date"), pl.col(return_col).alias("return")
+        )
+    )
 
 
 def _normalize_date_col(df: pl.DataFrame) -> pl.DataFrame:
@@ -88,5 +95,7 @@ def _normalize_date_col(df: pl.DataFrame) -> pl.DataFrame:
     if dtype == pl.Date:
         return df
     if isinstance(dtype, pl.Datetime):
-        return df.with_columns(pl.col("date").dt.replace_time_zone(None).cast(pl.Date))
+        return df.with_columns(
+            pl.col("date").dt.replace_time_zone(None).cast(pl.Date)
+        )
     return df.with_columns(pl.col("date").cast(pl.Date))

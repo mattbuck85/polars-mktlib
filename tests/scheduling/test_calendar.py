@@ -56,7 +56,8 @@ class TestFXCalendar:
         days = fx.valid_days("2024-01-01", "2024-12-31")
         # Every weekday in 2024 (leap year, 366 days)
         expected = sum(
-            1 for d in (date(2024, 1, 1) + timedelta(days=i) for i in range(366))
+            1
+            for d in (date(2024, 1, 1) + timedelta(days=i) for i in range(366))
             if d.weekday() < 5
         )
         assert len(days) == expected
@@ -73,7 +74,9 @@ class TestFXCalendar:
 
 class TestValidDays:
     def test_excludes_weekends(self, nyse):
-        days = nyse.valid_days("2024-01-08", "2024-01-12")  # Mon-Fri, no holidays
+        days = nyse.valid_days(
+            "2024-01-08", "2024-01-12"
+        )  # Mon-Fri, no holidays
         assert len(days) == 5
         for d in days.to_list():
             assert d.weekday() < 5

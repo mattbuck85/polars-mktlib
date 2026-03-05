@@ -51,8 +51,12 @@ class ExchangeValidationBase:
         missing = ec_days - mktlib_days
         extra = mktlib_days - ec_days
 
-        assert not missing, f"Year {year}: mktlib missing sessions: {sorted(missing)}"
-        assert not extra, f"Year {year}: mktlib has extra sessions: {sorted(extra)}"
+        assert (
+            not missing
+        ), f"Year {year}: mktlib missing sessions: {sorted(missing)}"
+        assert (
+            not extra
+        ), f"Year {year}: mktlib has extra sessions: {sorted(extra)}"
 
     def test_early_closes_superset(self, cal, ec_cal, year):
         """Verify mktlib early closes are a superset of exchange_calendars."""
@@ -67,13 +71,13 @@ class ExchangeValidationBase:
                 mktlib_early.add(row["date"])
 
         ec_early_dates = {
-            d.date()
-            for d in ec_cal.early_closes
-            if start <= d.date() <= end
+            d.date() for d in ec_cal.early_closes if start <= d.date() <= end
         }
 
         missing = ec_early_dates - mktlib_early
-        assert not missing, f"Year {year}: mktlib missing early closes: {sorted(missing)}"
+        assert (
+            not missing
+        ), f"Year {year}: mktlib missing early closes: {sorted(missing)}"
 
     def test_early_closes_match(self, cal, ec_cal, year):
         """Verify mktlib has no extra early closes beyond exchange_calendars."""
@@ -88,13 +92,13 @@ class ExchangeValidationBase:
                 mktlib_early.add(row["date"])
 
         ec_early_dates = {
-            d.date()
-            for d in ec_cal.early_closes
-            if start <= d.date() <= end
+            d.date() for d in ec_cal.early_closes if start <= d.date() <= end
         }
 
         extra = mktlib_early - ec_early_dates
-        assert not extra, f"Year {year}: mktlib has extra early closes: {sorted(extra)}"
+        assert (
+            not extra
+        ), f"Year {year}: mktlib has extra early closes: {sorted(extra)}"
 
 
 class TestNYSEValidation(ExchangeValidationBase):

@@ -15,10 +15,17 @@ if TYPE_CHECKING:
         tz: ZoneInfo
         timezone: str
         open_offset: int
+
         def is_session(self, day: date | str) -> bool: ...
-        def valid_days(self, start: date | str, end: date | str) -> pl.Series: ...
-        def get_schedule(self, day: date | str) -> MarketDailySchedule | None: ...
-        def schedule(self, start: date | str, end: date | str) -> pl.DataFrame: ...
+        def valid_days(
+            self, start: date | str, end: date | str
+        ) -> pl.Series: ...
+        def get_schedule(
+            self, day: date | str
+        ) -> MarketDailySchedule | None: ...
+        def schedule(
+            self, start: date | str, end: date | str
+        ) -> pl.DataFrame: ...
         def next_session(self, day: date | str) -> date: ...
         def previous_session(self, day: date | str) -> date: ...
 
@@ -47,7 +54,9 @@ class SessionNavigationMixin:
             d -= timedelta(days=1)
         return d
 
-    def session_offset(self: _CalendarProtocol, day: date | str, n: int) -> date:
+    def session_offset(
+        self: _CalendarProtocol, day: date | str, n: int
+    ) -> date:
         """Offset *day* by *n* trading sessions (negative = backward).
 
         *day* must be a session.  ``n=0`` returns *day* unchanged.
@@ -65,7 +74,9 @@ class SessionNavigationMixin:
                 remaining -= 1
         return d
 
-    def date_to_session(self: _CalendarProtocol, day: date | str, direction: str = "none") -> date:
+    def date_to_session(
+        self: _CalendarProtocol, day: date | str, direction: str = "none"
+    ) -> date:
         """Resolve *day* to a session.
 
         *direction*: ``"none"`` (raise if not session), ``"next"``, ``"previous"``.
@@ -83,7 +94,9 @@ class SessionNavigationMixin:
             case _:
                 raise ValueError(f"Invalid direction {direction!r}")
 
-    def sessions_in_range(self: _CalendarProtocol, start: date | str, end: date | str) -> int:
+    def sessions_in_range(
+        self: _CalendarProtocol, start: date | str, end: date | str
+    ) -> int:
         """Count trading sessions in [start, end]."""
         return len(self.valid_days(start, end))
 
@@ -96,12 +109,18 @@ class MinuteQueryMixin:
         aware = _ensure_aware(dt, self.tz)
         d = aware.date()
         sched = self.get_schedule(d)
-        if sched is not None and sched.market_open <= aware < sched.market_close:
+        if (
+            sched is not None
+            and sched.market_open <= aware < sched.market_close
+        ):
             return True
         if self.open_offset < 0:
             next_d = self.next_session(d)
             next_sched = self.get_schedule(next_d)
-            if next_sched is not None and next_sched.market_open <= aware < next_sched.market_close:
+            if (
+                next_sched is not None
+                and next_sched.market_open <= aware < next_sched.market_close
+            ):
                 return True
         return False
 
@@ -157,17 +176,25 @@ class MinuteQueryMixin:
         assert prev_sched is not None
         return prev_sched.market_close
 
-    def minute_to_session(self: _CalendarProtocol, dt: datetime) -> date | None:
+    def minute_to_session(
+        self: _CalendarProtocol, dt: datetime
+    ) -> date | None:
         """Return the session date that contains *dt*, or ``None`` if market is closed."""
         aware = _ensure_aware(dt, self.tz)
         d = aware.date()
         sched = self.get_schedule(d)
-        if sched is not None and sched.market_open <= aware < sched.market_close:
+        if (
+            sched is not None
+            and sched.market_open <= aware < sched.market_close
+        ):
             return d
         if self.open_offset < 0:
             next_d = self.next_session(d)
             next_sched = self.get_schedule(next_d)
-            if next_sched is not None and next_sched.market_open <= aware < next_sched.market_close:
+            if (
+                next_sched is not None
+                and next_sched.market_open <= aware < next_sched.market_close
+            ):
                 return next_d
         return None
 
@@ -191,13 +218,16 @@ class TradingIndexMixin:
         """
         sched = self.schedule(start, end)
         if sched.is_empty():
-            return pl.Series("datetime", [], dtype=pl.Datetime("us", self.timezone))
+            return pl.Series(
+                "datetime", [], dtype=pl.Datetime("us", self.timezone)
+            )
         return (
-            sched
-            .with_columns(
+            sched.with_columns(
                 pl.datetime_ranges(
-                    "market_open", "market_close",
-                    interval=period, closed=closed,
+                    "market_open",
+                    "market_close",
+                    interval=period,
+                    closed=closed,
                 ).alias("datetime")
             )
             .select("datetime")

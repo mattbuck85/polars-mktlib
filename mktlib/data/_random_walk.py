@@ -35,7 +35,9 @@ def fractional_random_walk(
         for i in range(n):
             for j in range(i, n):
                 d = abs(i - j)
-                val = 0.5 * (abs(d + 1) ** h2 - 2 * abs(d) ** h2 + abs(d - 1) ** h2)
+                val = 0.5 * (
+                    abs(d + 1) ** h2 - 2 * abs(d) ** h2 + abs(d - 1) ** h2
+                )
                 cov[i, j] = val
                 cov[j, i] = val
 
@@ -46,7 +48,9 @@ def fractional_random_walk(
     prices = base_price + np.cumsum(increments)
     prices = np.insert(prices, 0, base_price)[:n]
 
-    return pl.DataFrame({
-        "step": range(n),
-        "price": prices,
-    })
+    return pl.DataFrame(
+        {
+            "step": range(n),
+            "price": prices,
+        }
+    )

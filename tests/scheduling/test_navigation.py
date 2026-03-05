@@ -84,10 +84,14 @@ class TestDateToSession:
             nyse.date_to_session(date(2024, 1, 6))
 
     def test_next_from_weekend(self, nyse: ExchangeCalendar):
-        assert nyse.date_to_session(date(2024, 1, 6), "next") == date(2024, 1, 8)
+        assert nyse.date_to_session(date(2024, 1, 6), "next") == date(
+            2024, 1, 8
+        )
 
     def test_previous_from_weekend(self, nyse: ExchangeCalendar):
-        assert nyse.date_to_session(date(2024, 1, 7), "previous") == date(2024, 1, 5)
+        assert nyse.date_to_session(date(2024, 1, 7), "previous") == date(
+            2024, 1, 5
+        )
 
     def test_invalid_direction(self, nyse: ExchangeCalendar):
         with pytest.raises(ValueError, match="Invalid direction"):
@@ -97,7 +101,9 @@ class TestDateToSession:
 class TestSessionsInRange:
     def test_matches_valid_days(self, nyse: ExchangeCalendar):
         start, end = date(2024, 1, 1), date(2024, 1, 31)
-        assert nyse.sessions_in_range(start, end) == len(nyse.valid_days(start, end))
+        assert nyse.sessions_in_range(start, end) == len(
+            nyse.valid_days(start, end)
+        )
 
     def test_full_year(self, nyse: ExchangeCalendar):
         count = nyse.sessions_in_range("2024-01-01", "2024-12-31")
@@ -206,12 +212,16 @@ class TestPreviousOpen:
 class TestPreviousClose:
     def test_after_todays_close(self, nyse: ExchangeCalendar):
         dt = datetime(2024, 1, 2, 17, 0, tzinfo=ET)
-        assert nyse.previous_close(dt) == datetime(2024, 1, 2, 16, 0, tzinfo=ET)
+        assert nyse.previous_close(dt) == datetime(
+            2024, 1, 2, 16, 0, tzinfo=ET
+        )
 
     def test_during_trading(self, nyse: ExchangeCalendar):
         # Before close → previous session's close
         dt = datetime(2024, 1, 3, 12, 0, tzinfo=ET)
-        assert nyse.previous_close(dt) == datetime(2024, 1, 2, 16, 0, tzinfo=ET)
+        assert nyse.previous_close(dt) == datetime(
+            2024, 1, 2, 16, 0, tzinfo=ET
+        )
 
 
 class TestMinuteToSession:
@@ -251,7 +261,9 @@ class TestTradingIndex:
         assert len(idx) == 210
 
     def test_closed_left_excludes_close(self, nyse: ExchangeCalendar):
-        idx = nyse.trading_index(date(2024, 1, 2), date(2024, 1, 2), "1m", closed="left")
+        idx = nyse.trading_index(
+            date(2024, 1, 2), date(2024, 1, 2), "1m", closed="left"
+        )
         ts_list = idx.to_list()
         close = datetime(2024, 1, 2, 16, 0, tzinfo=ET)
         assert close not in ts_list

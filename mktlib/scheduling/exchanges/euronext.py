@@ -68,8 +68,16 @@ ADHOC_CLOSURES: list[AdhocClosure] = []
 EURONEXT_EARLY_CLOSE_TIME = time(14, 5)
 
 EARLY_CLOSES: list[EarlyClose] = [
-    EarlyClose("Christmas Eve", EURONEXT_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 24)),
-    EarlyClose("New Year's Eve", EURONEXT_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 31)),
+    EarlyClose(
+        "Christmas Eve",
+        EURONEXT_EARLY_CLOSE_TIME,
+        compute_fn=fixed_date_if_weekday(12, 24),
+    ),
+    EarlyClose(
+        "New Year's Eve",
+        EURONEXT_EARLY_CLOSE_TIME,
+        compute_fn=fixed_date_if_weekday(12, 31),
+    ),
 ]
 
 # --- Exchange constants ---

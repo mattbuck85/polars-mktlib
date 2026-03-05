@@ -109,17 +109,37 @@ def us_good_friday_closures(start: date, end: date) -> list[date]:
 US_ADHOC_CLOSURES: list[AdhocClosure] = [
     AdhocClosure(
         name="September 11, 2001",
-        dates=[date(2001, 9, 11), date(2001, 9, 12), date(2001, 9, 13), date(2001, 9, 14)],
+        dates=[
+            date(2001, 9, 11),
+            date(2001, 9, 12),
+            date(2001, 9, 13),
+            date(2001, 9, 14),
+        ],
     ),
     AdhocClosure(
         name="Hurricane Sandy",
         dates=[date(2012, 10, 29), date(2012, 10, 30)],
     ),
-    AdhocClosure(name="President Ford National Day of Mourning", dates=[date(2007, 1, 2)]),
-    AdhocClosure(name="President Reagan National Day of Mourning", dates=[date(2004, 6, 11)]),
-    AdhocClosure(name="President Nixon National Day of Mourning", dates=[date(1994, 4, 27)]),
-    AdhocClosure(name="President H.W. Bush National Day of Mourning", dates=[date(2018, 12, 5)]),
-    AdhocClosure(name="President Carter National Day of Mourning", dates=[date(2025, 1, 9)]),
+    AdhocClosure(
+        name="President Ford National Day of Mourning",
+        dates=[date(2007, 1, 2)],
+    ),
+    AdhocClosure(
+        name="President Reagan National Day of Mourning",
+        dates=[date(2004, 6, 11)],
+    ),
+    AdhocClosure(
+        name="President Nixon National Day of Mourning",
+        dates=[date(1994, 4, 27)],
+    ),
+    AdhocClosure(
+        name="President H.W. Bush National Day of Mourning",
+        dates=[date(2018, 12, 5)],
+    ),
+    AdhocClosure(
+        name="President Carter National Day of Mourning",
+        dates=[date(2025, 1, 9)],
+    ),
 ]
 
 # --- Early closes ---
@@ -127,7 +147,17 @@ US_ADHOC_CLOSURES: list[AdhocClosure] = [
 US_EARLY_CLOSE_TIME = time(13, 0)
 
 US_EARLY_CLOSES: list[EarlyClose] = [
-    EarlyClose("Independence Day Eve", US_EARLY_CLOSE_TIME, compute_fn=holiday_eve(7, 4)),
-    EarlyClose("Black Friday", US_EARLY_CLOSE_TIME, compute_fn=day_after(THANKSGIVING)),
-    EarlyClose("Christmas Eve", US_EARLY_CLOSE_TIME, compute_fn=fixed_date_if_weekday(12, 24, start_year=1993)),
+    EarlyClose(
+        "Independence Day Eve",
+        US_EARLY_CLOSE_TIME,
+        compute_fn=holiday_eve(7, 4),
+    ),
+    EarlyClose(
+        "Black Friday", US_EARLY_CLOSE_TIME, compute_fn=day_after(THANKSGIVING)
+    ),
+    EarlyClose(
+        "Christmas Eve",
+        US_EARLY_CLOSE_TIME,
+        compute_fn=fixed_date_if_weekday(12, 24, start_year=1993),
+    ),
 ]

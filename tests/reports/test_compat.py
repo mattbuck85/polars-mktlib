@@ -10,29 +10,42 @@ from mktlib.reports._compat import coerce_benchmark, coerce_returns
 
 class TestCoerceReturns:
     def test_polars_dataframe_with_named_columns(self):
-        df = pl.DataFrame({
-            "date": [dt.date(2024, 1, 2), dt.date(2024, 1, 3), dt.date(2024, 1, 4)],
-            "return": [0.01, -0.02, 0.015],
-        })
+        df = pl.DataFrame(
+            {
+                "date": [
+                    dt.date(2024, 1, 2),
+                    dt.date(2024, 1, 3),
+                    dt.date(2024, 1, 4),
+                ],
+                "return": [0.01, -0.02, 0.015],
+            }
+        )
         result = coerce_returns(df)
         assert result.columns == ["date", "return"]
         assert result["date"].dtype == pl.Date
         assert len(result) == 3
 
     def test_polars_dataframe_infers_columns(self):
-        df = pl.DataFrame({
-            "timestamp": [dt.date(2024, 1, 2), dt.date(2024, 1, 3)],
-            "pct_change": [0.01, -0.02],
-        })
+        df = pl.DataFrame(
+            {
+                "timestamp": [dt.date(2024, 1, 2), dt.date(2024, 1, 3)],
+                "pct_change": [0.01, -0.02],
+            }
+        )
         result = coerce_returns(df)
         assert result.columns == ["date", "return"]
         assert result["return"].to_list() == [0.01, -0.02]
 
     def test_polars_dataframe_datetime_cast_to_date(self):
-        df = pl.DataFrame({
-            "date": [dt.datetime(2024, 1, 2, 10, 30), dt.datetime(2024, 1, 3, 10, 30)],
-            "return": [0.01, -0.02],
-        })
+        df = pl.DataFrame(
+            {
+                "date": [
+                    dt.datetime(2024, 1, 2, 10, 30),
+                    dt.datetime(2024, 1, 3, 10, 30),
+                ],
+                "return": [0.01, -0.02],
+            }
+        )
         result = coerce_returns(df)
         assert result["date"].dtype == pl.Date
 
@@ -54,7 +67,13 @@ class TestCoerceReturns:
 
     def test_pandas_series(self):
         pd = pytest.importorskip("pandas")
-        idx = pd.DatetimeIndex([dt.datetime(2024, 1, 2), dt.datetime(2024, 1, 3), dt.datetime(2024, 1, 4)])
+        idx = pd.DatetimeIndex(
+            [
+                dt.datetime(2024, 1, 2),
+                dt.datetime(2024, 1, 3),
+                dt.datetime(2024, 1, 4),
+            ]
+        )
         s = pd.Series([0.01, -0.02, 0.015], index=idx, name="returns")
         result = coerce_returns(s)
         assert result.columns == ["date", "return"]
