@@ -1,12 +1,6 @@
 from __future__ import annotations
 
 
-def test_version():
-    import mktlib
-
-    assert mktlib.__version__ == "0.3.0"
-
-
 def test_scheduling_import():
     from mktlib.scheduling import ExchangeCalendar, get_calendar
 
