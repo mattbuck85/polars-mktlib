@@ -7,14 +7,15 @@
 | `mktlib.scheduling` | Exchange calendars (sessions, minutes, trading index) | `get_calendar("XNYS")` |
 | `mktlib.reports` | Performance metrics + HTML tearsheets | `metrics(df)`, `html(df)` |
 | `mktlib.rates` | Treasury yield curves with bundled fallback | `get_risk_free_rate(start, end)` |
+| `mktlib.data` | Synthetic data generators (fBm, GBM, OU, Monte Carlo) | `geometric_brownian_motion(n=1000)` |
 
-Codemaps: `docs/CODEMAPS/{scheduling,reports,rates}.md` — read these before grepping.
+Codemaps: `docs/CODEMAPS/{scheduling,reports,rates,data}.md` — read these before grepping.
 
 ## Conventions
 
 - **Python 3.14+**. Use `from __future__ import annotations` in all files.
 - **Polars only** — no pandas in the library. `_compat.py` accepts pandas inputs but converts immediately.
-- **No runtime optional deps** — `jinja2` and `plotly` are behind `[reports]` extra but imported eagerly within the reports subpackage. `polars` is the only core dependency.
+- **Optional extras** — `jinja2`/`plotly` behind `[reports]`, `numpy` behind `[data]`. `polars` is the only core dependency.
 - **`importlib.resources`** for package data (templates, bundled CSVs). Pattern: `files("mktlib.subpkg") / "subdir" / "file"`.
 
 ## Testing
@@ -24,6 +25,7 @@ Codemaps: `docs/CODEMAPS/{scheduling,reports,rates}.md` — read these before gr
 pytest tests/ -v
 
 # By subpackage
+pytest tests/data/ -v
 pytest tests/rates/ -v
 pytest tests/reports/ -v
 pytest tests/scheduling/ -v
@@ -43,6 +45,7 @@ Bundled Treasury CSVs refreshed by `scripts/refresh_treasury_data.py` (standalon
 ## Architecture Notes
 
 - `reports.__init__` resolves `rf="auto"` by calling `rates._treasury.fetch_average_rate` — this is the only cross-subpackage dependency.
+- `data` is standalone (requires only `numpy` + `polars`); no cross-subpackage dependencies.
 - `scheduling` is fully standalone with zero external deps beyond polars.
 - Exchange definitions live in `scheduling/exchanges/` — each module exports constants and rule lists consumed by `registry.py`.
 - Adding an exchange: create `exchanges/foo.py` with holiday rules, register in `registry.py` via `register_exchange()`. **Must** add an `ExchangeValidationBase` subclass in `tests/scheduling/test_validation.py` cross-validating against `exchange_calendars` for 20 years of data (see below).

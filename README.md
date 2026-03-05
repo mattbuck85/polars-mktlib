@@ -8,6 +8,7 @@ Polars-native financial market toolkit. Zero pandas dependency.
 ## Table of Contents
 
 - [Installation](#installation)
+- [Data](#data--synthetic-generators)
 - [Scheduling](#scheduling)
   - [Supported Exchanges](#supported-exchanges)
   - [Schedule & Trading Days](#schedule--trading-days)
@@ -38,8 +39,45 @@ Polars-native financial market toolkit. Zero pandas dependency.
 
 ```bash
 pip install mktlib              # core (scheduling + rates)
+pip install mktlib[data]        # + synthetic data generators (numpy)
 pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 ```
+
+## Data — Synthetic Generators
+
+`mktlib.data` provides stochastic process generators for testing, simulation, and Monte Carlo analysis. All functions return Polars DataFrames with seeded RNG for reproducibility.
+
+```python
+from mktlib.data import (
+    fractional_random_walk,
+    geometric_brownian_motion,
+    monte_carlo,
+    ornstein_uhlenbeck,
+)
+
+# Standard random walk
+walk = fractional_random_walk(1000, seed=42)
+
+# Trending path (Hurst > 0.5)
+trending = fractional_random_walk(1000, hurst=0.8, seed=42)
+
+# GBM price path with 5% drift, 20% annual vol
+gbm = geometric_brownian_motion(252, drift=0.05/252, volatility=0.20/252**0.5, seed=42)
+
+# Mean-reverting process
+ou = ornstein_uhlenbeck(500, theta=0.7, mu=100.0, sigma=1.0, seed=42)
+
+# 1000 Monte Carlo simulations of GBM
+sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42)
+# Returns DataFrame with columns [simulation, step, price]
+```
+
+| Function | Process | Output columns |
+|-|-|-|
+| `fractional_random_walk` | Fractional Brownian motion (Cholesky) | `step`, `price` |
+| `geometric_brownian_motion` | Log-normal GBM: dS = μSdt + σSdW | `step`, `price` |
+| `ornstein_uhlenbeck` | Mean-reverting: dx = θ(μ−x)dt + σdW | `step`, `value` |
+| `monte_carlo` | N simulations of any generator | `simulation`, `step`, ... |
 
 ## Scheduling
 
@@ -353,7 +391,7 @@ html(returns, benchmark=bench, output="report.html", title="My Strategy")
 ## Development
 
 ```bash
-pip install -e ".[dev,reports]"
+pip install -e ".[dev,data,reports]"
 pytest
 pyright mktlib
 pre-commit install  # trailing whitespace, flake8, pyright
