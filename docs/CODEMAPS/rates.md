@@ -6,19 +6,26 @@ Fetches daily Treasury yield data from Treasury.gov with 3-tier caching and bund
 
 | Export | Line | Purpose |
 |-|-|-|
-| `TreasuryRate(StrEnum)` | `:10` | Instrument enum (THREE_MONTH, SIX_MONTH, ONE_YEAR, TWO_YEAR, FIVE_YEAR, TEN_YEAR, THIRTY_YEAR) |
-| `get_risk_free_rate(start, end, instrument)` | `:22` | Returns mean annualised rate as decimal (e.g. 0.0436) |
+| `MeanMethod(StrEnum)` | `:22` | Averaging method enum (ARITHMETIC, GEOMETRIC) |
+| `TreasuryRate(StrEnum)` | `:29` | All 14 Treasury instruments (ONE_MONTH … THIRTY_YEAR_DISPLAY) |
+| `get_risk_free_rate(start, end, instrument)` | `:52` | Returns arithmetic mean annualised rate as decimal (e.g. 0.0436) |
+| `get_mean_treasury_rate(start, end, instrument, method)` | `:76` | Returns mean rate with configurable method (arithmetic/geometric) |
+| `get_treasury_rates(start, end, instrument)` | `:100` | Polars DataFrame of daily rates — single, multi, or all instruments |
+| `get_treasury_spread(start, end, long, short)` | `:168` | Polars DataFrame with daily spread between two instruments |
 
 ## Fetching (`_treasury.py`)
 
 | Function | Line | Purpose |
 |-|-|-|
-| `_fetch_year(year)` | `:28` | Fetch + parse one year. 3-tier cache: in-memory → disk → bundled (past years) → Treasury.gov XML. Falls back gracefully on network error. |
-| `fetch_daily_rates(start, end, instrument)` | `:98` | Daily `(date, rate)` pairs within range |
-| `fetch_average_rate(start, end, instrument)` | `:116` | Arithmetic mean of daily rates |
-| `clear_cache(*, disk)` | `:128` | Reset in-memory `_cache`; `disk=True` also deletes persistent CSVs |
+| `_fetch_year(year)` | `:30` | Fetch + parse one year. 3-tier cache: in-memory → disk → bundled (past years) → Treasury.gov XML. Falls back gracefully on network error. Sorts by date and filters empty-rates rows before caching. |
+| `fetch_daily_rates_multi(start, end, instruments)` | `:102` | Daily `(date, {field: rate})` dicts within range. Fast path when `instruments=None`. |
+| `fetch_spread(start, end, long, short)` | `:131` | Daily `(date, spread)` pairs for two instruments |
+| `fetch_daily_rates(start, end, instrument)` | `:149` | Daily `(date, rate)` pairs within range |
+| `fetch_average_rate(start, end, instrument)` | `:166` | Arithmetic mean of daily rates |
+| `fetch_mean_rate(start, end, instrument, method)` | `:178` | Mean of daily rates (arithmetic or geometric) |
+| `clear_cache(*, disk)` | `:203` | Reset in-memory `_cache`; `disk=True` also deletes persistent CSVs |
 
-Module-level `_cache: dict[int, list[tuple[date, dict[str, float]]]]` at `:25`.
+Module-level `_cache: dict[int, list[tuple[date, dict[str, float]]]]` at `:27`.
 
 XML namespace constants `_NS` at `:12`, URL template `_BASE_URL` at `:18`.
 
