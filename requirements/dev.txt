@@ -27,7 +27,7 @@ nodeenv==1.10.0
 numpy==2.4.2
 packaging==26.0
 pandas==3.0.1
-platformdirs==4.9.2
+platformdirs==4.9.4
 plotly==6.6.0
 plotly-stubs==0.1.2
 pluggy==1.6.0
