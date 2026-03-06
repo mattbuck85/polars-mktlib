@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from mktlib.rates._bundled import load_year
+from mktlib.rates._bundled import YEAR_RANGE, bundled_path, load_year
 
 
 class TestLoadYear:
@@ -48,3 +48,20 @@ class TestLoadYear:
         assert "BC_3MONTH" in all_keys
         assert "BC_10YEAR" in all_keys
         assert "BC_30YEAR" in all_keys
+
+
+class TestBundledPath:
+    def test_returns_path_for_known_year(self):
+        p = bundled_path(2024)
+        assert p is not None
+        assert p.exists()
+        assert p.name == "2024.csv"
+
+    def test_returns_none_for_missing_year(self):
+        assert bundled_path(1900) is None
+
+    def test_year_range_covers_bundled_files(self):
+        """Every year in YEAR_RANGE has a bundled CSV."""
+        for year in YEAR_RANGE:
+            p = bundled_path(year)
+            assert p is not None, f"Missing bundled CSV for {year}"
