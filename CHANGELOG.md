@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.3
+
+### Fixed
+
+- `fetch_average_rate` now falls back to the last available rate when the requested date range has no trading days, instead of returning 0.0.
+
+### Added
+
+- `_data/schema.csv` — year-by-field presence matrix recording which BC_* instruments exist per year, replacing hardcoded `_FIELDS` lists in `_disk_cache.py` and `scripts/refresh_treasury_data.py`.
+- `_schema.py` module with `all_fields()` and `load_schema()` readers (cached).
+- The refresh script now auto-discovers new Treasury instruments from XML and updates `schema.csv` — no code changes needed when Treasury.gov adds fields.
+
 ## 0.5.2
 
 ### Changed
