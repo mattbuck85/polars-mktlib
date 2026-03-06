@@ -135,13 +135,22 @@ def _mock_urlopen(xml_by_year: dict[int, str]):
 
 
 @pytest.fixture(autouse=True)
-def _clear_treasury_cache():
-    """Ensure each test starts with a clean cache; isolate disk cache."""
+def _clear_treasury_cache(tmp_path):
+    """Ensure each test starts with a clean cache; isolate disk cache.
+
+    Redirects _CACHE_DIR to a temp directory so ``load_years`` can write
+    and scan real CSVs, while the dict-based ``load_year`` is still
+    mocked to None (preventing ``fetch_year`` from short-circuiting).
+    """
     clear_cache()
     with (
+        patch.object(_dc_mod, "_CACHE_DIR", tmp_path),
         patch("mktlib.rates._disk_cache.load_year", return_value=None),
-        patch("mktlib.rates._disk_cache.save_year"),
+        patch("mktlib.rates._disk_cache.save_year", wraps=_orig_dc_save),
         patch("mktlib.rates._treasury._bundled.load_year", return_value=[]),
+        patch(
+            "mktlib.rates._treasury._bundled.bundled_path", return_value=None
+        ),
     ):
         yield
     clear_cache()
@@ -162,14 +171,73 @@ class TestFetchAverageRate:
         expected = (0.054 + 0.0538 + 0.0536) / 3
         assert avg == pytest.approx(expected)
 
-    def test_empty_range_returns_zero(self):
-        """No data in range → return 0.0."""
+    def test_empty_range_falls_back_to_last_available(self):
+        """No data in range but year has earlier data → last available rate."""
         with patch(
             "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
         ):
+            # July has no data, but Jan 4 has BC_3MONTH=0.0536
             avg = fetch_average_rate(date(2024, 7, 1), date(2024, 7, 31))
 
+        assert avg == pytest.approx(0.0536)
+
+    def test_recent_range_no_data_uses_last_available(self):
+        """Date range has no trading days but year has earlier data → last available rate."""
+        with patch(
+            "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
+        ):
+            # Jan 5-6 is a weekend — no data, but Jan 4 has BC_3MONTH=0.0536
+            avg = fetch_average_rate(date(2024, 1, 5), date(2024, 1, 6))
+
+        assert avg == pytest.approx(0.0536)
+
+    def test_recent_range_no_data_in_year_returns_zero(self):
+        """Year has no data at all → still returns 0.0."""
+        # Empty XML feed for 2024
+        empty_xml = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<feed xmlns="http://www.w3.org/2005/Atom"'
+            ' xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"'
+            ' xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices">'
+            "</feed>"
+        )
+        with patch(
+            "mktlib.rates._treasury.urlopen",
+            _mock_urlopen({2023: empty_xml, 2024: empty_xml}),
+        ):
+            avg = fetch_average_rate(date(2024, 1, 5), date(2024, 1, 6))
+
         assert avg == 0.0
+
+    def test_partial_range_uses_exact_matches_first(self):
+        """Some days in range have data → returns their mean (no fallback)."""
+        with patch(
+            "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
+        ):
+            # Jan 2 and Jan 3 have data; fallback should NOT be used
+            avg = fetch_average_rate(date(2024, 1, 2), date(2024, 1, 3))
+
+        expected = (0.054 + 0.0538) / 2
+        assert avg == pytest.approx(expected)
+
+    def test_january_rollover_uses_previous_year(self):
+        """Early Jan with no current-year data falls back to last rate from previous Dec."""
+        # 2025 has no data; 2024 has data through Jan 4
+        empty_2025 = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<feed xmlns="http://www.w3.org/2005/Atom"'
+            ' xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"'
+            ' xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices">'
+            "</feed>"
+        )
+        with patch(
+            "mktlib.rates._treasury.urlopen",
+            _mock_urlopen({2024: _XML_2024, 2025: empty_2025}),
+        ):
+            avg = fetch_average_rate(date(2025, 1, 1), date(2025, 1, 3))
+
+        # Should fall back to last 2024 rate: Jan 4 BC_3MONTH = 0.0536
+        assert avg == pytest.approx(0.0536)
 
     def test_network_error_no_bundled(self):
         """Network failure with no bundled data re-raises original exception."""
@@ -274,26 +342,22 @@ class TestFetchMeanRate:
         assert geo < arith
 
     def test_empty_range_arithmetic(self):
+        """No data in range → falls back to last available rate."""
         with patch(
             "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
         ):
-            assert (
-                fetch_mean_rate(
-                    date(2024, 7, 1), date(2024, 7, 31), method="arithmetic"
-                )
-                == 0.0
-            )
+            assert fetch_mean_rate(
+                date(2024, 7, 1), date(2024, 7, 31), method="arithmetic"
+            ) == pytest.approx(0.0536)
 
     def test_empty_range_geometric(self):
+        """No data in range → falls back to last available rate."""
         with patch(
             "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
         ):
-            assert (
-                fetch_mean_rate(
-                    date(2024, 7, 1), date(2024, 7, 31), method="geometric"
-                )
-                == 0.0
-            )
+            assert fetch_mean_rate(
+                date(2024, 7, 1), date(2024, 7, 31), method="geometric"
+            ) == pytest.approx(0.0536)
 
 
 # ---------------------------------------------------------------------------
@@ -658,11 +722,11 @@ class TestTreasuryRateEnum:
     def test_all_14_members(self):
         assert len(TreasuryRate) == 14
 
-    def test_values_match_disk_cache_fields(self):
-        from mktlib.rates._disk_cache import _FIELDS
+    def test_values_match_schema_fields(self):
+        from mktlib.rates._schema import all_fields
 
         enum_values = sorted(m.value for m in TreasuryRate)
-        assert enum_values == sorted(_FIELDS)
+        assert enum_values == sorted(all_fields())
 
     def test_original_members_unchanged(self):
         """The 7 original members keep their names and values."""

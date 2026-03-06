@@ -105,6 +105,25 @@ def fetch_year(year: int) -> list[RateRow]:
     return rows
 
 
+def _last_available_rate(
+    start: date,
+    end: date,
+    instrument: str,
+) -> list[float]:
+    """Return the last available rate before or on *end* as a single-element list, or ``[]``.
+
+    Scans one year before *start* to handle the January rollover case where
+    *start* and *end* fall in early January before the new year has any data.
+    """
+    for year in range(end.year, start.year - 2, -1):
+        rows = fetch_year(year)
+        for row in reversed(rows):
+            row_date: date = row["date"]  # type: ignore[assignment]
+            if row_date <= end and instrument in row:
+                return [row[instrument]]  # type: ignore[list-item]
+    return []
+
+
 def _daily_rates(
     start: date,
     end: date,
@@ -128,6 +147,8 @@ def fetch_average_rate(
     """Return the arithmetic mean of daily rates for the period."""
     daily = _daily_rates(start, end, instrument)
     if not daily:
+        daily = _last_available_rate(start, end, instrument)
+    if not daily:
         return 0.0
     return mean(daily)
 
@@ -145,6 +166,8 @@ def fetch_mean_rate(
     ``exp(mean(log(1 + r))) - 1``.
     """
     rates = _daily_rates(start, end, instrument)
+    if not rates:
+        rates = _last_available_rate(start, end, instrument)
     if not rates:
         return 0.0
     if method == "geometric":
