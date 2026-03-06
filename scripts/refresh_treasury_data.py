@@ -25,29 +25,21 @@ _BASE_URL = (
     "&field_tdr_date_value={year}"
 )
 
-# All BC_ fields that may appear in Treasury data
-_FIELDS = [
-    "BC_1MONTH",
-    "BC_2MONTH",
-    "BC_3MONTH",
-    "BC_4MONTH",
-    "BC_6MONTH",
-    "BC_1YEAR",
-    "BC_2YEAR",
-    "BC_3YEAR",
-    "BC_5YEAR",
-    "BC_7YEAR",
-    "BC_10YEAR",
-    "BC_20YEAR",
-    "BC_30YEAR",
-    "BC_30YEARDISPLAY",
-]
-
 _DATA_DIR = (
     Path(__file__).resolve().parent.parent / "mktlib" / "rates" / "_data"
 )
+_SCHEMA_PATH = _DATA_DIR / "schema.csv"
 
 _START_YEAR = 2000
+
+
+def _load_known_fields() -> list[str]:
+    """Load known BC_* fields from schema.csv, or return empty list."""
+    if not _SCHEMA_PATH.exists():
+        return []
+    with _SCHEMA_PATH.open(encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return [f for f in (reader.fieldnames or []) if f != "year"]
 
 
 def _fetch_and_parse(year: int) -> list[dict[str, str]]:
@@ -88,10 +80,11 @@ def _fetch_and_parse(year: int) -> list[dict[str, str]]:
     return rows
 
 
-def _write_csv(year: int, rows: list[dict[str, str]]) -> Path:
+def _write_csv(
+    year: int, rows: list[dict[str, str]], all_fields: list[str]
+) -> Path:
     """Write rows to a CSV file, returning the path."""
-    # Determine which fields actually have data this year
-    used_fields = [f for f in _FIELDS if any(f in row for row in rows)]
+    used_fields = [f for f in all_fields if any(f in row for row in rows)]
     fieldnames = ["date", *used_fields]
 
     path = _DATA_DIR / f"{year}.csv"
@@ -104,6 +97,18 @@ def _write_csv(year: int, rows: list[dict[str, str]]) -> Path:
     return path
 
 
+def _write_schema(
+    year_fields: dict[int, list[str]], all_fields: list[str]
+) -> None:
+    """Write schema.csv with per-year field presence flags."""
+    with _SCHEMA_PATH.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["year", *all_fields])
+        for year in sorted(year_fields):
+            present = set(year_fields[year])
+            writer.writerow([year, *(1 if fld in present else 0 for fld in all_fields)])
+
+
 def main() -> None:
     current_year = date.today().year
     years = range(_START_YEAR, current_year + 1)
@@ -111,21 +116,46 @@ def main() -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Refreshing Treasury data for {_START_YEAR}–{current_year}")
 
+    # Start with known fields from existing schema.csv (preserves order)
+    known = _load_known_fields()
+    all_fields_set = set(known)
+    all_fields_ordered = list(known)
+
     errors: list[int] = []
+    year_data: dict[int, list[dict[str, str]]] = {}
+    year_fields: dict[int, list[str]] = {}
+
     for year in years:
         try:
             rows = _fetch_and_parse(year)
             if rows:
-                _write_csv(year, rows)
+                year_data[year] = rows
+                # Discover BC_* fields present this year
+                present: set[str] = set()
+                for row in rows:
+                    present.update(k for k in row if k.startswith("BC_"))
+                year_fields[year] = sorted(present)
+                # Track any new fields (append to preserve existing order)
+                for field in sorted(present - all_fields_set):
+                    all_fields_ordered.append(field)
+                    all_fields_set.add(field)
         except Exception as exc:
             print(f"  ERROR for {year}: {exc}")
             errors.append(year)
+
+    # Write per-year CSVs
+    for year, rows in year_data.items():
+        _write_csv(year, rows, all_fields_ordered)
+
+    # Write updated schema.csv
+    _write_schema(year_fields, all_fields_ordered)
+    print(f"  Updated schema.csv ({len(all_fields_ordered)} fields, {len(year_fields)} years)")
 
     if errors:
         print(f"\nFailed years: {errors}", file=sys.stderr)
         sys.exit(1)
     else:
-        print(f"\nDone. {len(years)} years written to {_DATA_DIR}")
+        print(f"\nDone. {len(year_data)} years written to {_DATA_DIR}")
 
 
 if __name__ == "__main__":

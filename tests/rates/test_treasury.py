@@ -722,11 +722,11 @@ class TestTreasuryRateEnum:
     def test_all_14_members(self):
         assert len(TreasuryRate) == 14
 
-    def test_values_match_disk_cache_fields(self):
-        from mktlib.rates._disk_cache import _FIELDS
+    def test_values_match_schema_fields(self):
+        from mktlib.rates._schema import all_fields
 
         enum_values = sorted(m.value for m in TreasuryRate)
-        assert enum_values == sorted(_FIELDS)
+        assert enum_values == sorted(all_fields())
 
     def test_original_members_unchanged(self):
         """The 7 original members keep their names and values."""

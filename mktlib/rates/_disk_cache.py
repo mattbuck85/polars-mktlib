@@ -7,28 +7,12 @@ import time
 from datetime import date
 from pathlib import Path
 
+from ._schema import all_fields
+
 type RateRow = dict[str, date | float]
 
 _CACHE_DIR = Path.home() / ".cache" / "mktlib" / "rates"
 _MAX_AGE = 7 * 86400  # 1 week in seconds
-
-# All BC_ fields in canonical order (matches bundled CSVs / refresh script)
-_FIELDS = [
-    "BC_1MONTH",
-    "BC_2MONTH",
-    "BC_3MONTH",
-    "BC_4MONTH",
-    "BC_6MONTH",
-    "BC_1YEAR",
-    "BC_2YEAR",
-    "BC_3YEAR",
-    "BC_5YEAR",
-    "BC_7YEAR",
-    "BC_10YEAR",
-    "BC_20YEAR",
-    "BC_30YEAR",
-    "BC_30YEARDISPLAY",
-]
 
 
 def _is_stale(path: Path, year: int) -> bool:
@@ -72,7 +56,7 @@ def save_year(year: int, rows: list[RateRow]) -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     # Determine which fields actually have data
-    used_fields = [f for f in _FIELDS if any(f in row for row in rows)]
+    used_fields = [f for f in all_fields() if any(f in row for row in rows)]
     fieldnames = ["date", *used_fields]
 
     path = _CACHE_DIR / f"{year}.csv"

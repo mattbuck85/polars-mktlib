@@ -271,13 +271,19 @@ spread = get_treasury_spread("2024-01-01", "2024-03-31")
 | `TreasuryRate.THIRTY_YEAR` | `BC_30YEAR` | 30-year Treasury |
 | `TreasuryRate.THIRTY_YEAR_DISPLAY` | `BC_30YEARDISPLAY` | 30-year Treasury (display) |
 
+### Field Discovery
+
+The set of known Treasury instruments is defined in the bundled `_data/schema.csv` file — a year-by-field presence matrix recording which BC_* fields exist for each year. Treasury.gov has added instruments over time (e.g. BC_2MONTH appeared in 2018, BC_4MONTH in 2022).
+
+When the refresh script (`scripts/refresh_treasury_data.py`) fetches data from Treasury.gov, any new BC_* fields discovered in the XML are automatically appended to `schema.csv`. No code changes are needed to support new instruments.
+
 ### Caching
 
 Data is cached at three levels to minimize network requests:
 
 1. **In-memory** — per-year data cached for the process lifetime
 2. **Disk** — `~/.cache/mktlib/rates/{year}.csv` with 7-day TTL for the current year; past years never expire
-3. **Bundled** — historical CSVs (2006-2026) shipped with the package for offline use
+3. **Bundled** — historical CSVs (2000-2026) shipped with the package for offline use
 
 On network failure, the library falls back to stale disk cache or bundled data and emits a `UserWarning`.
 

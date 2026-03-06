@@ -39,6 +39,17 @@ Persistent storage at `~/.cache/mktlib/rates/{year}.csv`. 7-day TTL for current-
 | `clear()` | — | Delete all cached CSVs. |
 | `_is_stale(path, year)` | — | `True` if current-year file older than 7 days. |
 
+## Schema (`_schema.py`)
+
+Single source of truth for known BC_* fields, read from `_data/schema.csv`.
+
+| Function | Purpose |
+|-|-|
+| `all_fields()` | Canonical ordered list of all BC_* field names (cached). Replaces former `_FIELDS` list. |
+| `load_schema()` | `{year: [fields present]}` dict from schema.csv (cached). |
+
+`schema.csv` format: `year,BC_1MONTH,...,BC_30YEARDISPLAY` with `1`/`0` presence flags per year. Updated by `scripts/refresh_treasury_data.py`.
+
 ## Bundled Data (`_bundled.py`)
 
 | Function | Line | Purpose |
