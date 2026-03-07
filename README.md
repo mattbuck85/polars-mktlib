@@ -1,7 +1,8 @@
 # mktlib
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Documentation](https://readthedocs.org/projects/mktlib/badge/?version=latest)](https://mktlib.readthedocs.io/en/latest/)
 
 Polars-native financial market toolkit. Zero pandas dependency.
 
