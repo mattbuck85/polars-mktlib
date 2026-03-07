@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.4
+
+### Changed
+
+- Lowered minimum Python requirement from 3.14 to 3.12. No code changes needed — all features used are available in 3.12+.
+
+### Added
+
+- Sphinx documentation with Read the Docs pipeline.
+
 ## 0.5.3
 
 ### Fixed

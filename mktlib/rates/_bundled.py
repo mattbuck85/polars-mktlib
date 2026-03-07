@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import csv
 from importlib.resources import files
 from pathlib import Path
 
-from ._disk_cache import RateRow
+from ._disk_cache import RateRow, parse_csv
 
 YEAR_RANGE = range(2000, 2027)  # update when new years are bundled
 
@@ -26,17 +25,4 @@ def load_year(year: int) -> list[RateRow]:
     except FileNotFoundError:
         return []
 
-    from datetime import date
-
-    rows: list[RateRow] = []
-    for row in csv.DictReader(text.splitlines()):
-        row_date = date.fromisoformat(row["date"])
-        rates: RateRow = {"date": row_date}
-        for key, val in row.items():
-            if key.startswith("BC_") and val:
-                try:
-                    rates[key] = float(val) / 100.0
-                except ValueError:
-                    continue
-        rows.append(rates)
-    return rows
+    return parse_csv(text)

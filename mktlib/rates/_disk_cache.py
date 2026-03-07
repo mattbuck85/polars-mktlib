@@ -22,6 +22,22 @@ def _is_stale(path: Path, year: int) -> bool:
     return path.stat().st_mtime < time.time() - _MAX_AGE
 
 
+def parse_csv(text: str) -> list[RateRow]:
+    """Parse a Treasury yield CSV string into rate rows."""
+    rows: list[RateRow] = []
+    for row in csv.DictReader(text.splitlines()):
+        row_date = date.fromisoformat(row["date"])
+        rates: RateRow = {"date": row_date}
+        for key, val in row.items():
+            if key.startswith("BC_") and val:
+                try:
+                    rates[key] = float(val) / 100.0
+                except ValueError:
+                    continue
+        rows.append(rates)
+    return rows
+
+
 def load_year(
     year: int, *, ignore_stale: bool = False
 ) -> list[RateRow] | None:
@@ -36,19 +52,7 @@ def load_year(
     if not ignore_stale and _is_stale(path, year):
         return None
 
-    rows: list[RateRow] = []
-    text = path.read_text(encoding="utf-8")
-    for row in csv.DictReader(text.splitlines()):
-        row_date = date.fromisoformat(row["date"])
-        rates: RateRow = {"date": row_date}
-        for key, val in row.items():
-            if key.startswith("BC_") and val:
-                try:
-                    rates[key] = float(val) / 100.0
-                except ValueError:
-                    continue
-        rows.append(rates)
-    return rows
+    return parse_csv(path.read_text(encoding="utf-8"))
 
 
 def save_year(year: int, rows: list[RateRow]) -> None:
