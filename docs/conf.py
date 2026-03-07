@@ -36,7 +36,7 @@ exclude_patterns = ["_build", "CODEMAPS"]
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
-html_baseurl = "https://mktlib.readthedocs.io/en/latest/"
+html_baseurl = "https://polars-mktlib.readthedocs.io/en/latest/"
 sitemap_url_scheme = "{link}"
 
 # -- autodoc settings --------------------------------------------------------
@@ -54,6 +54,6 @@ intersphinx_mapping = {
 
 # -- Open Graph settings -----------------------------------------------------
 
-ogp_site_url = "https://mktlib.readthedocs.io/en/latest/"
+ogp_site_url = "https://polars-mktlib.readthedocs.io/en/latest/"
 ogp_site_name = "mktlib"
 ogp_description_length = 200
