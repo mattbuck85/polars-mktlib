@@ -23,7 +23,11 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "sphinx_autodoc_typehints",
+    "sphinx_sitemap",
+    "sphinxext.opengraph",
 ]
+
+language = "en"
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "CODEMAPS"]
@@ -32,6 +36,8 @@ exclude_patterns = ["_build", "CODEMAPS"]
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
+html_baseurl = "https://mktlib.readthedocs.io/en/latest/"
+sitemap_url_scheme = "{link}"
 
 # -- autodoc settings --------------------------------------------------------
 
@@ -45,3 +51,9 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "polars": ("https://docs.pola.rs/api/python/stable", None),
 }
+
+# -- Open Graph settings -----------------------------------------------------
+
+ogp_site_url = "https://mktlib.readthedocs.io/en/latest/"
+ogp_site_name = "mktlib"
+ogp_description_length = 200
