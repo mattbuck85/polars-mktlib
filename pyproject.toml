@@ -17,6 +17,7 @@ dependencies = ["polars"]
 
 [project.optional-dependencies]
 data = ["numpy"]
+backtest = ["polars-talib"]
 reports = [
     "jinja2>=3.1",
     "plotly>=6.0",
