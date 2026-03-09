@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from mktlib.backtest._conditions import Crossover, Crossunder
 from mktlib.backtest._types import TradeSide
 
 
-@dataclass(frozen=True, slots=True)
 class MacdCrossover:
     """MACD crossover strategy.
 
@@ -14,17 +11,13 @@ class MacdCrossover:
     (e.g. added via ``polars-talib``).
     """
 
-    macd_col: str = "macd"
-    signal_col: str = "macd_signal"
-
     def entry(self) -> Crossover:
-        return Crossover(self.macd_col, self.signal_col)
+        return Crossover("macd", "macd_signal")
 
     def exit(self) -> Crossunder:
-        return Crossunder(self.macd_col, self.signal_col)
+        return Crossunder("macd", "macd_signal")
 
 
-@dataclass(frozen=True, slots=True)
 class MacdCrossoverShort:
     """MACD crossover strategy for short side.
 
@@ -33,11 +26,8 @@ class MacdCrossoverShort:
     engine automatically applies short-side return logic.
     """
 
-    macd_col: str = "macd"
-    signal_col: str = "macd_signal"
-
     def entry(self) -> Crossunder:
-        return Crossunder(self.macd_col, self.signal_col, trade_side=TradeSide.SHORT)
+        return Crossunder("macd", "macd_signal", trade_side=TradeSide.SHORT)
 
     def exit(self) -> Crossover:
-        return Crossover(self.macd_col, self.signal_col)
+        return Crossover("macd", "macd_signal")

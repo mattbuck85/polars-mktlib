@@ -6,10 +6,10 @@ import math
 import polars as pl
 import pytest
 
+from mktlib.metrics import drawdown_series
 from mktlib.reports._stats import (
     compute_metrics,
     cumulative_returns,
-    drawdown_series,
     monthly_returns,
     rolling_sharpe,
     rolling_volatility,
