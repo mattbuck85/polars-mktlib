@@ -23,7 +23,7 @@ mktlib has optional extras for additional functionality:
 
    pip install mktlib[data]        # synthetic data generators (adds numpy)
    pip install mktlib[reports]     # tearsheet generation (adds plotly, jinja2)
-   pip install mktlib[data,reports]  # both
+   pip install mktlib[data,reports]  # both extras
 
 Install from source
 -------------------

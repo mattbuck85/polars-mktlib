@@ -4,12 +4,14 @@
 
 | Subpackage | Purpose | Entry point |
 |-|-|-|
+| `mktlib.backtest` | Vectorized backtesting engine with calendar support | `run(df, strategy)` |
+| `mktlib.metrics` | Standalone financial metrics (Sharpe, drawdown, etc.) | `calculate_metric(Metric.SHARPE, ret)` |
 | `mktlib.scheduling` | Exchange calendars (sessions, minutes, trading index) | `get_calendar("XNYS")` |
 | `mktlib.reports` | Performance metrics + HTML tearsheets | `metrics(df)`, `html(df)` |
 | `mktlib.rates` | Treasury yield curves with bundled fallback | `get_risk_free_rate(start, end)` |
 | `mktlib.data` | Synthetic data generators (fBm, GBM, OU, Monte Carlo) | `geometric_brownian_motion(n=1000)` |
 
-Codemaps: `docs/CODEMAPS/{scheduling,reports,rates,data}.md` — read these before grepping.
+Codemaps: `docs/CODEMAPS/{backtest,metrics,scheduling,reports,rates,data}.md` — read these before grepping.
 
 ## Conventions
 
@@ -25,6 +27,7 @@ Codemaps: `docs/CODEMAPS/{scheduling,reports,rates,data}.md` — read these befo
 pytest tests/ -v
 
 # By subpackage
+pytest tests/backtest/ -v
 pytest tests/data/ -v
 pytest tests/rates/ -v
 pytest tests/reports/ -v
@@ -44,6 +47,8 @@ Bundled Treasury CSVs refreshed by `scripts/refresh_treasury_data.py` (standalon
 
 ## Architecture Notes
 
+- `backtest` uses `scheduling` calendars for market-hours filtering and `flatten_eod`. Fill-at-next-open semantics; session-forced exits fill at session-last bar's open.
+- `metrics` is standalone (polars only); used by `reports` for tearsheet stats.
 - `reports.__init__` resolves `rf="auto"` by calling `rates._treasury.fetch_average_rate` — this is the only cross-subpackage dependency.
 - `data` is standalone (requires only `numpy` + `polars`); no cross-subpackage dependencies.
 - `scheduling` is fully standalone with zero external deps beyond polars.
@@ -67,14 +72,6 @@ When adding a new exchange:
    ```
 4. Run `pytest tests/scheduling/test_validation.py -v` and fix any discrepancies before merging
 
-### CME Validation Gap
-
-CME (XCME/GLBX) currently lacks `ExchangeValidationBase` coverage. The `exchange_calendars` CME calendar (`CMES`) uses `America/Chicago` timezone and has more sessions (~259/year vs our ~252) because our CME implementation reuses NYSE holidays directly. Key known differences:
-- `exchange_calendars` CMES treats some NYSE holidays (MLK Day, Presidents Day, etc.) as early-close days rather than full closures
-- Timezone is `America/Chicago` in `exchange_calendars` vs `America/New_York` in our implementation
-- Early close schedule differs (their CME has early closes on MLK, Presidents Day, Memorial Day, Labor Day, Thanksgiving)
-
-This gap should be addressed by adding `TestCMERTHValidation` and investigating the session/early-close discrepancies.
 
 ## Versioning
 

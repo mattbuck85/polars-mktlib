@@ -9,7 +9,6 @@ Polars-native financial market toolkit. Zero pandas dependency.
 ## Table of Contents
 
 - [Installation](#installation)
-- [Data](#data--synthetic-generators)
 - [Scheduling](#scheduling)
   - [Supported Exchanges](#supported-exchanges)
   - [Schedule & Trading Days](#schedule--trading-days)
@@ -24,6 +23,17 @@ Polars-native financial market toolkit. Zero pandas dependency.
   - [Available Instruments](#available-instruments)
   - [Caching](#caching)
   - [Rates API](#rates-api)
+- [Metrics](#metrics--standalone-functions)
+  - [Quick Start](#metrics-quick-start)
+  - [Available Metrics](#available-metrics)
+  - [Dispatcher](#dispatcher)
+  - [Drawdown Series](#drawdown-series)
+- [Backtest](#backtest--vectorized-engine)
+  - [Quick Start](#backtest-quick-start)
+  - [Conditions](#conditions)
+  - [Calendar & Flatten EOD](#calendar--flatten-eod)
+  - [Trade Side](#trade-side)
+  - [Backtest API](#backtest-api)
 - [Reports](#reports--tearsheet-generation)
   - [Quick Start](#reports-quick-start)
   - [Input Types](#input-types)
@@ -33,52 +43,17 @@ Polars-native financial market toolkit. Zero pandas dependency.
   - [Custom Metrics, Charts & Templates](#custom-metrics-charts--templates)
   - [Reports API](#reports-api)
   - [Migration from quantstats](#migration-from-quantstats)
+- [Data](#data--synthetic-generators)
 - [Development](#development)
 - [License](#license)
 
 ## Installation
 
 ```bash
-pip install mktlib              # core (scheduling + rates)
+pip install mktlib              # core (scheduling, rates, metrics, backtest)
 pip install mktlib[data]        # + synthetic data generators (numpy)
 pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 ```
-
-## Data — Synthetic Generators
-
-`mktlib.data` provides stochastic process generators for testing, simulation, and Monte Carlo analysis. All functions return Polars DataFrames with seeded RNG for reproducibility.
-
-```python
-from mktlib.data import (
-    fractional_random_walk,
-    geometric_brownian_motion,
-    monte_carlo,
-    ornstein_uhlenbeck,
-)
-
-# Standard random walk
-walk = fractional_random_walk(1000, seed=42)
-
-# Trending path (Hurst > 0.5)
-trending = fractional_random_walk(1000, hurst=0.8, seed=42)
-
-# GBM price path with 5% drift, 20% annual vol
-gbm = geometric_brownian_motion(252, drift=0.05/252, volatility=0.20/252**0.5, seed=42)
-
-# Mean-reverting process
-ou = ornstein_uhlenbeck(500, theta=0.7, mu=100.0, sigma=1.0, seed=42)
-
-# 1000 Monte Carlo simulations of GBM
-sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42)
-# Returns DataFrame with columns [simulation, step, price]
-```
-
-| Function | Process | Output columns |
-|-|-|-|
-| `fractional_random_walk` | Fractional Brownian motion (Cholesky) | `step`, `price` |
-| `geometric_brownian_motion` | Log-normal GBM: dS = μSdt + σSdW | `step`, `price` |
-| `ornstein_uhlenbeck` | Mean-reverting: dx = θ(μ−x)dt + σdW | `step`, `value` |
-| `monte_carlo` | N simulations of any generator | `simulation`, `step`, ... |
 
 ## Scheduling
 
@@ -325,6 +300,192 @@ def get_treasury_spread(
 | `get_treasury_rates` | `pl.DataFrame` | Daily rates — single (`date`, `rate`), multi/all (wide, one col per instrument) |
 | `get_treasury_spread` | `pl.DataFrame` | Daily spread (`date`, `spread`) between two instruments |
 
+## Metrics — Standalone Functions
+
+`mktlib.metrics` provides standalone financial metric functions operating on Polars return series. No dependencies beyond polars.
+
+### Metrics Quick Start
+
+```python
+from mktlib.metrics import (
+    sharpe, sortino, cumulative_return, cagr,
+    drawdown_series, calculate_metric, Metric,
+)
+
+# Individual functions
+sr = sharpe(returns_series, rf=0.05)
+cr = cumulative_return(returns_series)
+dd = drawdown_series(returns_series)
+
+# Dispatcher — compute any metric by enum
+sr = calculate_metric(Metric.SHARPE, returns_series, rf=0.05)
+```
+
+### Available Metrics
+
+| Function | Signature | Description |
+|-|-|-|
+| `cumulative_return` | `(ret, compounded=True)` | Total cumulative return |
+| `cagr` | `(ret, compounded=True, ppy=252)` | Compound annual growth rate |
+| `annualized_volatility` | `(ret, ppy=252)` | Annualized std deviation |
+| `sharpe` | `(ret, ppy=252, rf=0.0)` | Annualized Sharpe ratio |
+| `sortino` | `(ret, ppy=252, rf=0.0)` | Annualized Sortino ratio (downside deviation) |
+| `omega` | `(ret, ppy=252, rf=0.0)` | Omega ratio (gains / losses above threshold) |
+| `var` | `(ret, alpha=0.05)` | Value at Risk at alpha confidence |
+| `cvar` | `(ret, alpha=0.05)` | Conditional VaR (Expected Shortfall) |
+| `win_rate` | `(ret)` | Fraction of positive-return bars |
+| `payoff_ratio` | `(ret)` | Average win / average loss |
+| `profit_factor` | `(ret)` | Sum of gains / sum of losses |
+| `kelly_criterion` | `(ret)` | Kelly criterion from bar-level returns |
+| `avg_drawdown` | `(dd)` | Average drawdown during episodes |
+| `longest_drawdown_days` | `(dd, dates)` | Longest drawdown in calendar days |
+
+All functions accept `pl.Series` and return `float`. Empty inputs return `0.0`.
+
+### Dispatcher
+
+```python
+from mktlib.metrics import calculate_metric, Metric
+
+result = calculate_metric(
+    Metric.SHARPE,
+    returns_series,
+    ppy=252,
+    rf=0.05,
+    alpha=0.05,       # for VaR/CVaR
+    compounded=True,   # for cumulative return / drawdown
+    dd=dd_series,      # optional pre-computed drawdown
+    dates=date_series, # required for LONGEST_DRAWDOWN_DAYS
+)
+```
+
+Lazily computes drawdown when needed. `CALMAR` (CAGR / max DD), `ROMAD` (cum return / max DD), and `MAX_DRAWDOWN` are computed inline in the dispatcher.
+
+### Drawdown Series
+
+```python
+dd = drawdown_series(returns_series, compounded=True)
+# Returns pl.Series of drawdown values (0 = at peak, negative = below peak)
+```
+
+## Backtest — Vectorized Engine
+
+`mktlib.backtest` provides a signal-driven backtesting engine with fill-at-next-open semantics. Strategies define entry/exit conditions as composable Polars expressions. Supports exchange calendar filtering, session-boundary position management, and long/short sides.
+
+### Backtest Quick Start
+
+```python
+from dataclasses import dataclass
+from mktlib.backtest import run, Crossover, Crossunder, BacktestResult
+
+@dataclass(frozen=True, slots=True)
+class SmaCross:
+    def entry(self) -> Crossover:
+        return Crossover("fast_sma", "slow_sma")
+
+    def exit(self) -> Crossunder:
+        return Crossunder("fast_sma", "slow_sma")
+
+# df must have: date, open, close, fast_sma, slow_sma
+result: BacktestResult = run(df, SmaCross())
+
+result.returns   # DataFrame[date, return] — per-bar strategy returns
+result.trades    # DataFrame[entry_date, exit_date, pnl, bars_held]
+result.signals   # Full frame with _entry, _exit, _position columns
+```
+
+**Fill-at-next-open model**: signal at bar *t* generates a market order that fills at bar *t+1*'s open.
+
+| Bar type | Return formula |
+|-|-|
+| Entry bar (*t+1*) | `(close - open) / open` |
+| Middle bars | `close / prev_close - 1` |
+| Exit bar | `(open - prev_close) / prev_close` |
+
+### Conditions
+
+Conditions resolve to boolean `pl.Expr` and compose with `&`, `|`, `~`:
+
+```python
+from mktlib.backtest import (
+    Crossover, Crossunder, PriceIsAbove, PriceIsBelow,
+    IsRising, IsFalling, All, Any_, Not,
+)
+
+# Column crosses above column or constant
+entry = Crossover("fast", "slow")
+entry = Crossover("rsi", 30.0)
+
+# Compose conditions
+entry = Crossover("fast", "slow") & PriceIsAbove("close", "sma_200")
+exit = Crossunder("fast", "slow") | PriceIsBelow("close", "stop_loss")
+```
+
+| Condition | Description |
+|-|-|
+| `Crossover(a, b)` | `a` crosses above `b` (column or constant) |
+| `Crossunder(a, b)` | `a` crosses below `b` |
+| `PriceIsAbove(a, b)` | `a > b` |
+| `PriceIsBelow(a, b)` | `a < b` |
+| `IsRising(col, period)` | Value > value `period` bars ago |
+| `IsFalling(col, period)` | Value < value `period` bars ago |
+| `All(a, b)` / `a & b` | Both conditions true |
+| `Any_(a, b)` / `a \| b` | Either condition true |
+| `Not(a)` / `~a` | Invert condition |
+
+### Calendar & Flatten EOD
+
+```python
+from mktlib.scheduling import get_calendar
+
+cal = get_calendar("NYSE")
+
+# Filter to market hours only
+result = run(df, SmaCross(), calendar=cal)
+
+# Force-close positions at session end (no overnight exposure)
+result = run(df, SmaCross(), calendar=cal, flatten_eod=True)
+```
+
+With `flatten_eod=True`:
+- Positions are forced to 0 at each session's last bar (e.g. 15:59 for NYSE)
+- Entries are suppressed on session-last bars
+- Session-forced exits fill at the session-last bar's open (not next session's open)
+- Overnight gaps are never captured
+
+### Trade Side
+
+```python
+from mktlib.backtest import TradeSide
+
+# Short side — returns are negated
+result = run(df, SmaCross(), trade_side=TradeSide.SHORT)
+
+# Or set trade_side on the entry condition (overrides run() default)
+entry = Crossover("fast", "slow", trade_side=TradeSide.SHORT)
+```
+
+### Backtest API
+
+```python
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    trade_side: TradeSide = TradeSide.LONG,
+    calendar: ExchangeCalendar | None = None,
+    flatten_eod: bool = False,
+) -> BacktestResult: ...
+```
+
+| Parameter | Description |
+|-|-|
+| `df` | Must contain `date`, `open`, `close`, and indicator columns |
+| `strategy` | Object with `entry()` and `exit()` returning `Condition` |
+| `trade_side` | `LONG` (+1) or `SHORT` (-1); overridden by condition's `trade_side` |
+| `calendar` | Exchange calendar for market-hours filtering |
+| `flatten_eod` | Force-close at session end; requires `calendar` |
+
 ## Reports — Tearsheet Generation
 
 `mktlib.reports` is a Polars-native replacement for quantstats. It computes 25 performance metrics and renders an interactive HTML tearsheet with Plotly charts — no pandas, matplotlib, or seaborn required.
@@ -448,6 +609,42 @@ html(returns, benchmark=bench, output="report.html", title="My Strategy")
 ```
 
 `pd.Series` inputs continue to work during migration. Switch to `pl.Series` or `pl.DataFrame` to eliminate the pandas dependency entirely.
+
+## Data — Synthetic Generators
+
+`mktlib.data` provides stochastic process generators for testing, simulation, and Monte Carlo analysis. All functions return Polars DataFrames with seeded RNG for reproducibility.
+
+```python
+from mktlib.data import (
+    fractional_random_walk,
+    geometric_brownian_motion,
+    monte_carlo,
+    ornstein_uhlenbeck,
+)
+
+# Standard random walk
+walk = fractional_random_walk(1000, seed=42)
+
+# Trending path (Hurst > 0.5)
+trending = fractional_random_walk(1000, hurst=0.8, seed=42)
+
+# GBM price path with 5% drift, 20% annual vol
+gbm = geometric_brownian_motion(252, drift=0.05/252, volatility=0.20/252**0.5, seed=42)
+
+# Mean-reverting process
+ou = ornstein_uhlenbeck(500, theta=0.7, mu=100.0, sigma=1.0, seed=42)
+
+# 1000 Monte Carlo simulations of GBM
+sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42)
+# Returns DataFrame with columns [simulation, step, price]
+```
+
+| Function | Process | Output columns |
+|-|-|-|
+| `fractional_random_walk` | Fractional Brownian motion (Cholesky) | `step`, `price` |
+| `geometric_brownian_motion` | Log-normal GBM: dS = μSdt + σSdW | `step`, `price` |
+| `ornstein_uhlenbeck` | Mean-reverting: dx = θ(μ−x)dt + σdW | `step`, `value` |
+| `monte_carlo` | N simulations of any generator | `simulation`, `step`, ... |
 
 ## Development
 

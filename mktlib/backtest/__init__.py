@@ -1,13 +1,5 @@
 from __future__ import annotations
 
-try:
-    import polars_talib as _plta  # noqa: F401  # type: ignore[import-not-found]
-except ModuleNotFoundError as _e:
-    raise ModuleNotFoundError(
-        "mktlib.backtest requires polars-talib. "
-        "Install with: pip install mktlib[backtest]"
-    ) from _e
-
 from mktlib.backtest._conditions import (
     All,
     Any_,

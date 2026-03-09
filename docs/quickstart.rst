@@ -1,7 +1,72 @@
 Quick Start
 ===========
 
-This guide covers the four subpackages in mktlib with short, runnable examples.
+This guide covers the subpackages in mktlib with short, runnable examples.
+
+Vectorized Backtesting
+----------------------
+
+Run signal-driven backtests with fill-at-next-open semantics:
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+   from mktlib.backtest import run, Crossover, Crossunder
+
+   @dataclass(frozen=True, slots=True)
+   class SmaCross:
+       def entry(self) -> Crossover:
+           return Crossover("fast_sma", "slow_sma")
+
+       def exit(self) -> Crossunder:
+           return Crossunder("fast_sma", "slow_sma")
+
+   # df must have: date, open, close, fast_sma, slow_sma
+   result = run(df, SmaCross())
+   result.returns   # DataFrame[date, return]
+   result.trades    # DataFrame[entry_date, exit_date, pnl, bars_held]
+
+With exchange calendar and session-boundary management:
+
+.. code-block:: python
+
+   from mktlib.scheduling import get_calendar
+
+   cal = get_calendar("NYSE")
+
+   # Filter to market hours, force-close at session end
+   result = run(df, SmaCross(), calendar=cal, flatten_eod=True)
+
+Conditions compose with ``&``, ``|``, ``~``:
+
+.. code-block:: python
+
+   from mktlib.backtest import PriceIsAbove
+
+   entry = Crossover("fast", "slow") & PriceIsAbove("close", "sma_200")
+
+See :doc:`api/backtest` for the full API.
+
+Financial Metrics
+-----------------
+
+Compute standalone metrics from return series (included in base install):
+
+.. code-block:: python
+
+   from mktlib.metrics import (
+       sharpe, sortino, cumulative_return, cagr,
+       drawdown_series, calculate_metric, Metric,
+   )
+
+   sr = sharpe(returns_series, rf=0.05)
+   cr = cumulative_return(returns_series)
+   dd = drawdown_series(returns_series)
+
+   # Or use the dispatcher
+   sr = calculate_metric(Metric.SHARPE, returns_series, rf=0.05)
+
+Available: Sharpe, Sortino, Omega, VaR, CVaR, CAGR, max/avg drawdown, win rate, payoff ratio, profit factor, Kelly criterion, and more. See :doc:`api/metrics` for details.
 
 Exchange Scheduling
 -------------------
