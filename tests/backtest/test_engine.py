@@ -8,6 +8,7 @@ import pytest
 
 from mktlib.backtest._conditions import Crossover, Crossunder
 from mktlib.backtest._engine import run
+from mktlib.backtest._types import TradeSide
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,12 +101,6 @@ class TestRun:
         assert result.trades.height == 0
         assert all(r == 0.0 for r in result.returns["return"].to_list())
 
-    def test_trade_on_custom_column(self, ohlcv: pl.DataFrame) -> None:
-        """Can use a different price column for return calculation."""
-        df = ohlcv.with_columns(pl.col("close").alias("vwap"))
-        result = run(df, SimpleCrossStrategy(), trade_on="vwap")
-        assert result.returns.height == df.height
-
 
 # ---------------------------------------------------------------------------
 # Market hours tests
@@ -183,8 +178,8 @@ def _make_two_session_df() -> pl.DataFrame:
 
 
 class TestMarketHours:
-    def test_prefilter_removes_non_market_bars(self) -> None:
-        """With prefilter_market_data=True, non-market bars are removed."""
+    def test_calendar_filters_non_market_bars(self) -> None:
+        """With calendar, non-market bars are removed."""
         cal = get_calendar("XNYS")
         # Include bars outside market hours (08:00, 18:00)
         df = _make_minute_df(
@@ -195,7 +190,6 @@ class TestMarketHours:
             df,
             SimpleCrossStrategy(),
             calendar=cal,
-            prefilter_market_data=True,
         )
         result_times = result.signals["date"].to_list()
         # Only 09:30 and 10:00 should survive
@@ -204,25 +198,6 @@ class TestMarketHours:
             datetime.time(9, 30) <= t.time() <= datetime.time(15, 59)
             for t in result_times
         )
-
-    def test_mask_mode_zeros_non_market_returns(self) -> None:
-        """With prefilter_market_data=False, all rows present but non-market returns are 0."""
-        cal = get_calendar("XNYS")
-        df = _make_minute_df(
-            datetime.date(2024, 1, 2),
-            [(8, 0), (9, 30), (10, 0), (18, 0)],
-        )
-        result = run(
-            df,
-            SimpleCrossStrategy(),
-            calendar=cal,
-            prefilter_market_data=False,
-        )
-        assert result.signals.height == 4  # all rows kept
-        rets = result.returns["return"].to_list()
-        # Bar 0 (08:00) and bar 3 (18:00) are outside market hours
-        assert rets[0] == 0.0
-        assert rets[3] == 0.0
 
     def test_no_calendar_unchanged(self, ohlcv: pl.DataFrame) -> None:
         """calendar=None produces identical results to current behavior."""
@@ -252,7 +227,6 @@ class TestMarketHours:
             df,
             AlwaysInStrategy(),
             calendar=cal,
-            prefilter_market_data=True,
             flatten_eod=True,
         )
         positions = result.signals["_position"].to_list()
@@ -277,7 +251,6 @@ class TestMarketHours:
             df,
             AlwaysInStrategy(),
             calendar=cal,
-            prefilter_market_data=True,
             flatten_eod=False,
         )
         positions = result.signals["_position"].to_list()
@@ -294,3 +267,73 @@ class TestMarketHours:
         df = _make_minute_df(datetime.date(2024, 1, 2), [(9, 30), (10, 0)])
         with pytest.raises(ValueError, match="flatten_eod.*requires.*calendar"):
             run(df, SimpleCrossStrategy(), flatten_eod=True)
+
+
+class TestShortSide:
+    def test_short_returns_negated(self, ohlcv: pl.DataFrame) -> None:
+        """Short returns are the exact negation of long returns."""
+        strategy = SimpleCrossStrategy()
+        long_result = run(ohlcv, strategy, trade_side=TradeSide.LONG)
+        short_result = run(ohlcv, strategy, trade_side=TradeSide.SHORT)
+        long_rets = long_result.returns["return"].to_list()
+        short_rets = short_result.returns["return"].to_list()
+        for i, (lr, sr) in enumerate(zip(long_rets, short_rets)):
+            assert sr == pytest.approx(-lr, abs=1e-12), f"bar {i}: short={sr} != -long={-lr}"
+
+    def test_short_trade_pnl_negated(self, ohlcv: pl.DataFrame) -> None:
+        """Short trade PnL is the exact negation of long trade PnL."""
+        strategy = SimpleCrossStrategy()
+        long_result = run(ohlcv, strategy, trade_side=TradeSide.LONG)
+        short_result = run(ohlcv, strategy, trade_side=TradeSide.SHORT)
+        assert long_result.trades.height == short_result.trades.height
+        long_pnl = long_result.trades["pnl"].to_list()
+        short_pnl = short_result.trades["pnl"].to_list()
+        for i, (lp, sp) in enumerate(zip(long_pnl, short_pnl)):
+            assert sp == pytest.approx(-lp, abs=1e-12), f"trade {i}: short={sp} != -long={-lp}"
+
+    def test_default_is_long(self, ohlcv: pl.DataFrame) -> None:
+        """Omitting trade_side gives identical results to explicit TradeSide.LONG."""
+        strategy = SimpleCrossStrategy()
+        default_result = run(ohlcv, strategy)
+        long_result = run(ohlcv, strategy, trade_side=TradeSide.LONG)
+        assert default_result.returns.equals(long_result.returns)
+        assert default_result.trades.equals(long_result.trades)
+
+    def test_condition_trade_side_overrides_run_default(self, ohlcv: pl.DataFrame) -> None:
+        """Entry condition's trade_side overrides the run() default."""
+
+        @dataclass(frozen=True, slots=True)
+        class ShortViaConditionStrategy:
+            """Same signals as SimpleCrossStrategy, but entry carries SHORT."""
+            fast: str = "fast"
+            slow: str = "slow"
+
+            def entry(self) -> Crossover:
+                return Crossover(self.fast, self.slow, trade_side=TradeSide.SHORT)
+
+            def exit(self) -> Crossunder:
+                return Crossunder(self.fast, self.slow)
+
+        # run() default is LONG, but entry condition says SHORT
+        result = run(ohlcv, ShortViaConditionStrategy(), trade_side=TradeSide.LONG)
+        # Compare with explicit SHORT at run level using the base strategy
+        explicit_short = run(ohlcv, SimpleCrossStrategy(), trade_side=TradeSide.SHORT)
+        # Returns should match (condition override wins)
+        for i, (a, b) in enumerate(
+            zip(
+                result.returns["return"].to_list(),
+                explicit_short.returns["return"].to_list(),
+            )
+        ):
+            assert a == pytest.approx(b, abs=1e-12), f"bar {i}: condition-level={a} != run-level={b}"
+
+    def test_condition_trade_side_none_falls_back_to_run(self, ohlcv: pl.DataFrame) -> None:
+        """When entry condition has trade_side=None, run() default is used."""
+        # SimpleCrossStrategy doesn't set trade_side on conditions
+        long_result = run(ohlcv, SimpleCrossStrategy(), trade_side=TradeSide.LONG)
+        short_result = run(ohlcv, SimpleCrossStrategy(), trade_side=TradeSide.SHORT)
+        # They should differ (proving the run() default is used)
+        long_rets = long_result.returns["return"].to_list()
+        short_rets = short_result.returns["return"].to_list()
+        for i, (lr, sr) in enumerate(zip(long_rets, short_rets)):
+            assert sr == pytest.approx(-lr, abs=1e-12), f"bar {i}"

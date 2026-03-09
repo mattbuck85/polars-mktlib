@@ -22,7 +22,7 @@ from mktlib.backtest._conditions import (
 )
 from mktlib.backtest._engine import run
 from mktlib.backtest._sweep import sweep
-from mktlib.backtest._types import BacktestResult, Strategy, SweepResult
+from mktlib.backtest._types import BacktestResult, Strategy, SweepResult, TradeSide
 
 __all__ = [
     "All",
@@ -38,6 +38,7 @@ __all__ = [
     "PriceIsBelow",
     "Strategy",
     "SweepResult",
+    "TradeSide",
     "run",
     "sweep",
 ]

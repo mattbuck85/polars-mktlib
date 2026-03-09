@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from mktlib.backtest._types import TradeSide
+
 
 def _ref(b: str | float) -> pl.Expr:
     """Resolve a column name or literal to a Polars expression."""
@@ -12,6 +14,8 @@ def _ref(b: str | float) -> pl.Expr:
 
 class Condition:
     """Base class for signal conditions that resolve to boolean ``pl.Expr``."""
+
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         raise NotImplementedError
@@ -32,6 +36,7 @@ class Crossover(Condition):
 
     a: str
     b: str | float
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         ref = _ref(self.b)
@@ -45,6 +50,7 @@ class Crossunder(Condition):
 
     a: str
     b: str | float
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         ref = _ref(self.b)
@@ -58,6 +64,7 @@ class PriceIsAbove(Condition):
 
     a: str
     b: str | float
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return pl.col(self.a) > _ref(self.b)
@@ -69,6 +76,7 @@ class PriceIsBelow(Condition):
 
     a: str
     b: str | float
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return pl.col(self.a) < _ref(self.b)
@@ -80,6 +88,7 @@ class IsRising(Condition):
 
     col: str
     period: int = 1
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return pl.col(self.col) > pl.col(self.col).shift(self.period)
@@ -91,6 +100,7 @@ class IsFalling(Condition):
 
     col: str
     period: int = 1
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return pl.col(self.col) < pl.col(self.col).shift(self.period)
@@ -105,6 +115,7 @@ class All(Condition):
 
     left: Condition
     right: Condition
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return self.left.resolve() & self.right.resolve()
@@ -116,6 +127,7 @@ class Any_(Condition):
 
     left: Condition
     right: Condition
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return self.left.resolve() | self.right.resolve()
@@ -126,6 +138,7 @@ class Not(Condition):
     """Invert a condition (``~a``)."""
 
     inner: Condition
+    trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return ~self.inner.resolve()

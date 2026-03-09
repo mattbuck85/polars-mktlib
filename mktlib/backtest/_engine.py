@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from mktlib.backtest._types import BacktestResult, Strategy
+from mktlib.backtest._types import BacktestResult, Strategy, TradeSide
 
 if TYPE_CHECKING:
     from mktlib.scheduling import ExchangeCalendar
@@ -74,9 +74,8 @@ def run(
     df: pl.DataFrame,
     strategy: Strategy,
     *,
-    trade_on: str = "close",
+    trade_side: TradeSide = TradeSide.LONG,
     calendar: ExchangeCalendar | None = None,
-    prefilter_market_data: bool = True,
     flatten_eod: bool = False,
 ) -> BacktestResult:
     """Run a vectorized backtest with fill-at-next-open semantics.
@@ -84,18 +83,16 @@ def run(
     Parameters
     ----------
     df
-        Must contain ``date``, ``open``, the *trade_on* price column, and
-        any indicator columns referenced by the strategy.
+        Must contain ``date``, ``open``, ``close``, and any indicator
+        columns referenced by the strategy.
     strategy
         Object with ``entry()`` and ``exit()`` returning Conditions.
-    trade_on
-        Price column used for return calculation (default ``close``).
+    trade_side
+        Trade direction. Overridden by the entry condition's ``trade_side``
+        if set.
     calendar
-        Exchange calendar for market-hours filtering.
-    prefilter_market_data
-        If True (default), filter DataFrame to market hours before signal
-        computation. If False, compute indicators on all data but zero out
-        non-market returns.
+        Exchange calendar for market-hours filtering. When provided, the
+        DataFrame is filtered to market hours before signal computation.
     flatten_eod
         Force-close positions at each session's last bar, eliminating
         overnight exposure. Requires *calendar*.
@@ -113,13 +110,18 @@ def run(
         msg = "flatten_eod=True requires a calendar"
         raise ValueError(msg)
 
-    # Pre-filter to market hours if requested
-    if calendar is not None and prefilter_market_data:
+    # Filter to market hours when calendar is provided
+    if calendar is not None:
         mask = _build_market_mask(df["date"], calendar)
         df = df.filter(mask)
 
-    entry_expr = strategy.entry().resolve()
-    exit_expr = strategy.exit().resolve()
+    entry_cond = strategy.entry()
+    exit_cond = strategy.exit()
+    entry_expr = entry_cond.resolve()
+    exit_expr = exit_cond.resolve()
+
+    # Entry condition's side overrides the run() default
+    effective_side = int(entry_cond.trade_side or trade_side)
 
     signals = df.with_columns(
         entry_expr.alias("_entry"),
@@ -184,9 +186,9 @@ def run(
     _is_exit_bar = (_pos_delayed == 0) & (_pos_delayed2 == 1)
 
     # Per-bar returns with fill-at-open adjustment
-    _entry_ret = (pl.col(trade_on) - pl.col("open")) / pl.col("open")
-    _normal_ret = pl.col(trade_on) / pl.col(trade_on).shift(1) - 1
-    _exit_ret = (pl.col("open") - pl.col(trade_on).shift(1)) / pl.col(trade_on).shift(1)
+    _entry_ret = ((pl.col("close") - pl.col("open")) / pl.col("open")) * effective_side
+    _normal_ret = (pl.col("close") / pl.col("close").shift(1) - 1) * effective_side
+    _exit_ret = ((pl.col("open") - pl.col("close").shift(1)) / pl.col("close").shift(1)) * effective_side
 
     signals = signals.with_columns(
         pl.when(_is_entry_bar)
@@ -211,22 +213,15 @@ def run(
             .alias("return"),
         )
 
-    # Mask mode: zero out returns outside market hours
-    if calendar is not None and not prefilter_market_data:
-        _in_market = _build_market_mask(signals["date"], calendar)
-        signals = signals.with_columns(
-            (pl.col("return") * _in_market.cast(pl.Int8)).alias("return"),
-        )
-
     returns = signals.select("date", "return")
 
     # Build trade log from entry/exit transitions
-    trades = _extract_trades(signals, trade_on)
+    trades = _extract_trades(signals, effective_side)
 
     return BacktestResult(returns=returns, trades=trades, signals=signals)
 
 
-def _extract_trades(signals: pl.DataFrame, trade_on: str) -> pl.DataFrame:
+def _extract_trades(signals: pl.DataFrame, side: int = 1) -> pl.DataFrame:
     """Extract per-trade PnL from position transitions.
 
     Fill prices use the *next* bar's open (fill-at-next-open model).
@@ -271,7 +266,7 @@ def _extract_trades(signals: pl.DataFrame, trade_on: str) -> pl.DataFrame:
     )
 
     trades = trades.with_columns(
-        ((pl.col("exit_price") / pl.col("entry_price")) - 1).alias("pnl"),
+        (side * (pl.col("exit_price") / pl.col("entry_price") - 1)).alias("pnl"),
         (
             (pl.col("exit_date").cast(pl.Date) - pl.col("entry_date").cast(pl.Date)).dt.total_days()
         ).alias("bars_held"),

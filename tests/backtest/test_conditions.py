@@ -14,6 +14,7 @@ from mktlib.backtest._conditions import (
     PriceIsAbove,
     PriceIsBelow,
 )
+from mktlib.backtest._types import TradeSide
 
 
 @pytest.fixture
@@ -107,3 +108,29 @@ class TestCombinators:
         result = df.select(cond.resolve()).to_series().to_list()
         # (above & rising): [N,T,T,F,F] | below 1.5: [T,F,F,F,F]
         assert result == [True, True, True, False, False]
+
+
+class TestTradeSide:
+    def test_default_is_none(self) -> None:
+        assert Crossover("a", "b").trade_side is None
+        assert Crossunder("a", "b").trade_side is None
+        assert PriceIsAbove("a", "b").trade_side is None
+        assert PriceIsBelow("a", "b").trade_side is None
+        assert IsRising("a").trade_side is None
+        assert IsFalling("a").trade_side is None
+
+    def test_set_via_constructor(self) -> None:
+        cond = Crossover("a", "b", trade_side=TradeSide.SHORT)
+        assert cond.trade_side is TradeSide.SHORT
+
+    def test_combinators_default_none(self) -> None:
+        left = Crossover("a", "b")
+        right = Crossunder("a", "b")
+        assert All(left, right).trade_side is None
+        assert Any_(left, right).trade_side is None
+        assert Not(left).trade_side is None
+
+    def test_combinators_accept_trade_side(self) -> None:
+        left = Crossover("a", "b")
+        right = Crossunder("a", "b")
+        assert All(left, right, trade_side=TradeSide.LONG).trade_side is TradeSide.LONG

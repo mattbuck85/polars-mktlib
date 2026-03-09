@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from mktlib.backtest._engine import run
-from mktlib.backtest._types import SweepResult
+from mktlib.backtest._types import SweepResult, TradeSide
 
 if TYPE_CHECKING:
     from mktlib.backtest._types import Strategy
@@ -19,9 +19,8 @@ def sweep(
     params: dict[str, list[object]],
     *,
     metric: str = "total_return",
-    trade_on: str = "close",
+    trade_side: TradeSide = TradeSide.LONG,
     calendar: ExchangeCalendar | None = None,
-    prefilter_market_data: bool = True,
     flatten_eod: bool = False,
 ) -> SweepResult:
     """Run a parameter grid sweep over *strategy_cls*.
@@ -36,8 +35,6 @@ def sweep(
         ``{field_name: [values]}`` grid.
     metric
         Metric used by ``SweepResult.best()``.
-    trade_on
-        Price column for return calculation.
     """
     keys = list(params.keys())
     values = list(params.values())
@@ -49,9 +46,8 @@ def sweep(
         result = run(
             df,
             strategy,
-            trade_on=trade_on,
+            trade_side=trade_side,
             calendar=calendar,
-            prefilter_market_data=prefilter_market_data,
             flatten_eod=flatten_eod,
         )
         results.append((param_dict, result))
