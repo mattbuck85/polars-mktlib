@@ -4,7 +4,19 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Documentation](https://readthedocs.org/projects/polars-mktlib/badge/?version=latest)](https://polars-mktlib.readthedocs.io/en/latest/)
 
-Polars-native financial market toolkit. Zero pandas dependency.
+Financial market toolkit built entirely on Polars.
+
+### 📬 tl;dr
+
+⚡ **Fast enough for real work** — vectorized Polars engine grid-searches thousands of parameter combos on minute-bar data without reaching for Numba or Cython
+
+📦 **Lightweight** — core is Polars-only; `numpy` is the sole extra for synthetic data generation. No pandas, no heavy ML stack
+
+🧪 **Well tested** — cross-validated exchange calendars, property-based OHLCV checks, and full backtest parity tests across engines
+
+🧰 **Swiss-army knife** — scheduling, rates, metrics, backtesting, reporting, and data generation in one package. Great for learning, prototyping, or production
+
+📄 **Apache 2.0** — use it anywhere, fork it, vendor it, no strings attached
 
 > **Disclaimer:** Backtesting results and any computed market returns are for **educational and research purposes only**. They do not constitute financial advice, and past performance does not indicate future results.
 
@@ -149,30 +161,54 @@ filtered = cal.filter_market_hours(df, date_column="date")
 ```
 
 Handles early closes, timezone alignment (naive or aware), and lunch
-breaks (JPX, HKEX) automatically.
+breaks (JPX, HKEX, SSE) automatically.
 
 ### Custom Calendars
 
 ```python
-from datetime import time
+from datetime import date, time
 from mktlib.scheduling import ExchangeCalendar, register_exchange
 from mktlib.scheduling.rules import HolidayRule, AdhocClosure, EarlyClose
 
 cal = ExchangeCalendar(
-    name="XTKS",
-    timezone="Asia/Tokyo",
-    open_time=time(9, 0),
-    close_time=time(15, 0),
+    name="XICE",
+    timezone="Atlantic/Reykjavik",
+    open_time=time(9, 30),
+    close_time=time(15, 30),
     holidays=[
         HolidayRule("New Year's Day", month=1, day=1),
-        HolidayRule("Coming of Age Day", month=1, weekday=0, week=2),  # 2nd Monday
+        HolidayRule("National Day", month=6, day=17),
+        HolidayRule("Commerce Day", month=8, weekday=0, week=1),  # 1st Monday
     ],
     adhoc_closures=[AdhocClosure("Special", [date(2024, 1, 4)])],
-    early_closes=[EarlyClose("Half Day", close_time=time(11, 30), dates=[date(2024, 12, 31)])],
+    early_closes=[EarlyClose("Half Day", close_time=time(12, 0), dates=[date(2024, 12, 31)])],
 )
 
-# Register for lookup via get_calendar()
-register_exchange("XTKS", lambda: cal, aliases=["TSE", "Tokyo"])
+register_exchange("XICE", lambda: cal, aliases=["Iceland"])
+```
+
+For exchanges with a lunch break, use `ExchangeCalendarWithBreaks` — it adds
+`break_start`/`break_end` columns to schedules and excludes break windows from
+`is_open_on_minute()` and `trading_index()`:
+
+```python
+from mktlib.scheduling import ExchangeCalendarWithBreaks, register_exchange
+from mktlib.scheduling.rules import HolidayRule
+
+cal = ExchangeCalendarWithBreaks(
+    name="XSHG",
+    timezone="Asia/Shanghai",
+    open_time=time(9, 30),
+    close_time=time(15, 0),
+    break_start=time(11, 30),
+    break_end=time(13, 0),
+    holidays=[
+        HolidayRule("New Year's Day", month=1, day=1),
+        HolidayRule("National Day", month=10, day=1),
+    ],
+)
+
+register_exchange("XSHG", lambda: cal, aliases=["Shanghai", "SSE"])
 ```
 
 ### Holiday Rules
