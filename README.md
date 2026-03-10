@@ -136,6 +136,21 @@ idx = cal.trading_index("2024-01-02", "2024-01-02", period="5m")
 idx = cal.trading_index("2024-01-02", "2024-01-05", period="1m", closed="right")
 ```
 
+### Filter Market Hours
+
+Filter an existing DataFrame to market hours — more efficient than
+`trading_index()` when you already have data:
+
+```python
+cal = get_calendar("NYSE")
+
+# Filter intraday bars to market hours only
+filtered = cal.filter_market_hours(df, date_column="date")
+```
+
+Handles early closes, timezone alignment (naive or aware), and lunch
+breaks (JPX, HKEX) automatically.
+
 ### Custom Calendars
 
 ```python
@@ -187,6 +202,7 @@ register_exchange("XTKS", lambda: cal, aliases=["TSE", "Tokyo"])
 | `previous_open(dt)` | `datetime` | Previous market open |
 | `previous_close(dt)` | `datetime` | Previous market close |
 | `minute_to_session(dt)` | `date \| None` | Session containing datetime |
+| `filter_market_hours(df, date_column)` | `pl.DataFrame` | Filter rows to market hours |
 | `trading_index(start, end, period, closed)` | `pl.Series` | Intraday timestamp index |
 
 All date parameters accept `date` objects or ISO-format strings (`"2024-01-02"`).
