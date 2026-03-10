@@ -51,58 +51,6 @@ def _get_schedule(calendar: ExchangeCalendar, dates: pl.Series) -> pl.DataFrame:
     return _schedule_cache[key]
 
 
-def _build_market_mask(
-    dates: pl.Series,
-    calendar: ExchangeCalendar,
-) -> pl.Series:
-    """Boolean series: True where date falls within market hours.
-
-    Uses a schedule join (~1,260 rows for 5 years) instead of materializing
-    all 472K+ trading minutes via ``trading_index``.
-    """
-    sched = _get_schedule(calendar, dates)
-
-    # Compute last tradeable minute (open-frame: close - 1min)
-    sched = sched.with_columns(
-        (pl.col("market_close") - pl.duration(minutes=1)).alias("_last_minute"),
-    )
-
-    # Build join key: bar date (Date) to match schedule's date column
-    dates_df = dates.to_frame("date").with_columns(
-        pl.col("date").dt.date().alias("_bar_date"),
-    )
-
-    # Prepare schedule columns with tz aligned to bar timestamps
-    sched_join = sched.select(
-        pl.col("date").alias("_bar_date"),
-        _align_tz(sched["market_open"], dates).alias("_mkt_open"),
-        _align_tz(sched["_last_minute"], dates).alias("_last_min"),
-    )
-    if "break_start" in sched.columns:
-        sched_join = sched_join.with_columns(
-            _align_tz(sched["break_start"], dates).alias("_brk_start"),
-            _align_tz(sched["break_end"], dates).alias("_brk_end"),
-        )
-
-    joined = dates_df.join(sched_join, on="_bar_date", how="left")
-
-    # Bar is valid if within [market_open, last_minute]
-    mask = (
-        joined["_mkt_open"].is_not_null()
-        & (joined["date"] >= joined["_mkt_open"])
-        & (joined["date"] <= joined["_last_min"])
-    )
-
-    # Break calendars: exclude [break_start, break_end)
-    if "break_start" in sched.columns:
-        in_break = (joined["date"] >= joined["_brk_start"]) & (
-            joined["date"] < joined["_brk_end"]
-        )
-        mask = mask & ~in_break
-
-    return mask
-
-
 def _build_session_last_mask(
     dates: pl.Series,
     calendar: ExchangeCalendar,
@@ -163,8 +111,7 @@ def run(
 
     # Filter to market hours when calendar is provided
     if calendar is not None:
-        mask = _build_market_mask(df["date"], calendar)
-        df = df.filter(mask)
+        df = calendar.filter_market_hours(df, "date")
 
     entry_cond = strategy.entry()
     exit_cond = strategy.exit()

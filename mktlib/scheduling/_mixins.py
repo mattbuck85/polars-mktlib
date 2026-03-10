@@ -30,6 +30,22 @@ if TYPE_CHECKING:
         def previous_session(self, day: date | str) -> date: ...
 
 
+def _tz(series: pl.Series) -> str | None:
+    """Extract timezone from a Datetime series, or None."""
+    return series.dtype.time_zone  # type: ignore[union-attr]
+
+
+def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
+    """Align *target* timezone to match *reference*."""
+    ref_tz = _tz(reference)
+    tgt_tz = _tz(target)
+    if ref_tz is None and tgt_tz is not None:
+        return target.dt.replace_time_zone(None)
+    if ref_tz is not None and tgt_tz is None:
+        return target.dt.replace_time_zone(ref_tz)
+    return target
+
+
 def _ensure_aware(dt: datetime, tz: ZoneInfo) -> datetime:
     """Ensure *dt* is timezone-aware in the given tz."""
     if dt.tzinfo is None:
@@ -199,8 +215,84 @@ class MinuteQueryMixin:
         return None
 
 
-class TradingIndexMixin:
-    """Generate intraday timestamp indices at arbitrary frequency."""
+class TradingHelperMixin:
+    """Trading index generation and market-hours filtering."""
+
+    def filter_market_hours(
+        self: _CalendarProtocol,
+        df: pl.DataFrame,
+        date_column: str = "date",
+    ) -> pl.DataFrame:
+        """Filter rows to market hours using a schedule join.
+
+        More efficient than ``trading_index()`` — joins on ~252 schedule
+        rows per year instead of materializing all trading minutes.
+
+        Parameters
+        ----------
+        df
+            DataFrame with a Datetime column for bar timestamps.
+        date_column
+            Name of the datetime column (default ``"date"``).
+
+        Returns
+        -------
+        pl.DataFrame
+            Rows within ``[market_open, market_close - 1min]``, excluding
+            lunch breaks for break calendars.
+        """
+        dates = df[date_column]
+        if df.is_empty():
+            return df
+
+        start_val = dates.min()
+        end_val = dates.max()
+        start_d = start_val.date() if isinstance(start_val, datetime) else date(start_val.year, start_val.month, start_val.day) if start_val is not None else date(2000, 1, 1)  # type: ignore[union-attr]
+        end_d = end_val.date() if isinstance(end_val, datetime) else date(end_val.year, end_val.month, end_val.day) if end_val is not None else date(2000, 1, 1)  # type: ignore[union-attr]
+
+        sched = self.schedule(start_d, end_d)
+
+        # Compute last tradeable minute (open-frame: close - 1min)
+        sched = sched.with_columns(
+            (pl.col("market_close") - pl.duration(minutes=1)).alias(
+                "_last_minute"
+            ),
+        )
+
+        # Build join key: bar date (Date) to match schedule's date column
+        dates_df = df.with_columns(
+            pl.col(date_column).dt.date().alias("_bar_date"),
+        )
+
+        # Prepare schedule columns with tz aligned to bar timestamps
+        sched_join = sched.select(
+            pl.col("date").alias("_bar_date"),
+            _align_tz(sched["market_open"], dates).alias("_mkt_open"),
+            _align_tz(sched["_last_minute"], dates).alias("_last_min"),
+        )
+        if "break_start" in sched.columns:
+            sched_join = sched_join.with_columns(
+                _align_tz(sched["break_start"], dates).alias("_brk_start"),
+                _align_tz(sched["break_end"], dates).alias("_brk_end"),
+            )
+
+        joined = dates_df.join(sched_join, on="_bar_date", how="left")
+
+        # Bar is valid if within [market_open, last_minute]
+        mask = (
+            joined["_mkt_open"].is_not_null()
+            & (joined[date_column] >= joined["_mkt_open"])
+            & (joined[date_column] <= joined["_last_min"])
+        )
+
+        # Break calendars: exclude [break_start, break_end)
+        if "break_start" in sched.columns:
+            in_break = (joined[date_column] >= joined["_brk_start"]) & (
+                joined[date_column] < joined["_brk_end"]
+            )
+            mask = mask & ~in_break
+
+        return df.filter(mask)
 
     def trading_index(
         self: _CalendarProtocol,

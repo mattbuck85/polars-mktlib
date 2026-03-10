@@ -125,6 +125,9 @@ Get trading calendars for major exchanges:
    # Intraday trading index
    idx = cal.trading_index("2024-01-02", "2024-01-02", period="5m")
 
+   # Filter existing DataFrame to market hours (more efficient than trading_index)
+   filtered = cal.filter_market_hours(df, date_column="date")
+
 Supported exchanges: NYSE, NASDAQ, CBOE, LSE, Euronext, Xetra, TSX, CME (RTH & Globex), JPX, HKEX, FX (24/5). See :doc:`api/scheduling` for details.
 
 Treasury Rates

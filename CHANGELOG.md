@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.6.1
+
+### Added
+
+- `ExchangeCalendar.filter_market_hours(df)` — filter a DataFrame to market hours using an efficient schedule join. Recommended over `trading_index()` for filtering existing data.
+
+### Changed
+
+- Backtest engine now uses `filter_market_hours()` internally, removing duplicated schedule-join logic.
+
+## 0.6.0
+
+### Added
+
+- **`mktlib.backtest` subpackage** — vectorized backtesting engine with fill-at-next-open semantics.
+  - `run(df, strategy)` — main entry point. Accepts a DataFrame with OHLC data and a strategy object, returns `BacktestResult` with per-bar returns, trade log, and full signal frame.
+  - `Strategy` protocol — implement `entry()` and `exit()` methods returning `Condition`.
+  - `BacktestResult` dataclass — `returns` (DataFrame), `trades` (DataFrame), `signals` (DataFrame).
+  - `TradeSide` enum — `LONG` / `SHORT`. Settable per-run or per-condition.
+  - **Composable conditions** — `Crossover`, `Crossunder`, `PriceIsAbove`, `PriceIsBelow`, `IsRising`, `IsFalling`, `All`, `Any_`, `Not`. Compose with `&`, `|`, `~` operators.
+  - **Composable price expressions** — `PriceExpr`, `Col`, `Lit`, `Pct` for building dynamic exit levels (e.g. take-profit / stop-loss) with full arithmetic (`+`, `-`, `*`, `/`, `%`).
+  - Exchange calendar integration — optional `calendar` parameter filters data to market hours via schedule join. `flatten_eod=True` force-closes positions at session boundaries.
+- **`mktlib.metrics` subpackage** — standalone financial metric functions on Polars return series.
+  - `calculate_metric(Metric, ret)` — unified dispatcher for all 17 metrics with lazy drawdown computation.
+  - `Metric` enum — `CUMULATIVE_RETURN`, `CAGR`, `ANNUALIZED_VOLATILITY`, `MAX_DRAWDOWN`, `AVG_DRAWDOWN`, `LONGEST_DRAWDOWN_DAYS`, `SHARPE`, `SORTINO`, `CALMAR`, `ROMAD`, `OMEGA`, `VAR`, `CVAR`, `WIN_RATE`, `PAYOFF_RATIO`, `PROFIT_FACTOR`, `KELLY_CRITERION`.
+  - Standalone functions: `sharpe()`, `sortino()`, `calmar()`, `romad()`, `omega()`, `var()`, `cvar()`, `cumulative_return()`, `cagr()`, `annualized_volatility()`, `avg_drawdown()`, `longest_drawdown_days()`, `win_rate()`, `payoff_ratio()`, `profit_factor()`, `kelly_criterion()`, `drawdown_series()`.
+- **`mktlib.reports` subpackage** — Polars-native tearsheet generation behind `[reports]` optional extra (`pip install mktlib[reports]`).
+  - `html(returns, *, benchmark, output, ...)` — 25-metric interactive HTML tearsheet with 8 Plotly charts. Supports `pl.DataFrame`, `pl.Series`, and `pd.Series` inputs.
+  - `metrics(returns, *, benchmark, ...)` — compute all 25 metrics without HTML output, returns `MetricsResult` dataclass.
+  - `rf="auto"` — automatically fetches 3-month T-bill average from `mktlib.rates` for the returns period.
+  - Custom metrics, charts, and Jinja2 templates via `extra_metrics`, `extra_charts`, and `template` parameters.
+- Educational disclaimer in README.
+
 ## 0.5.4
 
 ### Changed
