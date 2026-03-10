@@ -230,18 +230,22 @@ class TestMarketHours:
             flatten_eod=True,
         )
         positions = result.signals["_position"].to_list()
-        # Entry signal at bar 0 (fast crosses above slow at bar 1)
+        # Entry signal at bar 0→1 (fast crosses above slow at bar 1)
         # With flatten_eod, position should go to 0 at 15:59 (session last)
         # Day 1: bar0=0, bar1=1, bar2(15:59)=0 (session end forces close)
-        # Day 2: needs fresh entry signal — bar3=0, bar4=1, bar5(15:59)=0
-        assert positions[2] == 0, "position should be 0 at Day 1 session end"
-        assert positions[5] == 0, "position should be 0 at Day 2 session end"
+        # Day 2: no fresh crossover (fast stays above slow), all positions 0
+        assert positions == [0, 1, 0, 0, 0, 0]
 
-        # Day 2 first bar should have 0 return (no position held overnight)
         rets = result.returns["return"].to_list()
-        # The overnight gap return should NOT be captured
-        # Bar 3 (Day2 09:30): _pos_delayed=0 (previous bar position=0), so return=0
+        # Bar 2 (session-last): entry fills at open[2]=101.0, forced exit at open[2]=101.0
+        # Same-bar entry+exit → return = 0
+        assert rets[2] == pytest.approx(0.0, abs=1e-12), (
+            "session-last entry+exit on same bar should have 0 return"
+        )
+        # Day 2 bars: no position, all returns 0
         assert rets[3] == pytest.approx(0.0), "no overnight gap return with flatten_eod"
+        assert rets[4] == pytest.approx(0.0)
+        assert rets[5] == pytest.approx(0.0)
 
     def test_flatten_eod_false_captures_overnight_gap(self) -> None:
         """Without flatten_eod, position persists and overnight gap return is captured."""

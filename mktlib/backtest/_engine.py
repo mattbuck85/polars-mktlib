@@ -34,18 +34,73 @@ def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
     return target
 
 
+# ---------------------------------------------------------------------------
+# Schedule cache — avoids recomputing calendar.schedule() across mask calls
+# ---------------------------------------------------------------------------
+
+_schedule_cache: dict[tuple[str, datetime.date, datetime.date], pl.DataFrame] = {}
+
+
+def _get_schedule(calendar: ExchangeCalendar, dates: pl.Series) -> pl.DataFrame:
+    """Return cached schedule DataFrame for the calendar covering *dates*."""
+    start = _to_date(dates.min())  # type: ignore[arg-type]
+    end = _to_date(dates.max())  # type: ignore[arg-type]
+    key = (calendar.name, start, end)
+    if key not in _schedule_cache:
+        _schedule_cache[key] = calendar.schedule(start, end)
+    return _schedule_cache[key]
+
+
 def _build_market_mask(
     dates: pl.Series,
     calendar: ExchangeCalendar,
 ) -> pl.Series:
-    """Boolean series: True where date is in the calendar's trading index."""
-    trading_idx = calendar.trading_index(
-        _to_date(dates.min()),  # type: ignore[arg-type]
-        _to_date(dates.max()),  # type: ignore[arg-type]
-        period="1m",
+    """Boolean series: True where date falls within market hours.
+
+    Uses a schedule join (~1,260 rows for 5 years) instead of materializing
+    all 472K+ trading minutes via ``trading_index``.
+    """
+    sched = _get_schedule(calendar, dates)
+
+    # Compute last tradeable minute (open-frame: close - 1min)
+    sched = sched.with_columns(
+        (pl.col("market_close") - pl.duration(minutes=1)).alias("_last_minute"),
     )
-    trading_idx = _align_tz(trading_idx, dates)
-    return dates.is_in(trading_idx.to_list())
+
+    # Build join key: bar date (Date) to match schedule's date column
+    dates_df = dates.to_frame("date").with_columns(
+        pl.col("date").dt.date().alias("_bar_date"),
+    )
+
+    # Prepare schedule columns with tz aligned to bar timestamps
+    sched_join = sched.select(
+        pl.col("date").alias("_bar_date"),
+        _align_tz(sched["market_open"], dates).alias("_mkt_open"),
+        _align_tz(sched["_last_minute"], dates).alias("_last_min"),
+    )
+    if "break_start" in sched.columns:
+        sched_join = sched_join.with_columns(
+            _align_tz(sched["break_start"], dates).alias("_brk_start"),
+            _align_tz(sched["break_end"], dates).alias("_brk_end"),
+        )
+
+    joined = dates_df.join(sched_join, on="_bar_date", how="left")
+
+    # Bar is valid if within [market_open, last_minute]
+    mask = (
+        joined["_mkt_open"].is_not_null()
+        & (joined["date"] >= joined["_mkt_open"])
+        & (joined["date"] <= joined["_last_min"])
+    )
+
+    # Break calendars: exclude [break_start, break_end)
+    if "break_start" in sched.columns:
+        in_break = (joined["date"] >= joined["_brk_start"]) & (
+            joined["date"] < joined["_brk_end"]
+        )
+        mask = mask & ~in_break
+
+    return mask
 
 
 def _build_session_last_mask(
@@ -57,16 +112,12 @@ def _build_session_last_mask(
     Uses open-frame convention: last bar timestamp = market_close - 1min.
     E.g. NYSE 16:00 close -> last bar at 15:59:00.
     """
-    sched = calendar.schedule(
-        _to_date(dates.min()),  # type: ignore[arg-type]
-        _to_date(dates.max()),  # type: ignore[arg-type]
-    )
+    sched = _get_schedule(calendar, dates)
     close_times = _align_tz(sched["market_close"], dates)
     # Last bar = market_close - 1min (open-frame: bar at 15:59 covers 15:59-16:00)
-    last_minutes = (
-        close_times.to_frame("c")
-        .select(pl.col("c") - pl.duration(minutes=1))["c"]
-    )
+    last_minutes = close_times.to_frame("c").select(
+        pl.col("c") - pl.duration(minutes=1)
+    )["c"]
     return dates.is_in(last_minutes.to_list())
 
 
@@ -132,6 +183,8 @@ def run(
     if flatten_eod:
         _session_last = _build_session_last_mask(signals["date"], calendar)  # type: ignore[arg-type]
         signals = signals.with_columns(_session_last.alias("_session_last"))
+        # Suppress entries on session-last bars (position opens and immediately
+        # force-closes in the same bar — not a valid trade).
         signals = signals.with_columns(
             pl.when(pl.col("_entry") & ~pl.col("_session_last"))
             .then(pl.lit(1))
@@ -140,7 +193,7 @@ def run(
             .otherwise(pl.lit(None))
             .forward_fill()
             .fill_null(0)
-            .alias("_raw_position"),
+            .alias("_position"),
         )
     else:
         signals = signals.with_columns(
@@ -151,80 +204,95 @@ def run(
             .otherwise(pl.lit(None))
             .forward_fill()
             .fill_null(0)
-            .alias("_raw_position"),
+            .alias("_position"),
         )
 
-    # Suppress re-entry: only count 0→1 transitions as real entries
+    # Materialize shared shifted expressions once
     signals = signals.with_columns(
-        pl.when(
-            (pl.col("_raw_position") == 1)
-            & (pl.col("_raw_position").shift(1).fill_null(0) == 0)
-        )
-        .then(pl.lit(True))
-        .otherwise(pl.lit(False))
-        .alias("_entry_clean"),
-        pl.when(
-            (pl.col("_raw_position") == 0)
-            & (pl.col("_raw_position").shift(1).fill_null(0) == 1)
-        )
-        .then(pl.lit(True))
-        .otherwise(pl.lit(False))
-        .alias("_exit_clean"),
+        pl.col("_position").shift(1).fill_null(0).alias("_pos_d1"),
+        pl.col("_position").shift(2).fill_null(0).alias("_pos_d2"),
+        pl.col("close").shift(1).alias("_close_prev"),
     )
-
-    # Use raw_position as _position (already handles forward-fill dedup)
+    # Transition detection (uses materialized _pos_d1)
     signals = signals.with_columns(
-        pl.col("_raw_position").alias("_position"),
+        ((pl.col("_position") == 1) & (pl.col("_pos_d1") == 0)).alias("_entry_clean"),
+        ((pl.col("_position") == 0) & (pl.col("_pos_d1") == 1)).alias("_exit_clean"),
     )
-
-    # Delayed position: position(t-1) tells us if we're in a trade this bar
-    _pos_delayed = pl.col("_position").shift(1).fill_null(0)
-    _pos_delayed2 = pl.col("_position").shift(2).fill_null(0)
 
     # Detect transition bars (after the 1-bar delay for fill)
-    _is_entry_bar = (_pos_delayed == 1) & (_pos_delayed2 == 0)
-    _is_exit_bar = (_pos_delayed == 0) & (_pos_delayed2 == 1)
+    _is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
+    _is_exit_bar = (pl.col("_pos_d1") == 0) & (pl.col("_pos_d2") == 1)
 
     # Per-bar returns with fill-at-open adjustment
     _entry_ret = ((pl.col("close") - pl.col("open")) / pl.col("open")) * effective_side
-    _normal_ret = (pl.col("close") / pl.col("close").shift(1) - 1) * effective_side
-    _exit_ret = ((pl.col("open") - pl.col("close").shift(1)) / pl.col("close").shift(1)) * effective_side
+    _normal_ret = (pl.col("close") / pl.col("_close_prev") - 1) * effective_side
+    _exit_ret = (
+        (pl.col("open") - pl.col("_close_prev")) / pl.col("_close_prev")
+    ) * effective_side
 
-    signals = signals.with_columns(
-        pl.when(_is_entry_bar)
-        .then(_entry_ret)
-        .when(_is_exit_bar)
-        .then(_exit_ret)
-        .when(_pos_delayed == 1)
-        .then(_normal_ret)
-        .otherwise(0.0)
-        .fill_null(0.0)
-        .alias("return"),
-    )
-
-    # flatten_eod: zero out phantom exit returns at session boundaries.
-    # The fill-at-next-open model would otherwise compute an exit return
-    # on the first bar of the next session, capturing the overnight gap.
+    # Compute returns + flatten_eod overrides in minimal with_columns calls
     if flatten_eod:
+        # Base returns + session-last override in one pass
         signals = signals.with_columns(
-            pl.when(pl.col("_session_last").shift(1).fill_null(False))
+            pl.when(pl.col("_session_last") & _is_entry_bar)
+            .then(0.0)
+            .when(pl.col("_session_last") & (pl.col("_pos_d1") == 1))
+            .then(_exit_ret)
+            .when(_is_entry_bar)
+            .then(_entry_ret)
+            .when(_is_exit_bar)
+            .then(_exit_ret)
+            .when(pl.col("_pos_d1") == 1)
+            .then(_normal_ret)
+            .otherwise(0.0)
+            .fill_null(0.0)
+            .alias("return"),
+        )
+        # Post-session-last bar zeroing
+        signals = signals.with_columns(
+            pl.when(
+                pl.col("_session_last").shift(1).fill_null(False)
+                & ~_is_entry_bar
+            )
             .then(0.0)
             .otherwise(pl.col("return"))
             .alias("return"),
         )
+    else:
+        signals = signals.with_columns(
+            pl.when(_is_entry_bar)
+            .then(_entry_ret)
+            .when(_is_exit_bar)
+            .then(_exit_ret)
+            .when(pl.col("_pos_d1") == 1)
+            .then(_normal_ret)
+            .otherwise(0.0)
+            .fill_null(0.0)
+            .alias("return"),
+        )
+
+    # Drop internal columns before return
+    signals = signals.drop("_pos_d1", "_pos_d2", "_close_prev")
 
     returns = signals.select("date", "return")
 
     # Build trade log from entry/exit transitions
-    trades = _extract_trades(signals, effective_side)
+    trades = _extract_trades(signals, effective_side, flatten_eod=flatten_eod)
 
     return BacktestResult(returns=returns, trades=trades, signals=signals)
 
 
-def _extract_trades(signals: pl.DataFrame, side: int = 1) -> pl.DataFrame:
+def _extract_trades(
+    signals: pl.DataFrame,
+    side: int = 1,
+    *,
+    flatten_eod: bool = False,
+) -> pl.DataFrame:
     """Extract per-trade PnL from position transitions.
 
     Fill prices use the *next* bar's open (fill-at-next-open model).
+    For session-forced exits (flatten_eod), the exit fill is the
+    session-last bar's own open (can't trade during the close minute).
     """
     # Pre-compute next bar's open for fill price
     signals_with_next = signals.with_columns(
@@ -235,9 +303,22 @@ def _extract_trades(signals: pl.DataFrame, side: int = 1) -> pl.DataFrame:
         pl.col("_next_open").alias("entry_price"),
         pl.int_range(pl.len()).alias("_entry_idx"),
     )
+
+    # Exit fill price: session-forced exits use current bar's open,
+    # normal exits use next bar's open (fill-at-next-open).
+    if flatten_eod:
+        exit_price_expr = (
+            pl.when(pl.col("_session_last"))
+            .then(pl.col("open"))
+            .otherwise(pl.col("_next_open"))
+            .alias("exit_price")
+        )
+    else:
+        exit_price_expr = pl.col("_next_open").alias("exit_price")
+
     exits = signals_with_next.filter(pl.col("_exit_clean")).select(
         pl.col("date").alias("exit_date"),
-        pl.col("_next_open").alias("exit_price"),
+        exit_price_expr,
         pl.int_range(pl.len()).alias("_exit_idx"),
     )
 
