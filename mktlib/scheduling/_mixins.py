@@ -247,8 +247,19 @@ class TradingHelperMixin:
 
         start_val = dates.min()
         end_val = dates.max()
-        start_d = start_val.date() if isinstance(start_val, datetime) else date(start_val.year, start_val.month, start_val.day) if start_val is not None else date(2000, 1, 1)  # type: ignore[union-attr]
-        end_d = end_val.date() if isinstance(end_val, datetime) else date(end_val.year, end_val.month, end_val.day) if end_val is not None else date(2000, 1, 1)  # type: ignore[union-attr]
+        if start_val is None or end_val is None:
+            msg = f"'{date_column}' column contains only nulls"
+            raise ValueError(msg)
+        start_d = (
+            start_val.date()
+            if isinstance(start_val, datetime)
+            else date(start_val.year, start_val.month, start_val.day)  # type: ignore[union-attr]
+        )
+        end_d = (
+            end_val.date()
+            if isinstance(end_val, datetime)
+            else date(end_val.year, end_val.month, end_val.day)  # type: ignore[union-attr]
+        )
 
         sched = self.schedule(start_d, end_d)
 
@@ -270,11 +281,6 @@ class TradingHelperMixin:
             _align_tz(sched["market_open"], dates).alias("_mkt_open"),
             _align_tz(sched["_last_minute"], dates).alias("_last_min"),
         )
-        if "break_start" in sched.columns:
-            sched_join = sched_join.with_columns(
-                _align_tz(sched["break_start"], dates).alias("_brk_start"),
-                _align_tz(sched["break_end"], dates).alias("_brk_end"),
-            )
 
         joined = dates_df.join(sched_join, on="_bar_date", how="left")
 
@@ -284,13 +290,6 @@ class TradingHelperMixin:
             & (joined[date_column] >= joined["_mkt_open"])
             & (joined[date_column] <= joined["_last_min"])
         )
-
-        # Break calendars: exclude [break_start, break_end)
-        if "break_start" in sched.columns:
-            in_break = (joined[date_column] >= joined["_brk_start"]) & (
-                joined[date_column] < joined["_brk_end"]
-            )
-            mask = mask & ~in_break
 
         return df.filter(mask)
 

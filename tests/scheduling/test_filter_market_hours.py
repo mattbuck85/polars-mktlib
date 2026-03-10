@@ -109,6 +109,15 @@ class TestFilterMarketHours:
         assert result.height == 0
         assert result.columns == ["date"]
 
+    def test_all_nulls_raises(self, nyse: ExchangeCalendar):
+        """All-null datetime column raises ValueError."""
+        df = pl.DataFrame(
+            {"date": [None, None]},
+            schema={"date": pl.Datetime("us", "America/New_York")},
+        )
+        with pytest.raises(ValueError, match="contains only nulls"):
+            nyse.filter_market_hours(df)
+
     def test_custom_date_column(self, nyse: ExchangeCalendar):
         """date_column='timestamp' works."""
         tz = ZoneInfo("America/New_York")
