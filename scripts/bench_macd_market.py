@@ -85,8 +85,14 @@ def generate_minute_ohlcv(
     )
 
 
-def bench(df: pl.DataFrame, label: str, *, flatten_eod: bool) -> None:
-    cal = get_calendar("XNYS") if flatten_eod else None
+def bench(
+    df: pl.DataFrame,
+    label: str,
+    *,
+    calendar: bool = False,
+    flatten_eod: bool = False,
+) -> None:
+    cal = get_calendar("XNYS") if calendar or flatten_eod else None
     strategy = MacdCrossover()
 
     t0 = time.perf_counter()
@@ -123,8 +129,9 @@ def main() -> None:
     t_ind = time.perf_counter() - t0
     print(f"MACD indicators:  {t_ind:.3f}s")
 
-    bench(df, "Without flatten_eod:", flatten_eod=False)
-    bench(df, "With flatten_eod:", flatten_eod=True)
+    bench(df, "No calendar:", calendar=False)
+    bench(df, "With calendar:", calendar=True)
+    bench(df, "With calendar + flatten_eod:", calendar=True, flatten_eod=True)
 
 
 if __name__ == "__main__":

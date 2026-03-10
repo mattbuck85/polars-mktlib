@@ -85,6 +85,44 @@ with ``&`` (All), ``|`` (Any\_), and ``~`` (Not) operators.
 .. autoclass:: mktlib.backtest.IsFalling
    :members:
 
+Performance
+-----------
+
+Benchmark results for a MACD crossover strategy on synthetic minute-resolution
+OHLCV data (491,400 rows / 5 years). Signal resolution uses Polars in all cases;
+only the position-tracking / returns computation differs.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Engine
+     - Time
+     - vs Polars
+   * - **Polars** (vectorized ``with_columns``)
+     - 0.025s
+     - baseline
+   * - Numpy (vectorized array ops)
+     - 0.033s
+     - 1.3x slower
+   * - Pandas (vectorized)
+     - 0.223s
+     - 8.9x slower
+   * - Python for-loop over numpy arrays
+     - 0.206s
+     - 8.2x slower
+   * - Numba JIT (warm, ``@njit``)
+     - 0.009s
+     - 2.8x faster
+
+Calendar filtering adds ~8ms for schedule-join market-hours masking.
+``flatten_eod`` adds ~4ms on top.
+
+.. note::
+
+   Numba requires ahead-of-time compilation (~0.6s on first call, cached to disk
+   thereafter). The Polars engine is the best default — no extra dependencies and
+   competitive performance. Benchmark scripts live in ``scripts/bench_*.py``.
+
 Combinators
 ~~~~~~~~~~~
 

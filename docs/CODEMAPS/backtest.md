@@ -72,6 +72,22 @@ All conditions are frozen dataclasses with `resolve() -> pl.Expr`. Support `&`, 
 | `MacdCrossover` | `_macd.py:7` | MACD crosses above signal | MACD crosses below signal |
 | `MacdCrossoverShort` | `_macd.py:21` | MACD crosses below signal (SHORT) | MACD crosses above signal |
 
+## Performance
+
+Benchmarked on MACD crossover, 491K minute bars (5yr synthetic data). Signal resolution via Polars in all cases.
+
+| Engine | Time | vs Polars |
+|-|-|-|
+| Polars (vectorized `with_columns`) | 0.025s | baseline |
+| Numpy (vectorized array ops) | 0.033s | 1.3x slower |
+| Pandas (vectorized) | 0.223s | 8.9x slower |
+| Python for-loop | 0.206s | 8.2x slower |
+| Numba JIT (warm) | 0.009s | 2.8x faster |
+
+Calendar filtering adds ~8ms (schedule join). `flatten_eod` adds ~4ms.
+
+Benchmark scripts: `scripts/bench_macd_market.py`, `scripts/bench_single_pass.py`, `scripts/bench_pandas.py`, `scripts/bench_numpy.py`.
+
 ## Dependencies
 
 - `mktlib.scheduling` — optional, used only when `calendar` is provided.
