@@ -45,6 +45,32 @@ Conditions compose with ``&``, ``|``, ``~``:
 
    entry = Crossover("fast", "slow") & PriceIsAbove("close", "sma_200")
 
+Price expressions (``Col``, ``Lit``, ``Pct``) let you build dynamic exit
+levels without any engine changes — combine ``PriceIsAbove`` and
+``PriceIsBelow`` with ``|`` for a vectorized take-profit / stop-loss:
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+   from mktlib.backtest import (
+       run, Crossover, Col, Pct, PriceIsAbove, PriceIsBelow, Condition,
+   )
+
+   @dataclass(frozen=True, slots=True)
+   class SmaCrossWithExits:
+       """SMA crossover entry with percentage TP and volatility-based SL."""
+
+       def entry(self) -> Crossover:
+           return Crossover("fast_sma", "slow_sma")
+
+       def exit(self) -> Condition:
+           tp = PriceIsAbove("close", Pct("slow_sma", 5))        # 5% above slow SMA
+           sl = PriceIsBelow("close", Col("slow_sma") - Col("vol") * 2)  # 2x vol below
+           return tp | sl
+
+   # df must have: date, open, close, fast_sma, slow_sma, vol
+   result = run(df, SmaCrossWithExits())
+
 See :doc:`api/backtest` for the full API.
 
 Financial Metrics

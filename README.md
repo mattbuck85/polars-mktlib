@@ -6,6 +6,8 @@
 
 Polars-native financial market toolkit. Zero pandas dependency.
 
+> **Disclaimer:** Backtesting results and any computed market returns are for **educational and research purposes only**. They do not constitute financial advice, and past performance does not indicate future results.
+
 ## Table of Contents
 
 - [Installation](#installation)

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import polars as pl
 import pytest
 
-from mktlib.backtest._conditions import Crossover, Crossunder, PriceIsAbove, PriceIsBelow
+from mktlib.backtest._conditions import Col, Crossover, Crossunder, Lit, Pct, PriceIsAbove, PriceIsBelow
 from mktlib.backtest._engine import run
 from mktlib.backtest._types import TradeSide
 
@@ -552,3 +552,241 @@ class TestEdgeCases:
         df = ohlcv.with_columns(pl.lit(5.0).alias("never_cross"))
         result = run(df, AlwaysInStrategy())
         assert result.trades.height == 0
+
+
+# ---------------------------------------------------------------------------
+# PriceExpr unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestPriceExpr:
+    def test_col_resolve(self) -> None:
+        expr = Col("close").resolve()
+        expected = pl.col("close")
+        df = pl.DataFrame({"close": [1.0, 2.0]})
+        assert df.select(expr)["close"].to_list() == df.select(expected)["close"].to_list()
+
+    def test_lit_resolve(self) -> None:
+        expr = Lit(5.0).resolve()
+        df = pl.DataFrame({"x": [1.0, 2.0]})
+        result = df.with_columns(expr.alias("v"))["v"].to_list()
+        assert result == [5.0, 5.0]
+
+    def test_mul(self) -> None:
+        expr = (Col("close") * 0.95).resolve()
+        df = pl.DataFrame({"close": [100.0, 200.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([95.0, 190.0])
+
+    def test_add_with_precedence(self) -> None:
+        # Col("close") + Col("vol") * 2 should be close + (vol * 2)
+        expr = (Col("close") + Col("vol") * 2).resolve()
+        df = pl.DataFrame({"close": [100.0], "vol": [5.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([110.0])
+
+    def test_reverse_mul(self) -> None:
+        expr = (2.0 * Col("vol")).resolve()
+        df = pl.DataFrame({"vol": [5.0, 10.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([10.0, 20.0])
+
+    def test_modulo(self) -> None:
+        expr = (Col("a") % Col("b")).resolve()
+        df = pl.DataFrame({"a": [7.0, 10.0], "b": [3.0, 4.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([1.0, 2.0])
+
+    def test_negation(self) -> None:
+        expr = (-Col("close")).resolve()
+        df = pl.DataFrame({"close": [100.0, -50.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([-100.0, 50.0])
+
+    def test_sub(self) -> None:
+        expr = (Col("close") - Col("vol")).resolve()
+        df = pl.DataFrame({"close": [100.0], "vol": [5.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([95.0])
+
+    def test_truediv(self) -> None:
+        expr = (Col("close") / 2.0).resolve()
+        df = pl.DataFrame({"close": [100.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([50.0])
+
+    def test_rsub(self) -> None:
+        expr = (100.0 - Col("close")).resolve()
+        df = pl.DataFrame({"close": [30.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([70.0])
+
+    def test_rtruediv(self) -> None:
+        expr = (1.0 / Col("close")).resolve()
+        df = pl.DataFrame({"close": [4.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([0.25])
+
+    def test_rmod(self) -> None:
+        expr = (10.0 % Col("b")).resolve()
+        df = pl.DataFrame({"b": [3.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([1.0])
+
+    def test_radd(self) -> None:
+        expr = (5.0 + Col("close")).resolve()
+        df = pl.DataFrame({"close": [100.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([105.0])
+
+
+# ---------------------------------------------------------------------------
+# Pct helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestPct:
+    def test_pct_positive(self) -> None:
+        """Pct("close", 1.0) resolves to close * 1.01."""
+        expr = Pct("close", 1.0).resolve()
+        df = pl.DataFrame({"close": [100.0, 200.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([101.0, 202.0])
+
+    def test_pct_negative(self) -> None:
+        """Pct("close", -0.5) resolves to close * 0.995."""
+        expr = Pct("close", -0.5).resolve()
+        df = pl.DataFrame({"close": [100.0, 200.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([99.5, 199.0])
+
+    def test_pct_with_price_expr_base(self) -> None:
+        """Pct(Col("close"), 2.0) accepts PriceExpr base."""
+        expr = Pct(Col("close"), 2.0).resolve()
+        df = pl.DataFrame({"close": [100.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([102.0])
+
+    def test_pct_with_float_base(self) -> None:
+        """Pct(100.0, -10.0) with float base resolves to literal 90.0."""
+        expr = Pct(100.0, -10.0).resolve()
+        df = pl.DataFrame({"x": [1]})  # dummy frame
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([90.0])
+
+    def test_pct_zero(self) -> None:
+        """Pct("close", 0.0) is identity."""
+        expr = Pct("close", 0.0).resolve()
+        df = pl.DataFrame({"close": [100.0]})
+        result = df.select(expr.alias("v"))["v"].to_list()
+        assert result == pytest.approx([100.0])
+
+
+# ---------------------------------------------------------------------------
+# PriceExpr condition integration tests
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PctExitStrategy:
+    """Entry = Crossover, Exit = PriceIsAbove with Pct expression."""
+
+    def entry(self) -> Crossover:
+        return Crossover("fast", "slow")
+
+    def exit(self) -> PriceIsAbove:
+        return PriceIsAbove("close", Pct("ref", 5))
+
+
+@dataclass(frozen=True, slots=True)
+class ColExprExitStrategy:
+    """Entry = Crossover, Exit = PriceIsBelow with Col arithmetic."""
+
+    def entry(self) -> Crossover:
+        return Crossover("fast", "slow")
+
+    def exit(self) -> PriceIsBelow:
+        return PriceIsBelow("close", Col("sma") - Col("vol") * 2)
+
+
+class TestPriceExprConditions:
+    def test_price_is_above_with_pct(self) -> None:
+        """PriceIsAbove("close", Pct("ref", 5)) fires when close > ref * 1.05."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 108.0, 110.0, 112.0],
+                "close": [100.0, 101.0, 103.0, 105.0, 107.0, 109.0, 111.0, 113.0],
+                "fast": [1.0, 1.0, 3.0, 4.0, 4.5, 5.0, 5.5, 6.0],
+                "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "ref": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            }
+        )
+        # Crossover at bar 2. Exit = PriceIsAbove("close", Pct("ref", 5)) = close > 105.0
+        # close: 100, 101, 103, 105, 107, 109, ...
+        # Exit fires at bar 4 (close=107 > 105)
+        result = run(df, PctExitStrategy())
+        positions = result.signals["_position"].to_list()
+        assert positions[2] == 1, "entry at bar 2"
+        assert positions[3] == 1, "still in at bar 3 (close=105 == 105, not >)"
+        assert positions[4] == 0, "exit at bar 4 (close=107 > 105)"
+
+    def test_price_is_below_with_col_expr(self) -> None:
+        """PriceIsBelow("close", Col("sma") - Col("vol") * 2) fires correctly."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0],
+                "fast": [1.0, 1.0, 3.0, 4.0, 3.5, 3.0, 2.5, 2.1],
+                "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                # sma - vol*2 = 105 - 2*2 = 101
+                "sma": [105.0, 105.0, 105.0, 105.0, 105.0, 105.0, 105.0, 105.0],
+                "vol": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+            }
+        )
+        # Crossover at bar 2. Exit = PriceIsBelow("close", Col("sma") - Col("vol") * 2)
+        # Threshold = 105 - 4 = 101. close: 100, 101, 103, 105, 104, 100, 98, 97
+        # Exit fires at bar 5 (close=100 < 101)
+        result = run(df, ColExprExitStrategy())
+        positions = result.signals["_position"].to_list()
+        assert positions[2] == 1, "entry at bar 2"
+        assert positions[4] == 1, "still in at bar 4 (close=104 > 101)"
+        assert positions[5] == 0, "exit at bar 5 (close=100 < 101)"
+
+    def test_price_expr_exit_in_engine(self) -> None:
+        """Full engine run with PriceExpr exit produces correct trades."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 108.0, 110.0, 112.0],
+                "close": [100.0, 101.0, 103.0, 105.0, 107.0, 109.0, 111.0, 113.0],
+                "fast": [1.0, 1.0, 3.0, 4.0, 4.5, 5.0, 5.5, 6.0],
+                "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "ref": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            }
+        )
+        result = run(df, PctExitStrategy())
+        assert result.trades.height == 1
+        trade = result.trades.row(0, named=True)
+        # Entry signal bar 2, fill at bar 3 open=103.5
+        assert trade["entry_date"] == datetime.date(2024, 1, 3)
+        # Exit signal bar 4, fill at bar 5 open=108.0
+        assert trade["exit_date"] == datetime.date(2024, 1, 5)
+        assert trade["pnl"] == pytest.approx(108.0 / 103.5 - 1, rel=1e-6)
+
+    def test_backward_compat_str_float(self, ohlcv: pl.DataFrame) -> None:
+        """PriceIsAbove("close", 100.0) still works unchanged."""
+        cond = PriceIsAbove("close", 100.0)
+        expr = cond.resolve()
+        result = ohlcv.select(expr.alias("v"))["v"].to_list()
+        # close: 100, 101, 103, 105, 104, 100, 98, 97
+        assert result == [False, True, True, True, True, False, False, False]
+
+    def test_price_expr_both_sides(self) -> None:
+        """PriceIsAbove(Col("a"), Col("b") + 1) with PriceExpr on both sides."""
+        df = pl.DataFrame({"a": [5.0, 10.0, 3.0], "b": [3.0, 10.0, 5.0]})
+        cond = PriceIsAbove(Col("a"), Col("b") + 1)
+        result = df.select(cond.resolve().alias("v"))["v"].to_list()
+        # a > b+1: 5>4=True, 10>11=False, 3>6=False
+        assert result == [True, False, False]

@@ -85,6 +85,40 @@ with ``&`` (All), ``|`` (Any\_), and ``~`` (Not) operators.
 .. autoclass:: mktlib.backtest.IsFalling
    :members:
 
+Price Expressions
+-----------------
+
+Price expressions build composable numeric ``pl.Expr`` trees for use with
+``PriceIsAbove`` and ``PriceIsBelow``. They support standard arithmetic
+(``+``, ``-``, ``*``, ``/``, ``%``, unary ``-``) and mix freely with plain
+``str`` column names and ``float`` literals.
+
+.. code-block:: python
+
+   from mktlib.backtest import (
+       Col, Lit, Pct, PriceIsAbove, PriceIsBelow, Crossover,
+   )
+
+   # Take-profit / stop-loss as an OR-combined exit
+   tp = PriceIsAbove("close", Pct("entry_sma", 5))   # close > sma * 1.05
+   sl = PriceIsBelow("close", Col("sma") - Col("vol") * 2)  # 2x vol below SMA
+   exit_cond = tp | sl
+
+   # Arithmetic expressions on both sides
+   PriceIsAbove(Col("fast") - Col("slow"), Lit(0.0))
+
+.. autoclass:: mktlib.backtest.PriceExpr
+   :members:
+
+.. autoclass:: mktlib.backtest.Col
+   :members:
+
+.. autoclass:: mktlib.backtest.Lit
+   :members:
+
+.. autoclass:: mktlib.backtest.Pct
+   :members:
+
 Performance
 -----------
 
