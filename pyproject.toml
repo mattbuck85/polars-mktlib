@@ -14,12 +14,11 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 readme = "README.md"
+dependencies = ["polars"]
 
 [project.urls]
 Documentation = "https://polars-mktlib.readthedocs.io"
 Repository = "https://github.com/mattbuck85/polars-mktlib"
-
-dependencies = ["polars"]
 
 [project.optional-dependencies]
 data = ["numpy"]
