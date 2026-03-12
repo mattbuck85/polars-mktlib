@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3
+
+### Fixed
+
+- Use a separate `README_PYPI.md` for the PyPI project page to avoid broken links.
+
 ## 0.6.2
 
 ### Added
