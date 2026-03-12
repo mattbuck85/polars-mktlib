@@ -3,5 +3,5 @@ MarkupSafe==3.0.3
 narwhals==2.18.0
 packaging==26.0
 plotly==6.6.0
-polars==1.38.1
-polars-runtime-32==1.38.1
+polars==1.39.0
+polars-runtime-32==1.39.0

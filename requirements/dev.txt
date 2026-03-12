@@ -8,7 +8,7 @@ click==8.3.1
 coverage==7.13.4
 distlib==0.4.0
 exchange_calendars==4.13.2
-filelock==3.25.1
+filelock==3.25.2
 flake8==7.3.0
 h11==0.16.0
 httpcore==1.0.9
@@ -31,8 +31,8 @@ platformdirs==4.9.4
 plotly==6.6.0
 plotly-stubs==0.1.2
 pluggy==1.6.0
-polars==1.38.1
-polars-runtime-32==1.38.1
+polars==1.39.0
+polars-runtime-32==1.39.0
 pre_commit==4.5.1
 prompt_toolkit==3.0.52
 pyarrow==23.0.1
