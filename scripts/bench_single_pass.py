@@ -18,9 +18,10 @@ import polars_talib as plta
 from mktlib.backtest._engine import run
 from mktlib.backtest._types import BacktestResult, TradeSide
 from mktlib.backtest.strategies import MacdCrossover
+from mktlib.data import geometric_brownian_motion, ticks_to_ohlcv
 
 # ---------------------------------------------------------------------------
-# Data generation — verbatim from bench_macd_market.py
+# Data generation — uses mktlib.data generators
 # ---------------------------------------------------------------------------
 
 
@@ -35,34 +36,20 @@ def generate_minute_ohlcv(
     seed: int = 42,
 ) -> pl.DataFrame:
     """Generate minute-resolution OHLCV using geometric Brownian motion."""
-    rng = np.random.default_rng(seed)
     n_bars = n_years * trading_days_per_year * minutes_per_day
+    dt_per_sub = 1.0 / (trading_days_per_year * minutes_per_day * sub_steps)
 
-    dt = 1.0 / (trading_days_per_year * minutes_per_day)
-    drift_per_step = (annual_drift - 0.5 * annual_vol**2) * dt / sub_steps
-    vol_per_step = annual_vol * np.sqrt(dt / sub_steps)
-
-    log_returns = drift_per_step + vol_per_step * rng.standard_normal(
-        (n_bars, sub_steps)
+    gbm = geometric_brownian_motion(
+        n=n_bars * sub_steps + 1,
+        base_price=start_price,
+        drift=annual_drift,
+        volatility=annual_vol,
+        dt=dt_per_sub,
+        seed=seed,
     )
-    cum_log = np.cumsum(log_returns, axis=1)
+    ohlcv = ticks_to_ohlcv(gbm, bar_size=sub_steps, seed=seed + 1)
 
-    bar_log_return = cum_log[:, -1]
-    cum_bar_log = np.cumsum(bar_log_return)
-    open_prices = start_price * np.exp(
-        np.concatenate([[0.0], cum_bar_log[:-1]])
-    )
-
-    open_arr = open_prices
-    close_arr = open_prices * np.exp(cum_log[:, -1])
-    high_arr = open_prices * np.exp(np.max(cum_log, axis=1))
-    low_arr = open_prices * np.exp(np.min(cum_log, axis=1))
-
-    high_arr = np.maximum(high_arr, np.maximum(open_arr, close_arr))
-    low_arr = np.minimum(low_arr, np.minimum(open_arr, close_arr))
-
-    volume = rng.lognormal(mean=10.0, sigma=1.0, size=n_bars).astype(np.int64)
-
+    # Build business-day minute timestamps (09:30-16:00 ET)
     n_days = n_years * trading_days_per_year
     all_dates = pl.date_range(
         pl.date(2019, 1, 1), pl.date(2019 + n_years + 1, 12, 31), eager=True
@@ -84,11 +71,11 @@ def generate_minute_ohlcv(
     return pl.DataFrame(
         {
             "date": pl.Series("date", datetimes_np),
-            "open": open_arr[:n_bars],
-            "high": high_arr[:n_bars],
-            "low": low_arr[:n_bars],
-            "close": close_arr[:n_bars],
-            "volume": volume[:n_bars],
+            "open": ohlcv["open"],
+            "high": ohlcv["high"],
+            "low": ohlcv["low"],
+            "close": ohlcv["close"],
+            "volume": ohlcv["volume"],
         }
     )
 

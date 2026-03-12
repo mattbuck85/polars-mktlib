@@ -17,6 +17,7 @@ Polars-native financial market toolkit.
 
    installation
    quickstart
+   advanced
 
 .. toctree::
    :maxdepth: 2

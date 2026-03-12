@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.2
+
+### Added
+
+- `ticks_to_ohlcv(ticks, bar_size)` — aggregate tick-level generator output into OHLCV bars with synthetic lognormal volume. Supports all generators (`column="price"` for GBM/fRW, `column="value"` for OU).
+- `docs/advanced.rst` — end-to-end grid search optimization guide: SMA crossover parameterization, TP/SL exits, two-stage search scored by Sharpe ratio with risk-free rate from `get_risk_free_rate`.
+- `scripts/grid_search_sma.py` — standalone runnable version of the advanced guide.
+
+### Changed
+
+- Benchmark scripts (`bench_backtest.py`, `bench_macd_market.py`, `bench_single_pass.py`) simplified — removed redundant imports and unused variables.
+
 ## 0.6.1
 
 ### Added
