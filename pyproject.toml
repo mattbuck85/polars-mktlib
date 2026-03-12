@@ -13,7 +13,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
 ]
-readme = "README.md"
+readme = "README_PYPI.md"
 dependencies = ["polars"]
 
 [project.urls]
