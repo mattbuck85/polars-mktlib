@@ -237,6 +237,17 @@ class IsFalling(Condition):
         return pl.col(self.col) < pl.col(self.col).shift(self.period)
 
 
+@dataclass(frozen=True, slots=True)
+class Custom(Condition):
+    """User-supplied polars expression — must evaluate to a boolean column."""
+
+    expr: pl.Expr
+    trade_side: TradeSide | None = None
+
+    def resolve(self) -> pl.Expr:
+        return self.expr
+
+
 # --- Combinators ---
 
 

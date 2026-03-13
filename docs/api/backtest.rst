@@ -85,6 +85,9 @@ with ``&`` (All), ``|`` (Any\_), and ``~`` (Not) operators.
 .. autoclass:: mktlib.backtest.IsFalling
    :members:
 
+.. autoclass:: mktlib.backtest.Custom
+   :members:
+
 Price Expressions
 -----------------
 

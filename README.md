@@ -486,6 +486,25 @@ exit = Crossunder("fast", "slow") | PriceIsBelow("close", "stop_loss")
 | `All(a, b)` / `a & b` | Both conditions true |
 | `Any_(a, b)` / `a \| b` | Either condition true |
 | `Not(a)` / `~a` | Invert condition |
+| `Custom(expr)` | Any `pl.Expr` evaluating to boolean |
+
+For arbitrary logic, use `Custom` or return a bare `pl.Expr` from `entry()`/`exit()` (auto-wrapped as `Custom`):
+
+```python
+from mktlib.backtest import Custom, TradeSide
+
+# Any polars expression — with explicit short side
+entry = Custom(pl.col("rsi") > 70, trade_side=TradeSide.SHORT)
+exit_ = Custom(pl.col("rsi") < 30)
+
+# Or return a bare pl.Expr — auto-wrapped as Custom with the run() default side
+class RsiStrategy:
+    def entry(self) -> pl.Expr:
+        return pl.col("rsi") < 30
+
+    def exit(self) -> pl.Expr:
+        return pl.col("rsi") > 70
+```
 
 ### Calendar & Flatten EOD
 

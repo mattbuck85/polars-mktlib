@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from mktlib.backtest._conditions import Condition, Custom
 from mktlib.backtest._types import BacktestResult, Strategy, TradeSide
 
 if TYPE_CHECKING:
@@ -113,8 +114,10 @@ def run(
     if calendar is not None:
         df = calendar.filter_market_hours(df, "date")
 
-    entry_cond = strategy.entry()
-    exit_cond = strategy.exit()
+    entry_raw = strategy.entry()
+    exit_raw = strategy.exit()
+    entry_cond = entry_raw if isinstance(entry_raw, Condition) else Custom(entry_raw)
+    exit_cond = exit_raw if isinstance(exit_raw, Condition) else Custom(exit_raw)
     entry_expr = entry_cond.resolve()
     exit_expr = exit_cond.resolve()
 
