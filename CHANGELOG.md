@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+
+- **`Custom` condition** — wrap any `pl.Expr` as a backtest condition via `Custom(expr)`. `Strategy.entry()` and `exit()` now also accept bare `pl.Expr` returns (auto-wrapped to `Custom`).
+- **`Strategy.init(df)` hook** — optional method on strategies to enrich the DataFrame with indicator columns before signal evaluation. Existing strategies without `init` are unaffected.
+- **`MultiBacktestResult`** — returned by `run()` when `instrument_col` is set. Stores per-symbol `BacktestResult` instances for O(1) access (`result["AAPL"]`). Combined views (`.returns`, `.trades`, `.signals`) are lazy-cached with the instrument column prepended. Supports `len()`, iteration, `in`, and `.items()`.
+- **`instrument_col` parameter on `run()`** — pass a column name to backtest a multi-symbol DataFrame. Each symbol is backtested independently (no indicator bleed), with calendar filtering applied once before partitioning.
+
+### Changed
+
+- `Strategy` protocol now accepts `Condition | pl.Expr` returns from `entry()` and `exit()`.
+- Renamed `symbol_col` parameter to `instrument_col` for consistency with financial data conventions.
+
+### Fixed
+
+- **`flatten_eod` deferred entry** — crossover signals on the last bar of a session were silently dropped. They now carry forward to the first bar of the next session (e.g. signal at 15:59 → fill at next day's 09:30).
+- **`_build_session_last_mask` for non-1-minute candles** — session-last detection no longer hardcodes `market_close - 1min`; it finds the actual last bar per session from the data, fixing `flatten_eod` and deferred entry for 5min, 15min, and other candle sizes.
+
 ## 0.6.3
 
 ### Fixed

@@ -58,16 +58,28 @@ def _build_session_last_mask(
 ) -> pl.Series:
     """Boolean series: True on the last bar of each trading session.
 
-    Uses open-frame convention: last bar timestamp = market_close - 1min.
-    E.g. NYSE 16:00 close -> last bar at 15:59:00.
+    Finds the actual last bar per session from the data rather than assuming
+    a fixed offset, so this works for any candle size (1min, 5min, 15min, …).
     """
     sched = _get_schedule(calendar, dates)
+    open_times = _align_tz(sched["market_open"], dates)
     close_times = _align_tz(sched["market_close"], dates)
-    # Last bar = market_close - 1min (open-frame: bar at 15:59 covers 15:59-16:00)
-    last_minutes = close_times.to_frame("c").select(
-        pl.col("c") - pl.duration(minutes=1)
-    )["c"]
-    return dates.is_in(last_minutes.to_list())
+
+    sessions = pl.DataFrame({
+        "market_open": open_times,
+        "market_close": close_times,
+    })
+
+    bar_df = dates.to_frame("date").with_row_index("_idx")
+    joined = bar_df.join_asof(sessions, left_on="date", right_on="market_open")
+
+    joined = joined.filter(pl.col("date") < pl.col("market_close"))
+    last_per_session = joined.group_by("market_open").agg(
+        pl.col("date").max().alias("last_bar"),
+    )
+
+    last_bars = last_per_session["last_bar"].to_list()
+    return dates.is_in(last_bars)
 
 
 def _run_core(

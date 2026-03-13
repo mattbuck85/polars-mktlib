@@ -414,6 +414,49 @@ class TestMarketHours:
             "deferred entry landing on session-last should not chain-defer"
         )
 
+    def test_flatten_eod_defers_session_last_entry_15min_candles(self) -> None:
+        """Crossover on session-last bar defers entry with 15-min candles.
+
+        With 15-min bars the last candle of the day opens at 15:45, not 15:59.
+        The session-last mask must detect this as the final bar of the session
+        so flatten_eod can suppress+defer the entry correctly.
+        """
+        cal = get_calendar("XNYS")
+        # 15-min candles: 09:30, 09:45, ..., 15:30, 15:45
+        # Day 1: crossover fires on 15:45 (session-last for 15-min bars)
+        # Day 2: deferred entry should open position at 09:30
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 45),
+            datetime.datetime(2024, 1, 2, 15, 45),  # crossover here
+            datetime.datetime(2024, 1, 3, 9, 30),   # deferred entry here
+            datetime.datetime(2024, 1, 3, 9, 45),
+            datetime.datetime(2024, 1, 3, 15, 45),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                # fast crosses above slow at bar 2 (session-last)
+                "fast":  [1.0, 1.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(
+            df,
+            AlwaysInStrategy(),
+            calendar=cal,
+            flatten_eod=True,
+        )
+        positions = result.signals["_position"].to_list()
+        # Day 1: no entry (crossover on session-last is suppressed)
+        # Day 2: deferred entry at bar 3, held through bar 4, flattened at bar 5
+        assert positions == [0, 0, 0, 1, 1, 0], (
+            f"15-min candle session-last not detected; got {positions}"
+        )
+
     def test_flatten_eod_requires_calendar(self) -> None:
         """flatten_eod=True without calendar raises ValueError."""
         df = _make_minute_df(datetime.date(2024, 1, 2), [(9, 30), (10, 0)])
