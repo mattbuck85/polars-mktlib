@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 import polars as pl
 
-from mktlib.backtest._types import BacktestResult, Strategy, TradeSide
+from mktlib.backtest._conditions import Condition, Custom
+from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
 
 if TYPE_CHECKING:
     from mktlib.scheduling import ExchangeCalendar
@@ -57,64 +58,48 @@ def _build_session_last_mask(
 ) -> pl.Series:
     """Boolean series: True on the last bar of each trading session.
 
-    Uses open-frame convention: last bar timestamp = market_close - 1min.
-    E.g. NYSE 16:00 close -> last bar at 15:59:00.
+    Finds the actual last bar per session from the data rather than assuming
+    a fixed offset, so this works for any candle size (1min, 5min, 15min, …).
     """
     sched = _get_schedule(calendar, dates)
+    open_times = _align_tz(sched["market_open"], dates)
     close_times = _align_tz(sched["market_close"], dates)
-    # Last bar = market_close - 1min (open-frame: bar at 15:59 covers 15:59-16:00)
-    last_minutes = close_times.to_frame("c").select(
-        pl.col("c") - pl.duration(minutes=1)
-    )["c"]
-    return dates.is_in(last_minutes.to_list())
+
+    sessions = pl.DataFrame({
+        "market_open": open_times,
+        "market_close": close_times,
+    })
+
+    bar_df = dates.to_frame("date").with_row_index("_idx")
+    joined = bar_df.join_asof(sessions, left_on="date", right_on="market_open")
+
+    joined = joined.filter(pl.col("date") < pl.col("market_close"))
+    last_per_session = joined.group_by("market_open").agg(
+        pl.col("date").max().alias("last_bar"),
+    )
+
+    last_bars = last_per_session["last_bar"].to_list()
+    return dates.is_in(last_bars)
 
 
-def run(
+def _run_core(
     df: pl.DataFrame,
     strategy: Strategy,
     *,
-    trade_side: TradeSide = TradeSide.LONG,
-    calendar: ExchangeCalendar | None = None,
-    flatten_eod: bool = False,
+    trade_side: TradeSide,
+    calendar: ExchangeCalendar | None,
+    flatten_eod: bool,
 ) -> BacktestResult:
-    """Run a vectorized backtest with fill-at-next-open semantics.
+    """Inner engine: assumes *df* is already calendar-filtered."""
+    # Let strategy enrich the DataFrame with indicator columns
+    _init = getattr(strategy, "init", None)
+    if _init is not None:
+        df = _init(df)
 
-    Parameters
-    ----------
-    df
-        Must contain ``date``, ``open``, ``close``, and any indicator
-        columns referenced by the strategy.
-    strategy
-        Object with ``entry()`` and ``exit()`` returning Conditions.
-    trade_side
-        Trade direction. Overridden by the entry condition's ``trade_side``
-        if set.
-    calendar
-        Exchange calendar for market-hours filtering. When provided, the
-        DataFrame is filtered to market hours before signal computation.
-    flatten_eod
-        Force-close positions at each session's last bar, eliminating
-        overnight exposure. Requires *calendar*.
-
-    Notes
-    -----
-    Signal at bar *t* → market order fills at bar *t+1*'s open.
-
-    - **Entry bar** (*t+1*): return = ``(close - open) / open``
-    - **Middle bars**: return = ``close / prev_close - 1``
-    - **Exit bar** (first bar where position drops to 0): return =
-      ``(open - prev_close) / prev_close`` (gap to fill price only)
-    """
-    if flatten_eod and calendar is None:
-        msg = "flatten_eod=True requires a calendar"
-        raise ValueError(msg)
-
-    # Filter to market hours when calendar is provided
-    if calendar is not None:
-        df = calendar.filter_market_hours(df, "date")
-
-    entry_cond = strategy.entry()
-    exit_cond = strategy.exit()
+    entry_raw = strategy.entry()
+    exit_raw = strategy.exit()
+    entry_cond = entry_raw if isinstance(entry_raw, Condition) else Custom(entry_raw)
+    exit_cond = exit_raw if isinstance(exit_raw, Condition) else Custom(exit_raw)
     entry_expr = entry_cond.resolve()
     exit_expr = exit_cond.resolve()
 
@@ -130,6 +115,12 @@ def run(
     if flatten_eod:
         _session_last = _build_session_last_mask(signals["date"], calendar)  # type: ignore[arg-type]
         signals = signals.with_columns(_session_last.alias("_session_last"))
+        # Defer entries on session-last bars to the first bar of the next
+        # session (e.g. crossover on 15:59 → enter at next day's 09:30).
+        _suppressed = pl.col("_entry") & pl.col("_session_last")
+        signals = signals.with_columns(
+            (pl.col("_entry") | _suppressed.shift(1).fill_null(False)).alias("_entry"),
+        )
         # Suppress entries on session-last bars (position opens and immediately
         # force-closes in the same bar — not a valid trade).
         signals = signals.with_columns(
@@ -227,6 +218,151 @@ def run(
     trades = _extract_trades(signals, effective_side, flatten_eod=flatten_eod)
 
     return BacktestResult(returns=returns, trades=trades, signals=signals)
+
+
+def _run_multi(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    instrument_col: str,
+    trade_side: TradeSide,
+    calendar: ExchangeCalendar | None,
+    flatten_eod: bool,
+) -> MultiBacktestResult:
+    """Run independent backtests per instrument and combine results."""
+    if instrument_col not in df.columns:
+        msg = f"instrument_col={instrument_col!r} not found in DataFrame columns"
+        raise ValueError(msg)
+
+    # Calendar filter once on full df
+    if calendar is not None:
+        df = calendar.filter_market_hours(df, "date")
+
+    by_instrument: dict[str, BacktestResult] = {}
+    for inst_df in df.partition_by(instrument_col, maintain_order=True):
+        instrument = inst_df[instrument_col][0]
+        by_instrument[instrument] = _run_core(
+            inst_df.drop(instrument_col),
+            strategy,
+            trade_side=trade_side,
+            calendar=calendar,
+            flatten_eod=flatten_eod,
+        )
+
+    return MultiBacktestResult(by_instrument, instrument_col=instrument_col)
+
+
+@overload
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    trade_side: TradeSide = ...,
+    calendar: ExchangeCalendar | None = ...,
+    flatten_eod: bool = ...,
+    instrument_col: str,
+) -> MultiBacktestResult: ...
+
+
+@overload
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    trade_side: TradeSide = ...,
+    calendar: ExchangeCalendar | None = ...,
+    flatten_eod: bool = ...,
+    instrument_col: None = ...,
+) -> BacktestResult: ...
+
+
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    trade_side: TradeSide = TradeSide.LONG,
+    calendar: ExchangeCalendar | None = None,
+    flatten_eod: bool = False,
+    instrument_col: str | None = None,
+) -> BacktestResult | MultiBacktestResult:
+    """Run a vectorized backtest with fill-at-next-open semantics.
+
+    Parameters
+    ----------
+    df
+        Must contain ``date``, ``open``, ``close``, and any indicator
+        columns referenced by the strategy.
+    strategy
+        Object with ``entry()`` and ``exit()`` returning Conditions.
+        May optionally define ``init(df) -> pl.DataFrame`` to enrich the
+        DataFrame with indicator columns before signal evaluation.
+    trade_side
+        Trade direction. Overridden by the entry condition's ``trade_side``
+        if set.
+    calendar
+        Exchange calendar for market-hours filtering. When provided, the
+        DataFrame is filtered to market hours before signal computation.
+    flatten_eod
+        Force-close positions at each session's last bar, eliminating
+        overnight exposure. Requires *calendar*.
+    instrument_col
+        Column name identifying the symbol/ticker in a multi-symbol
+        DataFrame. When provided, returns a
+        :class:`~mktlib.backtest.MultiBacktestResult` that stores
+        per-symbol results for O(1) access (``result["AAPL"]``).
+        Combined DataFrames with the symbol column prepended are
+        available via ``.returns``, ``.trades``, ``.signals`` properties.
+
+    Returns
+    -------
+    BacktestResult
+        When *instrument_col* is ``None`` (default).
+    MultiBacktestResult
+        When *instrument_col* is set. Supports ``result[symbol]`` for O(1)
+        per-symbol access, iteration, and lazy-cached combined views.
+
+    Notes
+    -----
+    Signal at bar *t* → market order fills at bar *t+1*'s open.
+
+    - **Entry bar** (*t+1*): return = ``(close - open) / open``
+    - **Middle bars**: return = ``close / prev_close - 1``
+    - **Exit bar** (first bar where position drops to 0): return =
+      ``(open - prev_close) / prev_close`` (gap to fill price only)
+
+    When *instrument_col* is set, each symbol is backtested independently —
+    indicators (e.g. rolling SMA) do not bleed across symbols. Calendar
+    filtering is applied once on the full DataFrame before partitioning.
+    Per-symbol aggregation (e.g. equal-weight portfolio returns) is left
+    to the caller::
+
+        result.returns.group_by("date").agg(pl.col("return").mean())
+    """
+    if flatten_eod and calendar is None:
+        msg = "flatten_eod=True requires a calendar"
+        raise ValueError(msg)
+
+    if instrument_col is not None:
+        return _run_multi(
+            df,
+            strategy,
+            instrument_col=instrument_col,
+            trade_side=trade_side,
+            calendar=calendar,
+            flatten_eod=flatten_eod,
+        )
+
+    # Single-symbol path: calendar filter → _run_core
+    if calendar is not None:
+        df = calendar.filter_market_hours(df, "date")
+
+    return _run_core(
+        df,
+        strategy,
+        trade_side=trade_side,
+        calendar=calendar,
+        flatten_eod=flatten_eod,
+    )
 
 
 def _extract_trades(

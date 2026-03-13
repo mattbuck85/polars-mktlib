@@ -10,18 +10,30 @@ Run signal-driven backtests with fill-at-next-open semantics:
 
 .. code-block:: python
 
+   import polars as pl
+   import polars_talib as plta
    from dataclasses import dataclass
    from mktlib.backtest import run, Crossover, Crossunder
 
    @dataclass(frozen=True, slots=True)
    class SmaCross:
+       fast_period: int = 20
+       slow_period: int = 50
+
+       def init(self, df: pl.DataFrame) -> pl.DataFrame:
+           """Add SMA indicator columns before signal evaluation."""
+           return df.with_columns(
+               plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
+               plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+           )
+
        def entry(self) -> Crossover:
            return Crossover("fast_sma", "slow_sma")
 
        def exit(self) -> Crossunder:
            return Crossunder("fast_sma", "slow_sma")
 
-   # df must have: date, open, close, fast_sma, slow_sma
+   # df needs only: date, open, close — init() adds the indicators
    result = run(df, SmaCross())
    result.returns   # DataFrame[date, return]
    result.trades    # DataFrame[entry_date, exit_date, pnl, bars_held]
@@ -70,6 +82,28 @@ levels without any engine changes — combine ``PriceIsAbove`` and
 
    # df must have: date, open, close, fast_sma, slow_sma, vol
    result = run(df, SmaCrossWithExits())
+
+Multi-symbol backtesting — run the same strategy across multiple tickers in
+one call:
+
+.. code-block:: python
+
+   # df has columns: symbol, date, open, close (for AAPL, TSLA, SPY)
+   result = run(df, SmaCross(), instrument_col="symbol")
+
+   # O(1) per-symbol access
+   aapl = result["AAPL"]
+   aapl.returns   # DataFrame[date, return] — no symbol column
+   aapl.trades    # DataFrame[entry_date, exit_date, pnl, bars_held]
+
+   # Combined views (symbol column prepended)
+   result.returns   # DataFrame[symbol, date, return]
+
+   # Equal-weight portfolio returns
+   portfolio = result.returns.group_by("date").agg(pl.col("return").mean())
+
+Each symbol is backtested independently — indicators do not bleed across
+symbols, and ``init()`` is called once per symbol.
 
 See :doc:`api/backtest` for the full API.
 
