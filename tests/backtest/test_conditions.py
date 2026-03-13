@@ -8,6 +8,7 @@ from mktlib.backtest._conditions import (
     Any_,
     Crossover,
     Crossunder,
+    Custom,
     IsFalling,
     IsRising,
     Not,
@@ -118,6 +119,7 @@ class TestTradeSide:
         assert PriceIsBelow("a", "b").trade_side is None
         assert IsRising("a").trade_side is None
         assert IsFalling("a").trade_side is None
+        assert Custom(pl.lit(True)).trade_side is None
 
     def test_set_via_constructor(self) -> None:
         cond = Crossover("a", "b", trade_side=TradeSide.SHORT)
@@ -134,3 +136,53 @@ class TestTradeSide:
         left = Crossover("a", "b")
         right = Crossunder("a", "b")
         assert All(left, right, trade_side=TradeSide.LONG).trade_side is TradeSide.LONG
+
+
+class TestCustom:
+    def test_basic_expr(self, df: pl.DataFrame) -> None:
+        # Custom(a > b) should match PriceIsAbove("a", "b")
+        custom = Custom(pl.col("a") > pl.col("b"))
+        expected = PriceIsAbove("a", "b")
+        result = df.select(custom.resolve()).to_series().to_list()
+        assert result == df.select(expected.resolve()).to_series().to_list()
+
+    def test_trade_side(self) -> None:
+        cond = Custom(pl.lit(True), trade_side=TradeSide.SHORT)
+        assert cond.trade_side is TradeSide.SHORT
+
+    def test_composable(self, df: pl.DataFrame) -> None:
+        cond = Custom(pl.col("a") > pl.col("b")) & IsRising("a")
+        assert isinstance(cond, All)
+        result = df.select(cond.resolve()).to_series().to_list()
+        # above: [F,T,T,F,F] & rising: [null,T,T,F,F]
+        assert result == [False, True, True, False, False]
+
+
+class TestBareExprEngine:
+    """Strategy returning bare pl.Expr works via auto-wrapping."""
+
+    def test_bare_expr_runs(self) -> None:
+        from mktlib.backtest import run
+
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(
+                    pl.date(2024, 1, 1), pl.date(2024, 1, 5), eager=True
+                ),
+                "open": [100.0, 101.0, 102.0, 103.0, 104.0],
+                "close": [101.0, 102.0, 103.0, 104.0, 105.0],
+                "rsi": [25.0, 35.0, 75.0, 80.0, 20.0],
+            }
+        )
+
+        class RsiStrategy:
+            def entry(self) -> pl.Expr:
+                return pl.col("rsi") < 30
+
+            def exit(self) -> pl.Expr:
+                return pl.col("rsi") > 70
+
+        result = run(df, RsiStrategy())  # type: ignore[arg-type]
+        assert result.signals.height == 5
+        assert "_entry" in result.signals.columns
+        assert "_exit" in result.signals.columns

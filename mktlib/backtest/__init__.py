@@ -7,6 +7,7 @@ from mktlib.backtest._conditions import (
     Condition,
     Crossover,
     Crossunder,
+    Custom,
     IsFalling,
     IsRising,
     Lit,
@@ -17,7 +18,7 @@ from mktlib.backtest._conditions import (
     PriceIsBelow,
 )
 from mktlib.backtest._engine import run
-from mktlib.backtest._types import BacktestResult, Strategy, TradeSide
+from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
 
 __all__ = [
     "All",
@@ -27,9 +28,11 @@ __all__ = [
     "Condition",
     "Crossover",
     "Crossunder",
+    "Custom",
     "IsFalling",
     "IsRising",
     "Lit",
+    "MultiBacktestResult",
     "Not",
     "Pct",
     "PriceExpr",

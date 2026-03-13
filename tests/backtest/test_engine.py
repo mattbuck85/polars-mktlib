@@ -306,6 +306,157 @@ class TestMarketHours:
         # Bar 3: middle bar, ret = close[3]/close[2] - 1 = 105.3/101.5 - 1
         assert rets[3] == pytest.approx(105.3 / 101.5 - 1, rel=1e-6)
 
+    def test_flatten_eod_defers_session_last_entry_to_next_session(self) -> None:
+        """Crossover on session-last bar defers entry to next session open."""
+        cal = get_calendar("XNYS")
+        # Day 1: crossover fires on 15:59 (session-last bar)
+        # Day 2: deferred entry should open position at 09:30
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),  # crossover here
+            datetime.datetime(2024, 1, 3, 9, 30),   # deferred entry here
+            datetime.datetime(2024, 1, 3, 9, 31),
+            datetime.datetime(2024, 1, 3, 15, 59),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                # fast crosses above slow at bar 2 (session-last)
+                "fast":  [1.0, 1.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(
+            df,
+            AlwaysInStrategy(),
+            calendar=cal,
+            flatten_eod=True,
+        )
+        positions = result.signals["_position"].to_list()
+        # Day 1: no entry (crossover on session-last is suppressed)
+        # Day 2: deferred entry at bar 3, held through bar 4, flattened at bar 5
+        assert positions == [0, 0, 0, 1, 1, 0]
+
+        # Deferred entry fills at bar 4's open (fill-at-next-open)
+        # Bar 4 return: (close[4] - open[4]) / open[4] = entry bar return
+        rets = result.returns["return"].to_list()
+        assert rets[4] == pytest.approx(
+            (105.8 - 105.5) / 105.5, rel=1e-6,
+        ), "deferred entry should fill at next bar's open"
+
+        # Bar 5 (session-last): forced exit, return = (open[5] - close[4]) / close[4]
+        assert rets[5] == pytest.approx(
+            (106.0 - 105.8) / 105.8, rel=1e-6,
+        ), "session-last forced exit return"
+
+    def test_flatten_eod_deferred_entry_on_final_session(self) -> None:
+        """Crossover on session-last of the last day produces no position."""
+        cal = get_calendar("XNYS")
+        # Single session: crossover fires on 15:59 (session-last), no next day
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),  # crossover here, nowhere to defer
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0],
+                "close": [100.2, 100.8, 101.5],
+                "fast":  [1.0, 1.0, 3.0],  # crosses above slow at bar 2
+                "slow":  [2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 3,
+            }
+        )
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        positions = result.signals["_position"].to_list()
+        assert positions == [0, 0, 0], "deferred entry with no next session should produce no position"
+        assert result.trades.height == 0
+
+    def test_flatten_eod_deferred_entry_lands_on_session_last(self) -> None:
+        """Deferred entry landing on a one-bar session is suppressed again.
+
+        This is a known limitation: deferral does not chain. If the next
+        session's first bar is also session-last (single-bar session), the
+        deferred entry is suppressed a second time and lost.
+        """
+        cal = get_calendar("XNYS")
+        # Day 1: 3 bars, crossover on 15:59 (session-last) → deferred
+        # Day 2: only 15:59 bar (one-bar session) → deferred lands on session-last again
+        # Day 3: 2 bars, no deferred signal reaches here
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),  # crossover here
+            datetime.datetime(2024, 1, 3, 15, 59),  # deferred lands here, but also session-last
+            datetime.datetime(2024, 1, 4, 9, 30),
+            datetime.datetime(2024, 1, 4, 15, 59),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                "fast":  [1.0, 1.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        positions = result.signals["_position"].to_list()
+        # Deferred entry hits Day 2's single bar (also session-last) → suppressed again
+        # No second deferral → Day 3 has no entry
+        assert positions == [0, 0, 0, 0, 0, 0], (
+            "deferred entry landing on session-last should not chain-defer"
+        )
+
+    def test_flatten_eod_defers_session_last_entry_15min_candles(self) -> None:
+        """Crossover on session-last bar defers entry with 15-min candles.
+
+        With 15-min bars the last candle of the day opens at 15:45, not 15:59.
+        The session-last mask must detect this as the final bar of the session
+        so flatten_eod can suppress+defer the entry correctly.
+        """
+        cal = get_calendar("XNYS")
+        # 15-min candles: 09:30, 09:45, ..., 15:30, 15:45
+        # Day 1: crossover fires on 15:45 (session-last for 15-min bars)
+        # Day 2: deferred entry should open position at 09:30
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 45),
+            datetime.datetime(2024, 1, 2, 15, 45),  # crossover here
+            datetime.datetime(2024, 1, 3, 9, 30),   # deferred entry here
+            datetime.datetime(2024, 1, 3, 9, 45),
+            datetime.datetime(2024, 1, 3, 15, 45),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                # fast crosses above slow at bar 2 (session-last)
+                "fast":  [1.0, 1.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(
+            df,
+            AlwaysInStrategy(),
+            calendar=cal,
+            flatten_eod=True,
+        )
+        positions = result.signals["_position"].to_list()
+        # Day 1: no entry (crossover on session-last is suppressed)
+        # Day 2: deferred entry at bar 3, held through bar 4, flattened at bar 5
+        assert positions == [0, 0, 0, 1, 1, 0], (
+            f"15-min candle session-last not detected; got {positions}"
+        )
+
     def test_flatten_eod_requires_calendar(self) -> None:
         """flatten_eod=True without calendar raises ValueError."""
         df = _make_minute_df(datetime.date(2024, 1, 2), [(9, 30), (10, 0)])
@@ -559,6 +710,116 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 
 
+class TestInitHook:
+    """Tests for the optional strategy.init() hook."""
+
+    def test_init_adds_columns(self) -> None:
+        """Strategy with init() that adds a rolling mean; entry/exit reference it."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0],
+            }
+        )
+
+        @dataclass(frozen=True, slots=True)
+        class InitStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                return df.with_columns(
+                    pl.col("close").rolling_mean(2).alias("fast"),
+                    pl.lit(101.5).alias("slow"),
+                )
+
+            def entry(self) -> Crossover:
+                return Crossover("fast", "slow")
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        result = run(df, InitStrategy())
+        # fast (rolling mean of 2): [null, 100.5, 102.0, 104.0, 104.5, 102.0, 99.0, 97.5]
+        # slow = 101.5 everywhere
+        # Crossover at bar 2 (fast goes from 100.5 to 102.0, crossing above 101.5)
+        assert "fast" in result.signals.columns
+        assert "slow" in result.signals.columns
+        assert result.trades.height >= 1
+
+    def test_init_not_required(self) -> None:
+        """Existing strategies without init() still work."""
+        assert not hasattr(SimpleCrossStrategy(), "init")
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 3), eager=True),
+                "open": [100.0, 100.5, 101.5],
+                "close": [100.0, 101.0, 102.0],
+                "fast": [1.0, 1.0, 1.0],
+                "slow": [2.0, 2.0, 2.0],
+            }
+        )
+        result = run(df, SimpleCrossStrategy())
+        assert result.returns.height == 3
+
+    def test_init_sees_calendar_filtered_data(self) -> None:
+        """When calendar is provided, init() receives already-filtered df."""
+        cal = get_calendar("XNYS")
+        received_heights: list[int] = []
+
+        @dataclass(frozen=True, slots=True)
+        class SpyInitStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                received_heights.append(df.height)
+                return df.with_columns(
+                    pl.lit(1.0).alias("fast"),
+                    pl.lit(2.0).alias("slow"),
+                )
+
+            def entry(self) -> Crossover:
+                return Crossover("fast", "slow")
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        # Include bars outside market hours
+        df = _make_minute_df(
+            datetime.date(2024, 1, 2),
+            [(8, 0), (9, 30), (10, 0), (18, 0)],
+        )
+        original_height = df.height  # 4 bars
+        run(df, SpyInitStrategy(), calendar=cal)
+        # init should see only 2 market-hours bars, not 4
+        assert len(received_heights) == 1
+        assert received_heights[0] < original_height
+        assert received_heights[0] == 2
+
+    def test_init_with_bare_expr(self) -> None:
+        """Combine init() with bare pl.Expr return from entry/exit."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 6), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0],
+            }
+        )
+
+        @dataclass(frozen=True, slots=True)
+        class BareExprInitStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                return df.with_columns(
+                    pl.col("close").rolling_mean(2).alias("sma2"),
+                )
+
+            def entry(self) -> pl.Expr:
+                return pl.col("close") > pl.col("sma2") + 1.0
+
+            def exit(self) -> pl.Expr:
+                return pl.col("close") < pl.col("sma2")
+
+        result = run(df, BareExprInitStrategy())
+        assert "sma2" in result.signals.columns
+        assert result.returns.height == 6
+
+
 class TestPriceExpr:
     def test_col_resolve(self) -> None:
         expr = Col("close").resolve()
@@ -707,6 +968,217 @@ class ColExprExitStrategy:
 
     def exit(self) -> PriceIsBelow:
         return PriceIsBelow("close", Col("sma") - Col("vol") * 2)
+
+
+# ---------------------------------------------------------------------------
+# Multi-symbol tests
+# ---------------------------------------------------------------------------
+
+
+def _make_multi_symbol_df() -> pl.DataFrame:
+    """Two symbols with different crossover timing.
+
+    AAPL: crossover at bar 2, crossunder at bar 5 (same as ohlcv fixture).
+    TSLA: crossover at bar 3, crossunder at bar 6 (shifted by 1).
+    """
+    aapl = pl.DataFrame(
+        {
+            "symbol": ["AAPL"] * 8,
+            "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+            "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5],
+            "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0],
+            "fast": [1.0, 1.0, 3.0, 4.0, 3.5, 1.0, 0.5, 0.3],
+            "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+        }
+    )
+    tsla = pl.DataFrame(
+        {
+            "symbol": ["TSLA"] * 8,
+            "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+            "open": [200.0, 200.5, 201.5, 203.5, 205.5, 207.5, 203.5, 199.5],
+            "close": [200.0, 201.0, 201.5, 205.0, 206.0, 204.0, 200.0, 198.0],
+            # Crossover at bar 3 (shifted by 1 vs AAPL), crossunder at bar 6
+            "fast": [1.0, 1.0, 1.0, 3.0, 4.0, 3.5, 1.0, 0.5],
+            "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+        }
+    )
+    return pl.concat([aapl, tsla])
+
+
+class TestMultiSymbol:
+    def test_getitem(self) -> None:
+        """result['AAPL'] returns a BacktestResult for that symbol."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        aapl = result["AAPL"]
+        assert aapl.returns.columns == ["date", "return"]
+        assert aapl.trades.columns == ["entry_date", "exit_date", "pnl", "bars_held"]
+
+    def test_symbols(self) -> None:
+        """result.symbols returns ordered list of symbol keys."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert result.symbols == ["AAPL", "TSLA"]
+
+    def test_len(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert len(result) == 2
+
+    def test_contains(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert "AAPL" in result
+        assert "SPY" not in result
+
+    def test_items(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        symbols = [sym for sym, _ in result.items()]
+        assert symbols == ["AAPL", "TSLA"]
+
+    def test_missing_symbol_keyerror(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        with pytest.raises(KeyError):
+            result["SPY"]
+
+    def test_returns_schema(self) -> None:
+        """Combined .returns has [symbol, date, return] columns."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert result.returns.columns == ["symbol", "date", "return"]
+
+    def test_trades_schema(self) -> None:
+        """Combined .trades has [symbol, entry_date, exit_date, pnl, bars_held]."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert result.trades.columns == ["symbol", "entry_date", "exit_date", "pnl", "bars_held"]
+
+    def test_independent_positions(self) -> None:
+        """Two symbols produce independent position sequences."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        aapl_pos = result["AAPL"].signals["_position"].to_list()
+        tsla_pos = result["TSLA"].signals["_position"].to_list()
+        # AAPL: entry bar 2, exit bar 5
+        assert aapl_pos == [0, 0, 1, 1, 1, 0, 0, 0]
+        # TSLA: entry bar 3, exit bar 6
+        assert tsla_pos == [0, 0, 0, 1, 1, 1, 0, 0]
+
+    def test_matches_individual_runs(self) -> None:
+        """Multi-symbol run matches running each symbol individually."""
+        df = _make_multi_symbol_df()
+        combined = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+
+        for sym in ["AAPL", "TSLA"]:
+            individual_df = df.filter(pl.col("symbol") == sym).drop("symbol")
+            individual = run(individual_df, SimpleCrossStrategy())
+
+            assert combined[sym].returns.equals(individual.returns), f"{sym} returns mismatch"
+            assert combined[sym].trades.equals(individual.trades), f"{sym} trades mismatch"
+
+    def test_with_init_hook(self) -> None:
+        """Strategy with init() works per-symbol."""
+        df = _make_multi_symbol_df().drop("fast", "slow")
+
+        @dataclass(frozen=True, slots=True)
+        class InitMultiStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                return df.with_columns(
+                    pl.col("close").rolling_mean(2).alias("fast"),
+                    pl.lit(101.5).alias("slow"),
+                )
+
+            def entry(self) -> Crossover:
+                return Crossover("fast", "slow")
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        result = run(df, InitMultiStrategy(), instrument_col="symbol")
+        assert result.symbols == ["AAPL", "TSLA"]
+        # Each symbol was processed independently
+        assert "fast" in result["AAPL"].signals.columns
+
+    def test_with_flatten_eod(self) -> None:
+        """flatten_eod works per-symbol with minute data."""
+        cal = get_calendar("XNYS")
+
+        def _minute_symbol(sym: str, base: float) -> pl.DataFrame:
+            timestamps = [
+                datetime.datetime(2024, 1, 2, 9, 30),
+                datetime.datetime(2024, 1, 2, 9, 31),
+                datetime.datetime(2024, 1, 2, 15, 59),
+            ]
+            n = len(timestamps)
+            prices = [base + i * 0.5 for i in range(n)]
+            return pl.DataFrame(
+                {
+                    "symbol": [sym] * n,
+                    "date": timestamps,
+                    "open": prices,
+                    "close": [p + 0.1 for p in prices],
+                    "fast": [1.0, 3.0, 3.0],
+                    "slow": [2.0, 2.0, 2.0],
+                    "never_cross": [5.0] * n,
+                }
+            )
+
+        df = pl.concat([_minute_symbol("AAPL", 100.0), _minute_symbol("TSLA", 200.0)])
+        result = run(
+            df, AlwaysInStrategy(), calendar=cal, flatten_eod=True, instrument_col="symbol",
+        )
+        # Both symbols should have position forced to 0 at session end
+        for sym in ["AAPL", "TSLA"]:
+            pos = result[sym].signals["_position"].to_list()
+            assert pos[-1] == 0, f"{sym} not flattened at EOD"
+
+    def test_missing_column(self) -> None:
+        """instrument_col='nope' raises ValueError."""
+        df = _make_multi_symbol_df()
+        with pytest.raises(ValueError, match="instrument_col='nope' not found"):
+            run(df, SimpleCrossStrategy(), instrument_col="nope")
+
+    def test_backward_compat(self, ohlcv: pl.DataFrame) -> None:
+        """instrument_col=None (default) matches existing behavior."""
+        result_default = run(ohlcv, SimpleCrossStrategy())
+        result_none = run(ohlcv, SimpleCrossStrategy(), instrument_col=None)
+        assert result_default.returns.equals(result_none.returns)
+        assert result_default.trades.equals(result_none.trades)
+
+    def test_empty_trades_one_symbol(self) -> None:
+        """One symbol has 0 trades, results still include both symbols."""
+        # AAPL has a crossover, TSLA does not (fast stays below slow)
+        aapl = pl.DataFrame(
+            {
+                "symbol": ["AAPL"] * 6,
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 6), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0],
+                "fast": [1.0, 1.0, 3.0, 4.0, 3.5, 1.0],
+                "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+            }
+        )
+        tsla = pl.DataFrame(
+            {
+                "symbol": ["TSLA"] * 6,
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 6), eager=True),
+                "open": [200.0, 200.5, 201.5, 203.5, 205.5, 207.5],
+                "close": [200.0, 201.0, 201.5, 203.0, 204.0, 205.0],
+                # fast never crosses above slow
+                "fast": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+            }
+        )
+        df = pl.concat([aapl, tsla])
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        # AAPL has trades, TSLA has none
+        assert result["AAPL"].trades.height >= 1
+        assert result["TSLA"].trades.height == 0
+        # Both symbols present in combined returns
+        return_symbols = result.returns["symbol"].unique().sort().to_list()
+        assert return_symbols == ["AAPL", "TSLA"]
 
 
 class TestPriceExprConditions:

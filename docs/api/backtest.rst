@@ -38,6 +38,35 @@ Engine
 
 .. autofunction:: mktlib.backtest.run
 
+Multi-Symbol Backtesting
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Pass ``instrument_col`` to :func:`run` to backtest multiple instruments in a single
+call. Returns a :class:`MultiBacktestResult` with O(1) per-instrument access:
+
+.. code-block:: python
+
+   # df has columns: symbol, date, open, close
+   result = run(df, SmaCross(), instrument_col="symbol")
+
+   # O(1) per-symbol access — returns a BacktestResult
+   aapl = result["AAPL"]
+   aapl.returns.columns   # ["date", "return"]
+
+   # Iterate over symbols
+   for symbol, bt in result.items():
+       print(symbol, bt.trades.height)
+
+   # Combined views (lazy-cached, symbol column first)
+   result.returns.columns   # ["symbol", "date", "return"]
+
+   # Equal-weight portfolio
+   portfolio = result.returns.group_by("date").agg(pl.col("return").mean())
+
+.. autoclass:: mktlib.backtest.MultiBacktestResult
+   :members:
+   :special-members: __getitem__, __len__, __contains__
+
 Types
 -----
 
@@ -46,6 +75,14 @@ Types
 
 .. autoclass:: mktlib.backtest.Strategy
    :members:
+
+   .. note::
+
+      Strategies may optionally define an ``init(self, df) -> pl.DataFrame``
+      method to enrich the DataFrame with indicator columns before signal
+      evaluation. This hook is called after calendar filtering (if any) and
+      before ``entry()``/``exit()`` resolution. It is **not** part of the
+      Protocol — existing strategies without ``init`` continue to work unchanged.
 
 .. autoclass:: mktlib.backtest.TradeSide
    :members:
@@ -83,6 +120,9 @@ with ``&`` (All), ``|`` (Any\_), and ``~`` (Not) operators.
    :members:
 
 .. autoclass:: mktlib.backtest.IsFalling
+   :members:
+
+.. autoclass:: mktlib.backtest.Custom
    :members:
 
 Price Expressions

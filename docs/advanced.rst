@@ -60,11 +60,13 @@ Define a Parameterized Strategy
 -------------------------------
 
 The strategy is a frozen dataclass with ``fast_period`` and ``slow_period``
-parameters. The backtest engine calls ``entry()`` and ``exit()`` to get
-vectorized conditions:
+parameters. The optional ``init`` hook lets the strategy add its own indicator
+columns to the DataFrame before signal evaluation — making it self-contained:
 
 .. code-block:: python
 
+   import polars as pl
+   import polars_talib as plta
    from dataclasses import dataclass
    from mktlib.backtest import Crossover, Crossunder
 
@@ -73,24 +75,23 @@ vectorized conditions:
        fast_period: int = 20
        slow_period: int = 50
 
+       def init(self, df: pl.DataFrame) -> pl.DataFrame:
+           return df.with_columns(
+               plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
+               plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+           )
+
        def entry(self) -> Crossover:
            return Crossover("fast_sma", "slow_sma")
 
        def exit(self) -> Crossunder:
            return Crossunder("fast_sma", "slow_sma")
 
-The strategy references column names (``fast_sma``, ``slow_sma``) that we add
-to the DataFrame before running:
+With ``init``, the caller just passes raw OHLCV data — no external indicator step:
 
 .. code-block:: python
 
-   import polars_talib as plta
-
-   def add_sma_indicators(df: pl.DataFrame, fast: int, slow: int) -> pl.DataFrame:
-       return df.with_columns(
-           plta.sma(pl.col("close"), timeperiod=fast).alias("fast_sma"),
-           plta.sma(pl.col("close"), timeperiod=slow).alias("slow_sma"),
-       )
+   result = run(df, SmaCross(fast_period=10, slow_period=50))
 
 Fetch the Risk-Free Rate
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -126,9 +127,8 @@ and score by Sharpe ratio:
        if fast >= slow:
            continue
 
-       df_ind = add_sma_indicators(df, fast, slow)
        strategy = SmaCross(fast_period=fast, slow_period=slow)
-       result = run(df_ind, strategy)
+       result = run(df, strategy)
        ret = result.returns["return"]
 
        results.append({
@@ -168,6 +168,12 @@ given percentage above the slow SMA; the SL triggers when price falls below:
        tp_pct: float = 5.0
        sl_pct: float = 3.0
 
+       def init(self, df: pl.DataFrame) -> pl.DataFrame:
+           return df.with_columns(
+               plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
+               plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+           )
+
        def entry(self) -> Crossover:
            return Crossover("fast_sma", "slow_sma")
 
@@ -184,8 +190,6 @@ Now grid-search TP/SL percentages with the best SMA periods fixed:
 
 .. code-block:: python
 
-   df_ind = add_sma_indicators(df, best_fast, best_slow)
-
    tp_range = [i / 10 for i in range(1, 11)]   # 0.1% to 1.0%, step 0.1%
    sl_range = [i / 10 for i in range(1, 11)]
 
@@ -197,7 +201,7 @@ Now grid-search TP/SL percentages with the best SMA periods fixed:
            tp_pct=tp_pct,
            sl_pct=sl_pct,
        )
-       result = run(df_ind, strategy)
+       result = run(df, strategy)
        ret = result.returns["return"]
 
        results.append({
@@ -232,6 +236,59 @@ A few things to keep in mind:
 
 For generating a complete tearsheet of the winning strategy, see
 ``mktlib.reports.html()`` in :doc:`api/reports`.
+
+Multi-Symbol Grid Search
+------------------------
+
+When optimizing a strategy across multiple symbols, use ``instrument_col`` to
+run all symbols in a single backtest call. Per-symbol returns let you
+evaluate each ticker independently or aggregate into a portfolio:
+
+.. code-block:: python
+
+   import itertools
+   import polars as pl
+   from mktlib.backtest import run
+   from mktlib.metrics import sharpe
+
+   symbols_df = ...  # DataFrame with columns: symbol, date, open, close
+
+   fast_range = range(5, 55, 5)
+   slow_range = range(20, 210, 10)
+
+   results = []
+   for fast, slow in itertools.product(fast_range, slow_range):
+       if fast >= slow:
+           continue
+
+       strategy = SmaCross(fast_period=fast, slow_period=slow)
+       result = run(symbols_df, strategy, instrument_col="symbol")
+
+       # Per-symbol Sharpe — O(1) access via result[symbol]
+       for sym in result.symbols:
+           sym_ret = result[sym].returns["return"]
+           results.append({
+               "symbol": sym,
+               "fast_period": fast,
+               "slow_period": slow,
+               "sharpe": round(sharpe(sym_ret), 4),
+           })
+
+       # Or equal-weight portfolio Sharpe
+       portfolio = result.returns.group_by("date").agg(
+           pl.col("return").mean()
+       )["return"]
+       results.append({
+           "symbol": "PORTFOLIO",
+           "fast_period": fast,
+           "slow_period": slow,
+           "sharpe": round(sharpe(portfolio), 4),
+       })
+
+   grid = pl.DataFrame(results).sort("sharpe", descending=True)
+
+This avoids the outer loop over symbols that single-symbol backtesting
+would require, while keeping each symbol's indicator computation isolated.
 
 See Also
 --------
