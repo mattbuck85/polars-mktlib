@@ -37,6 +37,8 @@ dev = [
     "jinja2>=3.1",
     "plotly>=6.0",
     "plotly-stubs",
+    "polars-sdist",
+    "polars-rfft",
     "pyarrow",
     "pandas",
     "numpy",
