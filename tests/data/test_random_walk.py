@@ -4,7 +4,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mktlib.data import fractional_random_walk
+from mktlib.data import fractional_random_walk, monte_carlo
+from mktlib.data._monte_carlo import Process
 
 
 class TestFractionalRandomWalk:
@@ -149,13 +150,18 @@ class TestDaviesHarteVsCholesky:
         # Build theoretical covariance matrix
         cov_theory = np.array([[gamma(abs(i - j)) for j in range(n)] for i in range(n)])
 
-        # Collect Davies-Harte samples
-        dh_samples = np.zeros((n_samples, n))
-        for i in range(n_samples):
-            df = fractional_random_walk(
-                n + 1, hurst=hurst, base_price=0.0, step_size=1.0, seed=i
-            )
-            dh_samples[i] = np.diff(df["price"].to_numpy())
+        # Vectorized: generate all samples in one call
+        df = monte_carlo(
+            Process.FRW,
+            n_simulations=n_samples,
+            n=n + 1,
+            hurst=hurst,
+            base_price=0.0,
+            step_size=1.0,
+            seed=0,
+        )
+        prices = df["price"].to_numpy().reshape(n_samples, n + 1)
+        dh_samples = np.diff(prices, axis=1)
 
         cov_dh = np.cov(dh_samples, rowvar=False)
 
@@ -186,12 +192,18 @@ class TestDaviesHarteVsCholesky:
         # Theoretical autocorrelation = gamma(k) / gamma(0)
         g0 = gamma(0)
 
-        dh_increments = np.zeros((n_samples, n))
-        for i in range(n_samples):
-            df = fractional_random_walk(
-                n + 1, hurst=hurst, base_price=0.0, step_size=1.0, seed=i
-            )
-            dh_increments[i] = np.diff(df["price"].to_numpy())
+        # Vectorized: generate all samples in one call
+        df = monte_carlo(
+            Process.FRW,
+            n_simulations=n_samples,
+            n=n + 1,
+            hurst=hurst,
+            base_price=0.0,
+            step_size=1.0,
+            seed=0,
+        )
+        prices = df["price"].to_numpy().reshape(n_samples, n + 1)
+        dh_increments = np.diff(prices, axis=1)
 
         for lag in range(1, max_lag + 1):
             dh_ac = np.mean([
