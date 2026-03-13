@@ -14,7 +14,7 @@ def _ensure_rfft() -> None:
 def _build_covariance_row(n: int, hurst: float) -> pl.Series:
     """Toeplitz coefficients + circulant embedding (length 2n)."""
     h2 = 2 * hurst
-    k = pl.Series("k", range(n))
+    k = pl.arange(0, n, eager=True).alias("k")
     c = 0.5 * (
         (k + 1).cast(pl.Float64).pow(h2)
         - 2 * k.cast(pl.Float64).pow(h2)
@@ -25,19 +25,17 @@ def _build_covariance_row(n: int, hurst: float) -> pl.Series:
     return pl.concat([c, padding, c[1:].reverse()], rechunk=True).rename("cov_row")
 
 
-def _compute_sqrt_eigenvalues(cov_row: pl.Series) -> pl.Series:
+def _sqrt_eigenvalue_expr(col: str = "cov_row") -> pl.Expr:
     """FFT of circulant row → real part → clamp ≥ 0 → sqrt."""
     _ensure_rfft()
-    df = pl.DataFrame({"cov_row": cov_row})
-    result = df.select(
-        pl.col("cov_row")
+    return (
+        pl.col(col)
         .rfft.fft()  # type: ignore[attr-defined]
         .struct.field("re")
         .clip(lower_bound=0.0)
         .sqrt()
         .alias("sqrt_eig")
     )
-    return result["sqrt_eig"]
 
 
 def _frw_increments_expr() -> pl.Expr:
@@ -89,20 +87,24 @@ def fractional_random_walk(
 
     # Davies-Harte / circulant embedding — O(n log n)
     cov_row = _build_covariance_row(n, hurst)
-    sqrt_eig = _compute_sqrt_eigenvalues(cov_row)
-
-    m = len(sqrt_eig)
+    m = len(cov_row)
     seed_re, seed_im = _derive_seeds(seed)
     z_re = sample_normal(m, seed=seed_re)
     z_im = sample_normal(m, seed=seed_im)
 
-    df = pl.DataFrame({"sqrt_eig": sqrt_eig, "z_re": z_re, "z_im": z_im})
-    increments = df.select(_frw_increments_expr())["increment"]
-
-    # Scale by √m (IFFT normalization for circulant embedding) and step_size
-    increments = increments[:n] * (m**0.5 * step_size)
-    prices = pl.Series("price", [base_price]).append(
-        (increments.cum_sum() + base_price)
-    )[:n]
-
-    return pl.DataFrame({"step": range(n), "price": prices})
+    scale = m**0.5 * step_size
+    return (
+        pl.DataFrame({"cov_row": cov_row, "z_re": z_re, "z_im": z_im})
+        .with_columns(_sqrt_eigenvalue_expr())
+        .select(_frw_increments_expr())
+        .head(n)
+        .with_row_index("step")
+        .with_columns(
+            (
+                base_price
+                + (pl.col("increment") * scale).cum_sum().shift(1).fill_null(0.0)
+            ).alias("price")
+        )
+        .cast({"step": pl.Int64})
+        .select("step", "price")
+    )

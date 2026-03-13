@@ -195,14 +195,13 @@ def _vectorized_frw(
 
     from mktlib.data._random_walk import (
         _build_covariance_row,
-        _compute_sqrt_eigenvalues,
         _derive_seeds,
         _frw_increments_expr,
+        _sqrt_eigenvalue_expr,
     )
 
     cov_row = _build_covariance_row(n, hurst)
-    sqrt_eig = _compute_sqrt_eigenvalues(cov_row)
-    m = len(sqrt_eig)  # 2n
+    m = len(cov_row)  # 2n
 
     # Derive two child seeds for re/im noise
     seed_re, seed_im = _derive_seeds(seed)
@@ -211,7 +210,12 @@ def _vectorized_frw(
     z_re_all = sample_normal(total_noise, seed=seed_re)
     z_im_all = sample_normal(total_noise, seed=seed_im)
 
-    # Tile sqrt_eig across simulations
+    # Compute sqrt_eig once, then tile across simulations
+    sqrt_eig = (
+        pl.DataFrame({"cov_row": cov_row})
+        .select(_sqrt_eigenvalue_expr())
+        .to_series()
+    )
     sqrt_eig_tiled = pl.Series(
         "sqrt_eig", sqrt_eig.to_list() * n_simulations
     )
