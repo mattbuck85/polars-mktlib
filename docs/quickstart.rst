@@ -83,6 +83,28 @@ levels without any engine changes — combine ``PriceIsAbove`` and
    # df must have: date, open, close, fast_sma, slow_sma, vol
    result = run(df, SmaCrossWithExits())
 
+Multi-symbol backtesting — run the same strategy across multiple tickers in
+one call:
+
+.. code-block:: python
+
+   # df has columns: symbol, date, open, close (for AAPL, TSLA, SPY)
+   result = run(df, SmaCross(), instrument_col="symbol")
+
+   # O(1) per-symbol access
+   aapl = result["AAPL"]
+   aapl.returns   # DataFrame[date, return] — no symbol column
+   aapl.trades    # DataFrame[entry_date, exit_date, pnl, bars_held]
+
+   # Combined views (symbol column prepended)
+   result.returns   # DataFrame[symbol, date, return]
+
+   # Equal-weight portfolio returns
+   portfolio = result.returns.group_by("date").agg(pl.col("return").mean())
+
+Each symbol is backtested independently — indicators do not bleed across
+symbols, and ``init()`` is called once per symbol.
+
 See :doc:`api/backtest` for the full API.
 
 Financial Metrics

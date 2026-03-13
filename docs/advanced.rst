@@ -237,6 +237,59 @@ A few things to keep in mind:
 For generating a complete tearsheet of the winning strategy, see
 ``mktlib.reports.html()`` in :doc:`api/reports`.
 
+Multi-Symbol Grid Search
+------------------------
+
+When optimizing a strategy across multiple symbols, use ``instrument_col`` to
+run all symbols in a single backtest call. Per-symbol returns let you
+evaluate each ticker independently or aggregate into a portfolio:
+
+.. code-block:: python
+
+   import itertools
+   import polars as pl
+   from mktlib.backtest import run
+   from mktlib.metrics import sharpe
+
+   symbols_df = ...  # DataFrame with columns: symbol, date, open, close
+
+   fast_range = range(5, 55, 5)
+   slow_range = range(20, 210, 10)
+
+   results = []
+   for fast, slow in itertools.product(fast_range, slow_range):
+       if fast >= slow:
+           continue
+
+       strategy = SmaCross(fast_period=fast, slow_period=slow)
+       result = run(symbols_df, strategy, instrument_col="symbol")
+
+       # Per-symbol Sharpe — O(1) access via result[symbol]
+       for sym in result.symbols:
+           sym_ret = result[sym].returns["return"]
+           results.append({
+               "symbol": sym,
+               "fast_period": fast,
+               "slow_period": slow,
+               "sharpe": round(sharpe(sym_ret), 4),
+           })
+
+       # Or equal-weight portfolio Sharpe
+       portfolio = result.returns.group_by("date").agg(
+           pl.col("return").mean()
+       )["return"]
+       results.append({
+           "symbol": "PORTFOLIO",
+           "fast_period": fast,
+           "slow_period": slow,
+           "sharpe": round(sharpe(portfolio), 4),
+       })
+
+   grid = pl.DataFrame(results).sort("sharpe", descending=True)
+
+This avoids the outer loop over symbols that single-symbol backtesting
+would require, while keeping each symbol's indicator computation isolated.
+
 See Also
 --------
 

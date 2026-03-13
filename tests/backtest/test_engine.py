@@ -819,6 +819,217 @@ class ColExprExitStrategy:
         return PriceIsBelow("close", Col("sma") - Col("vol") * 2)
 
 
+# ---------------------------------------------------------------------------
+# Multi-symbol tests
+# ---------------------------------------------------------------------------
+
+
+def _make_multi_symbol_df() -> pl.DataFrame:
+    """Two symbols with different crossover timing.
+
+    AAPL: crossover at bar 2, crossunder at bar 5 (same as ohlcv fixture).
+    TSLA: crossover at bar 3, crossunder at bar 6 (shifted by 1).
+    """
+    aapl = pl.DataFrame(
+        {
+            "symbol": ["AAPL"] * 8,
+            "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+            "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5],
+            "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0],
+            "fast": [1.0, 1.0, 3.0, 4.0, 3.5, 1.0, 0.5, 0.3],
+            "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+        }
+    )
+    tsla = pl.DataFrame(
+        {
+            "symbol": ["TSLA"] * 8,
+            "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+            "open": [200.0, 200.5, 201.5, 203.5, 205.5, 207.5, 203.5, 199.5],
+            "close": [200.0, 201.0, 201.5, 205.0, 206.0, 204.0, 200.0, 198.0],
+            # Crossover at bar 3 (shifted by 1 vs AAPL), crossunder at bar 6
+            "fast": [1.0, 1.0, 1.0, 3.0, 4.0, 3.5, 1.0, 0.5],
+            "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+        }
+    )
+    return pl.concat([aapl, tsla])
+
+
+class TestMultiSymbol:
+    def test_getitem(self) -> None:
+        """result['AAPL'] returns a BacktestResult for that symbol."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        aapl = result["AAPL"]
+        assert aapl.returns.columns == ["date", "return"]
+        assert aapl.trades.columns == ["entry_date", "exit_date", "pnl", "bars_held"]
+
+    def test_symbols(self) -> None:
+        """result.symbols returns ordered list of symbol keys."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert result.symbols == ["AAPL", "TSLA"]
+
+    def test_len(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert len(result) == 2
+
+    def test_contains(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert "AAPL" in result
+        assert "SPY" not in result
+
+    def test_items(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        symbols = [sym for sym, _ in result.items()]
+        assert symbols == ["AAPL", "TSLA"]
+
+    def test_missing_symbol_keyerror(self) -> None:
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        with pytest.raises(KeyError):
+            result["SPY"]
+
+    def test_returns_schema(self) -> None:
+        """Combined .returns has [symbol, date, return] columns."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert result.returns.columns == ["symbol", "date", "return"]
+
+    def test_trades_schema(self) -> None:
+        """Combined .trades has [symbol, entry_date, exit_date, pnl, bars_held]."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        assert result.trades.columns == ["symbol", "entry_date", "exit_date", "pnl", "bars_held"]
+
+    def test_independent_positions(self) -> None:
+        """Two symbols produce independent position sequences."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        aapl_pos = result["AAPL"].signals["_position"].to_list()
+        tsla_pos = result["TSLA"].signals["_position"].to_list()
+        # AAPL: entry bar 2, exit bar 5
+        assert aapl_pos == [0, 0, 1, 1, 1, 0, 0, 0]
+        # TSLA: entry bar 3, exit bar 6
+        assert tsla_pos == [0, 0, 0, 1, 1, 1, 0, 0]
+
+    def test_matches_individual_runs(self) -> None:
+        """Multi-symbol run matches running each symbol individually."""
+        df = _make_multi_symbol_df()
+        combined = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+
+        for sym in ["AAPL", "TSLA"]:
+            individual_df = df.filter(pl.col("symbol") == sym).drop("symbol")
+            individual = run(individual_df, SimpleCrossStrategy())
+
+            assert combined[sym].returns.equals(individual.returns), f"{sym} returns mismatch"
+            assert combined[sym].trades.equals(individual.trades), f"{sym} trades mismatch"
+
+    def test_with_init_hook(self) -> None:
+        """Strategy with init() works per-symbol."""
+        df = _make_multi_symbol_df().drop("fast", "slow")
+
+        @dataclass(frozen=True, slots=True)
+        class InitMultiStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                return df.with_columns(
+                    pl.col("close").rolling_mean(2).alias("fast"),
+                    pl.lit(101.5).alias("slow"),
+                )
+
+            def entry(self) -> Crossover:
+                return Crossover("fast", "slow")
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        result = run(df, InitMultiStrategy(), instrument_col="symbol")
+        assert result.symbols == ["AAPL", "TSLA"]
+        # Each symbol was processed independently
+        assert "fast" in result["AAPL"].signals.columns
+
+    def test_with_flatten_eod(self) -> None:
+        """flatten_eod works per-symbol with minute data."""
+        cal = get_calendar("XNYS")
+
+        def _minute_symbol(sym: str, base: float) -> pl.DataFrame:
+            timestamps = [
+                datetime.datetime(2024, 1, 2, 9, 30),
+                datetime.datetime(2024, 1, 2, 9, 31),
+                datetime.datetime(2024, 1, 2, 15, 59),
+            ]
+            n = len(timestamps)
+            prices = [base + i * 0.5 for i in range(n)]
+            return pl.DataFrame(
+                {
+                    "symbol": [sym] * n,
+                    "date": timestamps,
+                    "open": prices,
+                    "close": [p + 0.1 for p in prices],
+                    "fast": [1.0, 3.0, 3.0],
+                    "slow": [2.0, 2.0, 2.0],
+                    "never_cross": [5.0] * n,
+                }
+            )
+
+        df = pl.concat([_minute_symbol("AAPL", 100.0), _minute_symbol("TSLA", 200.0)])
+        result = run(
+            df, AlwaysInStrategy(), calendar=cal, flatten_eod=True, instrument_col="symbol",
+        )
+        # Both symbols should have position forced to 0 at session end
+        for sym in ["AAPL", "TSLA"]:
+            pos = result[sym].signals["_position"].to_list()
+            assert pos[-1] == 0, f"{sym} not flattened at EOD"
+
+    def test_missing_column(self) -> None:
+        """instrument_col='nope' raises ValueError."""
+        df = _make_multi_symbol_df()
+        with pytest.raises(ValueError, match="instrument_col='nope' not found"):
+            run(df, SimpleCrossStrategy(), instrument_col="nope")
+
+    def test_backward_compat(self, ohlcv: pl.DataFrame) -> None:
+        """instrument_col=None (default) matches existing behavior."""
+        result_default = run(ohlcv, SimpleCrossStrategy())
+        result_none = run(ohlcv, SimpleCrossStrategy(), instrument_col=None)
+        assert result_default.returns.equals(result_none.returns)
+        assert result_default.trades.equals(result_none.trades)
+
+    def test_empty_trades_one_symbol(self) -> None:
+        """One symbol has 0 trades, results still include both symbols."""
+        # AAPL has a crossover, TSLA does not (fast stays below slow)
+        aapl = pl.DataFrame(
+            {
+                "symbol": ["AAPL"] * 6,
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 6), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0],
+                "fast": [1.0, 1.0, 3.0, 4.0, 3.5, 1.0],
+                "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+            }
+        )
+        tsla = pl.DataFrame(
+            {
+                "symbol": ["TSLA"] * 6,
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 6), eager=True),
+                "open": [200.0, 200.5, 201.5, 203.5, 205.5, 207.5],
+                "close": [200.0, 201.0, 201.5, 203.0, 204.0, 205.0],
+                # fast never crosses above slow
+                "fast": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                "slow": [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+            }
+        )
+        df = pl.concat([aapl, tsla])
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        # AAPL has trades, TSLA has none
+        assert result["AAPL"].trades.height >= 1
+        assert result["TSLA"].trades.height == 0
+        # Both symbols present in combined returns
+        return_symbols = result.returns["symbol"].unique().sort().to_list()
+        assert return_symbols == ["AAPL", "TSLA"]
+
+
 class TestPriceExprConditions:
     def test_price_is_above_with_pct(self) -> None:
         """PriceIsAbove("close", Pct("ref", 5)) fires when close > ref * 1.05."""

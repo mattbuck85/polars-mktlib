@@ -38,6 +38,35 @@ Engine
 
 .. autofunction:: mktlib.backtest.run
 
+Multi-Symbol Backtesting
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Pass ``instrument_col`` to :func:`run` to backtest multiple instruments in a single
+call. Returns a :class:`MultiBacktestResult` with O(1) per-instrument access:
+
+.. code-block:: python
+
+   # df has columns: symbol, date, open, close
+   result = run(df, SmaCross(), instrument_col="symbol")
+
+   # O(1) per-symbol access — returns a BacktestResult
+   aapl = result["AAPL"]
+   aapl.returns.columns   # ["date", "return"]
+
+   # Iterate over symbols
+   for symbol, bt in result.items():
+       print(symbol, bt.trades.height)
+
+   # Combined views (lazy-cached, symbol column first)
+   result.returns.columns   # ["symbol", "date", "return"]
+
+   # Equal-weight portfolio
+   portfolio = result.returns.group_by("date").agg(pl.col("return").mean())
+
+.. autoclass:: mktlib.backtest.MultiBacktestResult
+   :members:
+   :special-members: __getitem__, __len__, __contains__
+
 Types
 -----
 
