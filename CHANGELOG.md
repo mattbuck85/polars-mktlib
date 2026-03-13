@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- `TreasuryRate` enum now includes `ONE_AND_HALF_MONTH` (`BC_1_5MONTH`) to match Treasury.gov schema
 - **`flatten_eod` deferred entry** — crossover signals on the last bar of a session were silently dropped. They now carry forward to the first bar of the next session (e.g. signal at 15:59 → fill at next day's 09:30).
 - **`_build_session_last_mask` for non-1-minute candles** — session-last detection no longer hardcodes `market_close - 1min`; it finds the actual last bar per session from the data, fixing `flatten_eod` and deferred entry for 5min, 15min, and other candle sizes.
 
