@@ -104,6 +104,12 @@ class SmaCross:
     fast_period: int = 20
     slow_period: int = 50
 
+    def init(self, df: pl.DataFrame) -> pl.DataFrame:
+        return df.with_columns(
+            plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
+            plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+        )
+
     def entry(self) -> Crossover:
         return Crossover("fast_sma", "slow_sma")
 
@@ -120,6 +126,12 @@ class SmaCrossWithExits:
     tp_pct: float = 1.0
     sl_pct: float = 0.5
 
+    def init(self, df: pl.DataFrame) -> pl.DataFrame:
+        return df.with_columns(
+            plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
+            plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+        )
+
     def entry(self) -> Crossover:
         return Crossover("fast_sma", "slow_sma")
 
@@ -134,14 +146,6 @@ class SmaCrossWithExits:
 # ---------------------------------------------------------------------------
 
 
-def add_sma_indicators(df: pl.DataFrame, fast: int, slow: int) -> pl.DataFrame:
-    """Add fast_sma and slow_sma columns to *df*."""
-    return df.with_columns(
-        plta.sma(pl.col("close"), timeperiod=fast).alias("fast_sma"),
-        plta.sma(pl.col("close"), timeperiod=slow).alias("slow_sma"),
-    )
-
-
 def search_sma_periods(df: pl.DataFrame, rf: float) -> pl.DataFrame:
     """Grid search over fast/slow SMA periods, scored by Sharpe ratio."""
     fast_range = range(5, 55, 5)
@@ -152,9 +156,8 @@ def search_sma_periods(df: pl.DataFrame, rf: float) -> pl.DataFrame:
         if fast >= slow:
             continue
 
-        df_ind = add_sma_indicators(df, fast, slow)
         strategy = SmaCross(fast_period=fast, slow_period=slow)
-        result = run(df_ind, strategy)
+        result = run(df, strategy)
         ret = result.returns["return"]
 
         results.append(
@@ -179,8 +182,6 @@ def search_tp_sl(
     df: pl.DataFrame, best_fast: int, best_slow: int, rf: float
 ) -> pl.DataFrame:
     """Grid search over TP/SL pcts with fixed SMA periods."""
-    df_ind = add_sma_indicators(df, best_fast, best_slow)
-
     tp_range = [i / 10 for i in range(1, 11)]  # 0.1% to 1.0% step 0.1%
     sl_range = [i / 10 for i in range(1, 11)]  # 0.1% to 1.0% step 0.1%
 
@@ -192,7 +193,7 @@ def search_tp_sl(
             tp_pct=tp_pct,
             sl_pct=sl_pct,
         )
-        result = run(df_ind, strategy)
+        result = run(df, strategy)
         ret = result.returns["return"]
 
         results.append(

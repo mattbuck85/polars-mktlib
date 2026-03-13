@@ -87,6 +87,8 @@ def run(
         columns referenced by the strategy.
     strategy
         Object with ``entry()`` and ``exit()`` returning Conditions.
+        May optionally define ``init(df) -> pl.DataFrame`` to enrich the
+        DataFrame with indicator columns before signal evaluation.
     trade_side
         Trade direction. Overridden by the entry condition's ``trade_side``
         if set.
@@ -113,6 +115,11 @@ def run(
     # Filter to market hours when calendar is provided
     if calendar is not None:
         df = calendar.filter_market_hours(df, "date")
+
+    # Let strategy enrich the DataFrame with indicator columns
+    _init = getattr(strategy, "init", None)
+    if _init is not None:
+        df = _init(df)
 
     entry_raw = strategy.entry()
     exit_raw = strategy.exit()

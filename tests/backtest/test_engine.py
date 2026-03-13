@@ -559,6 +559,116 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 
 
+class TestInitHook:
+    """Tests for the optional strategy.init() hook."""
+
+    def test_init_adds_columns(self) -> None:
+        """Strategy with init() that adds a rolling mean; entry/exit reference it."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0],
+            }
+        )
+
+        @dataclass(frozen=True, slots=True)
+        class InitStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                return df.with_columns(
+                    pl.col("close").rolling_mean(2).alias("fast"),
+                    pl.lit(101.5).alias("slow"),
+                )
+
+            def entry(self) -> Crossover:
+                return Crossover("fast", "slow")
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        result = run(df, InitStrategy())
+        # fast (rolling mean of 2): [null, 100.5, 102.0, 104.0, 104.5, 102.0, 99.0, 97.5]
+        # slow = 101.5 everywhere
+        # Crossover at bar 2 (fast goes from 100.5 to 102.0, crossing above 101.5)
+        assert "fast" in result.signals.columns
+        assert "slow" in result.signals.columns
+        assert result.trades.height >= 1
+
+    def test_init_not_required(self) -> None:
+        """Existing strategies without init() still work."""
+        assert not hasattr(SimpleCrossStrategy(), "init")
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 3), eager=True),
+                "open": [100.0, 100.5, 101.5],
+                "close": [100.0, 101.0, 102.0],
+                "fast": [1.0, 1.0, 1.0],
+                "slow": [2.0, 2.0, 2.0],
+            }
+        )
+        result = run(df, SimpleCrossStrategy())
+        assert result.returns.height == 3
+
+    def test_init_sees_calendar_filtered_data(self) -> None:
+        """When calendar is provided, init() receives already-filtered df."""
+        cal = get_calendar("XNYS")
+        received_heights: list[int] = []
+
+        @dataclass(frozen=True, slots=True)
+        class SpyInitStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                received_heights.append(df.height)
+                return df.with_columns(
+                    pl.lit(1.0).alias("fast"),
+                    pl.lit(2.0).alias("slow"),
+                )
+
+            def entry(self) -> Crossover:
+                return Crossover("fast", "slow")
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        # Include bars outside market hours
+        df = _make_minute_df(
+            datetime.date(2024, 1, 2),
+            [(8, 0), (9, 30), (10, 0), (18, 0)],
+        )
+        original_height = df.height  # 4 bars
+        run(df, SpyInitStrategy(), calendar=cal)
+        # init should see only 2 market-hours bars, not 4
+        assert len(received_heights) == 1
+        assert received_heights[0] < original_height
+        assert received_heights[0] == 2
+
+    def test_init_with_bare_expr(self) -> None:
+        """Combine init() with bare pl.Expr return from entry/exit."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 6), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0],
+            }
+        )
+
+        @dataclass(frozen=True, slots=True)
+        class BareExprInitStrategy:
+            def init(self, df: pl.DataFrame) -> pl.DataFrame:
+                return df.with_columns(
+                    pl.col("close").rolling_mean(2).alias("sma2"),
+                )
+
+            def entry(self) -> pl.Expr:
+                return pl.col("close") > pl.col("sma2") + 1.0
+
+            def exit(self) -> pl.Expr:
+                return pl.col("close") < pl.col("sma2")
+
+        result = run(df, BareExprInitStrategy())
+        assert "sma2" in result.signals.columns
+        assert result.returns.height == 6
+
+
 class TestPriceExpr:
     def test_col_resolve(self) -> None:
         expr = Col("close").resolve()

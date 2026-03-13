@@ -47,6 +47,14 @@ Types
 .. autoclass:: mktlib.backtest.Strategy
    :members:
 
+   .. note::
+
+      Strategies may optionally define an ``init(self, df) -> pl.DataFrame``
+      method to enrich the DataFrame with indicator columns before signal
+      evaluation. This hook is called after calendar filtering (if any) and
+      before ``entry()``/``exit()`` resolution. It is **not** part of the
+      Protocol — existing strategies without ``init`` continue to work unchanged.
+
 .. autoclass:: mktlib.backtest.TradeSide
    :members:
    :undoc-members:

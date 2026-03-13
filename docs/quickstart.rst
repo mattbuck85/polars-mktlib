@@ -10,18 +10,30 @@ Run signal-driven backtests with fill-at-next-open semantics:
 
 .. code-block:: python
 
+   import polars as pl
+   import polars_talib as plta
    from dataclasses import dataclass
    from mktlib.backtest import run, Crossover, Crossunder
 
    @dataclass(frozen=True, slots=True)
    class SmaCross:
+       fast_period: int = 20
+       slow_period: int = 50
+
+       def init(self, df: pl.DataFrame) -> pl.DataFrame:
+           """Add SMA indicator columns before signal evaluation."""
+           return df.with_columns(
+               plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
+               plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+           )
+
        def entry(self) -> Crossover:
            return Crossover("fast_sma", "slow_sma")
 
        def exit(self) -> Crossunder:
            return Crossunder("fast_sma", "slow_sma")
 
-   # df must have: date, open, close, fast_sma, slow_sma
+   # df needs only: date, open, close — init() adds the indicators
    result = run(df, SmaCross())
    result.returns   # DataFrame[date, return]
    result.trades    # DataFrame[entry_date, exit_date, pnl, bars_held]
