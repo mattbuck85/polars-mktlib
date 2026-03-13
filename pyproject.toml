@@ -21,7 +21,7 @@ Documentation = "https://polars-mktlib.readthedocs.io"
 Repository = "https://github.com/mattbuck85/polars-mktlib"
 
 [project.optional-dependencies]
-data = ["numpy"]
+data = ["polars-sdist", "numpy"]
 reports = [
     "jinja2>=3.1",
     "plotly>=6.0",

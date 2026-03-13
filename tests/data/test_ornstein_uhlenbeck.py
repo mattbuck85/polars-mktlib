@@ -54,3 +54,35 @@ class TestOrnsteinUhlenbeck:
     def test_invalid_n(self):
         with pytest.raises(ValueError, match="n must be >= 1"):
             ornstein_uhlenbeck(0)
+
+    @pytest.mark.parametrize(
+        "theta, mu, sigma, x0, dt",
+        [
+            (0.7, 100.0, 1.0, None, 1.0),
+            (0.5, 50.0, 2.0, 200.0, 0.1),
+            (2.0, 0.0, 0.5, -10.0, 0.01),
+        ],
+    )
+    def test_equivalence_with_iterative(self, theta, mu, sigma, x0, dt):
+        """Vectorized cumsum formulation must match the Euler-Maruyama loop."""
+        n = 500
+        seed = 99
+        df = ornstein_uhlenbeck(
+            n, theta=theta, mu=mu, sigma=sigma, x0=x0, dt=dt, seed=seed
+        )
+
+        # Rebuild iteratively from the same noise vector
+        from polars_sdist import sample_normal
+
+        z = sample_normal(n, seed=seed).to_list()
+        start = mu if x0 is None else x0
+        noise_scale = sigma * np.sqrt(dt)
+
+        x = [start]
+        for i in range(1, n):
+            x_prev = x[-1]
+            x.append(x_prev + theta * (mu - x_prev) * dt + noise_scale * z[i])
+
+        np.testing.assert_allclose(
+            df["value"].to_numpy(), np.array(x), rtol=1e-12
+        )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
 
 
@@ -11,7 +10,7 @@ def fractional_random_walk(
     step_size: float = 1.0,
     seed: int | None = None,
 ) -> pl.DataFrame:
-    """Discrete-time fractional random walk using Cholesky decomposition of fBm covariance.
+    """Discrete-time fractional random walk using Davies-Harte circulant embedding.
 
     For ``hurst=0.5`` this is a standard random walk.  ``hurst > 0.5`` produces
     trending (persistent) paths; ``hurst < 0.5`` produces mean-reverting
@@ -22,28 +21,35 @@ def fractional_random_walk(
     if not 0 < hurst < 1:
         raise ValueError("hurst must be in (0, 1)")
 
+    try:
+        import numpy as np
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError(
+            "fractional_random_walk requires numpy. Install with: pip install numpy"
+        ) from None
+
     rng = np.random.default_rng(seed)
 
     if hurst == 0.5:
         increments = rng.normal(0, step_size, n)
     else:
-        # Build fBm covariance matrix and generate correlated increments
-        # via Hosking / Cholesky method
+        # Davies-Harte / circulant embedding method — O(n log n)
         h2 = 2 * hurst
-        # Covariance of fBm increments: C(i,j) = 0.5*(|i-j+1|^2H - 2|i-j|^2H + |i-j-1|^2H)
-        cov = np.empty((n, n), dtype=np.float64)
-        for i in range(n):
-            for j in range(i, n):
-                d = abs(i - j)
-                val = 0.5 * (
-                    abs(d + 1) ** h2 - 2 * abs(d) ** h2 + abs(d - 1) ** h2
-                )
-                cov[i, j] = val
-                cov[j, i] = val
-
-        L = np.linalg.cholesky(cov)
-        z = rng.standard_normal(n)
-        increments = (L @ z) * step_size
+        k = np.arange(n)
+        # First row of Toeplitz covariance of fBm increments
+        c = 0.5 * (np.abs(k + 1) ** h2 - 2 * np.abs(k) ** h2 + np.abs(k - 1) ** h2)
+        # Embed in circulant matrix (size 2n)
+        row = np.concatenate([c, [0.0], c[-1:0:-1]])
+        # Eigenvalues via FFT (real since row is symmetric)
+        eigenvalues = np.fft.fft(row).real
+        eigenvalues = np.maximum(eigenvalues, 0.0)  # clamp numerical noise
+        sqrt_eig = np.sqrt(eigenvalues)
+        # Generate complex normal in frequency domain
+        m = len(row)
+        z = rng.standard_normal(m) + 1j * rng.standard_normal(m)
+        # Multiply and IFFT
+        w = np.fft.ifft(sqrt_eig * z)
+        increments = w[:n].real * step_size
 
     prices = base_price + np.cumsum(increments)
     prices = np.insert(prices, 0, base_price)[:n]

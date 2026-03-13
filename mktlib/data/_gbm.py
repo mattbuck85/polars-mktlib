@@ -1,7 +1,22 @@
 from __future__ import annotations
 
-import numpy as np
+import math
+
 import polars as pl
+from polars_sdist import sample_normal
+
+
+def _gbm_price_expr(log_base: float, mu_dt: float, sigma_sqrt_dt: float) -> pl.Expr:
+    """GBM price expression. Assumes columns ``step`` and ``z`` exist."""
+    return (
+        pl.when(pl.col("step") == 0)
+        .then(0.0)
+        .otherwise(pl.col("z") * sigma_sqrt_dt + mu_dt)
+        .cum_sum()
+        .add(log_base)
+        .exp()
+        .alias("price")
+    )
 
 
 def geometric_brownian_motion(
@@ -16,20 +31,15 @@ def geometric_brownian_motion(
     if n < 1:
         raise ValueError("n must be >= 1")
 
-    rng = np.random.default_rng(seed)
-    # Log-normal increments: ln(S_{t+1}/S_t) = (mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z
-    z = rng.standard_normal(n - 1)
-    log_returns = (drift - 0.5 * volatility**2) * dt + volatility * np.sqrt(
-        dt
-    ) * z
-    log_prices = np.concatenate(
-        [[np.log(base_price)], np.log(base_price) + np.cumsum(log_returns)]
-    )
-    prices = np.exp(log_prices)
+    log_base = math.log(base_price)
+    mu_dt = (drift - 0.5 * volatility**2) * dt
+    sigma_sqrt_dt = volatility * math.sqrt(dt)
 
-    return pl.DataFrame(
-        {
-            "step": range(n),
-            "price": prices,
-        }
+    z = sample_normal(n, seed=seed)
+    step = pl.arange(0, n, eager=True).alias("step")
+
+    return (
+        pl.DataFrame({"step": step, "z": z})
+        .with_columns(_gbm_price_expr(log_base, mu_dt, sigma_sqrt_dt))
+        .select("step", "price")
     )
