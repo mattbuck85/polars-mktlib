@@ -714,10 +714,32 @@ sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42
 
 | Function | Process | Output columns |
 |-|-|-|
-| `fractional_random_walk` | Fractional Brownian motion (Cholesky) | `step`, `price` |
+| `fractional_random_walk` | Fractional Brownian motion (Davies-Harte circulant embedding + RustFFT, O(n log n)) | `step`, `price` |
 | `geometric_brownian_motion` | Log-normal GBM: dS = μSdt + σSdW | `step`, `price` |
 | `ornstein_uhlenbeck` | Mean-reverting: dx = θ(μ−x)dt + σdW | `step`, `value` |
 | `monte_carlo` | N simulations of any generator | `simulation`, `step`, ... |
+
+### Fractional Random Walk — Davies-Harte Algorithm
+
+`fractional_random_walk` generates exact fractional Brownian motion increments using
+the Davies-Harte circulant embedding method, powered by
+[polars-rfft](https://github.com/mattdavis90/polars-rfft) (RustFFT) and
+[polars-sdist](https://github.com/mattdavis90/polars-sdist) for normal sampling:
+
+1. Build the autocovariance row from the Hurst exponent H
+2. Embed in a circulant matrix (length 2n)
+3. FFT the circulant row to get eigenvalues; clamp ≥ 0, take sqrt
+4. Generate complex Gaussian noise (two independent normal samples via polars-sdist)
+5. Multiply sqrt-eigenvalues × noise, then IFFT back to time domain
+6. Take the first n increments and cumsum into a price path
+
+**Hurst exponent behaviour:** H = 0.5 gives a standard random walk (fast path —
+no FFT needed, just `cumsum` of normal increments). H > 0.5 produces trending
+(persistent) paths; H < 0.5 produces mean-reverting (anti-persistent) paths.
+
+**Performance vs GBM:** For H = 0.5, FRW is faster than GBM (no `exp` call).
+For H ≠ 0.5 the FFT pipeline adds 2–13× overhead depending on series length,
+but remains O(n log n) and sub-second for 1M points.
 
 ## Development
 

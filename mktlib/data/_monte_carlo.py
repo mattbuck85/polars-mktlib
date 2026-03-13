@@ -1,3 +1,34 @@
+"""Vectorized Monte Carlo simulation of stochastic processes.
+
+All built-in processes are discretizations of the general SDE::
+
+    dX(t) = a(X, t) dt + b(X, t) dW(t)
+
+where ``dW(t) = Z·√dt`` and ``Z ~ N(0,1)``.
+
++---------+------------------+------------------+
+| Process | Drift a(X, t)    | Diffusion b(X,t) |
++---------+------------------+------------------+
+| GBM     | μX               | σX               |
+| OU      | θ(μ − X)         | σ                |
+| FRW     | 0                | step_size         |
++---------+------------------+------------------+
+
+FRW with ``H = 0.5`` reduces to a standard random walk (pure cumsum).
+For ``H ≠ 0.5``, increments are generated via the Davies-Harte spectral
+method rather than SDE discretization::
+
+    γ(k) = ½(|k-1|^{2H} − 2|k|^{2H} + |k+1|^{2H})
+    Λ    = FFT(γ_circ)
+    ΔX   = Re[ IFFT( √Λ · (Z_re + i·Z_im) ) ]
+
+where ``γ_circ`` is the circulant embedding of the autocovariance,
+``Λ`` are its eigenvalues, and ``Z_re, Z_im ~ N(0,1)`` i.i.d.
+
+For each simulation, ``n`` i.i.d. standard normal samples are drawn
+in bulk via ``polars-sdist``, then partitioned by simulation index
+using ``.over("simulation")``.
+"""
 from __future__ import annotations
 
 import enum

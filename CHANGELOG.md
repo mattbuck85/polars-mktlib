@@ -13,6 +13,7 @@
 
 - `Strategy` protocol now accepts `Condition | pl.Expr` returns from `entry()` and `exit()`.
 - Renamed `symbol_col` parameter to `instrument_col` for consistency with financial data conventions.
+- **`fractional_random_walk`** now uses Davies-Harte circulant embedding + RustFFT (O(n log n)), replacing the previous Cholesky decomposition. Powered by [polars-rfft](https://github.com/mattdavis90/polars-rfft) and [polars-sdist](https://github.com/mattdavis90/polars-sdist).
 
 ### Fixed
 
