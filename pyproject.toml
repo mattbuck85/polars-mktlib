@@ -21,7 +21,7 @@ Documentation = "https://polars-mktlib.readthedocs.io"
 Repository = "https://github.com/mattbuck85/polars-mktlib"
 
 [project.optional-dependencies]
-data = ["polars-sdist", "polars-rfft"]
+data = ["polars-sdist>=0.1.1", "polars-rfft>=0.1.1"]
 reports = [
     "jinja2>=3.1",
     "plotly>=6.0",
@@ -37,8 +37,8 @@ dev = [
     "jinja2>=3.1",
     "plotly>=6.0",
     "plotly-stubs",
-    "polars-sdist",
-    "polars-rfft",
+    "polars-sdist>=0.1.1",
+    "polars-rfft>=0.1.1",
     "pyarrow",
     "pandas",
     "numpy",

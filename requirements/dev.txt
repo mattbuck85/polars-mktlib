@@ -32,9 +32,9 @@ plotly==6.6.0
 plotly-stubs==0.1.2
 pluggy==1.6.0
 polars==1.39.0
-polars-rfft==0.1.0
+polars-rfft==0.1.1
 polars-runtime-32==1.39.0
-polars-sdist==0.1.0
+polars-sdist==0.1.1
 pre_commit==4.5.1
 prompt_toolkit==3.0.52
 pyarrow==23.0.1
