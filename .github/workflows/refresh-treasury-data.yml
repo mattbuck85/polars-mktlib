@@ -5,10 +5,6 @@ on:
     - cron: "0 6 * * 1" # Monday 06:00 UTC
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -29,17 +25,11 @@ jobs:
 
       - name: Create pull request
         if: steps.diff.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH="chore/refresh-treasury-data-$(date +%Y%m%d)"
-          git checkout -b "$BRANCH"
-          git add mktlib/rates/_data/
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: refresh bundled Treasury yield data"
-          git push -u origin "$BRANCH"
-          gh pr create \
-            --title "chore: refresh bundled Treasury yield data" \
-            --body "Automated weekly refresh of \`mktlib/rates/_data/*.csv\` from Treasury.gov." \
-            --label "automated"
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GH_PAT }}
+          branch: chore/refresh-treasury-data
+          commit-message: "chore: refresh bundled Treasury yield data"
+          title: "chore: refresh bundled Treasury yield data"
+          body: "Automated weekly refresh of `mktlib/rates/_data/*.csv` from Treasury.gov."
+          labels: automated
