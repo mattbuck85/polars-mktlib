@@ -25,6 +25,37 @@ jobs:
     - run: pyright mktlib
     - run: pytest
 
+  lock-dev:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref }}
+    - uses: actions/setup-python@v5
+      with: {python-version: "3.14"}
+    - name: Regenerate dev lockfile
+      run: |
+        tmpdir="$(mktemp -d)"
+        python -m venv "$tmpdir/venv"
+        "$tmpdir/venv/bin/python" -m pip install -q --upgrade pip
+        "$tmpdir/venv/bin/pip" install -q -e ".[dev]"
+        "$tmpdir/venv/bin/pip" freeze --exclude-editable > requirements/dev.txt
+        rm -rf "$tmpdir"
+    - name: Commit if changed
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add requirements/dev.txt
+        if git diff --cached --quiet; then
+          echo "dev lockfile unchanged"
+        else
+          git commit -m "chore: regenerate dev lockfile"
+          git push
+        fi
+
   lock-deps:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test

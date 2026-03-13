@@ -1,12 +1,12 @@
 # data — Synthetic Data Generators
 
-Stochastic process generators for testing, simulation, and Monte Carlo analysis. All return `pl.DataFrame`. Requires `numpy` via `[data]` extra.
+Stochastic process generators for testing, simulation, and Monte Carlo analysis. All return `pl.DataFrame`. Requires `polars-sdist` and `polars-rfft` via `[data]` extra.
 
 ## Public API (`mktlib/data/__init__.py`)
 
 | Export | Source | Returns |
 |-|-|-|
-| `fractional_random_walk(n, hurst, base_price, step_size, seed)` | `_random_walk.py:7` | `DataFrame[step, price]` |
+| `fractional_random_walk(n, hurst, base_price, step_size, seed)` | `_random_walk.py:62` | `DataFrame[step, price]` |
 | `geometric_brownian_motion(n, base_price, drift, volatility, dt, seed)` | `_gbm.py:7` | `DataFrame[step, price]` |
 | `ornstein_uhlenbeck(n, theta, mu, sigma, x0, dt, seed)` | `_ornstein_uhlenbeck.py:7` | `DataFrame[step, value]` |
 | `monte_carlo(process, n_simulations, seed, **kwargs)` | `_monte_carlo.py:8` | `DataFrame[simulation, step, ...]` |
@@ -14,13 +14,20 @@ Stochastic process generators for testing, simulation, and Monte Carlo analysis.
 
 ## Fractional Random Walk (`_random_walk.py`)
 
-Discrete-time fractional Brownian motion using Cholesky decomposition of the fBm covariance matrix.
+Discrete-time fractional Brownian motion using Davies-Harte circulant embedding with polars-rfft (O(n log n)).
 
-- `hurst=0.5` → standard random walk (uncorrelated increments)
+- `hurst=0.5` → standard random walk via `sample_normal()` + cumsum (no FFT)
 - `hurst>0.5` → trending / persistent (positive autocorrelation)
 - `hurst<0.5` → mean-reverting / anti-persistent (negative autocorrelation)
 
-For H=0.5, skips Cholesky and uses `rng.normal()` directly.
+### Internal helpers
+
+| Helper | Line | Purpose |
+|-|-|-|
+| `_build_covariance_row(n, hurst)` | `:10` | Toeplitz coefficients + circulant embedding (length 2n) |
+| `_compute_sqrt_eigenvalues(cov_row)` | `:24` | FFT → real part → clamp ≥ 0 → sqrt |
+| `_frw_increments_expr()` | `:37` | Polars expression: complex multiply + IFFT (assumes sqrt_eig/z_re/z_im columns) |
+| `_derive_seeds(seed)` | `:51` | Derives two child seeds from parent via `random.Random` |
 
 ## Geometric Brownian Motion (`_gbm.py`)
 
@@ -36,7 +43,15 @@ Iterative Euler-Maruyama discretization. `theta` controls reversion speed, `mu` 
 
 ## Monte Carlo (`_monte_carlo.py`)
 
-Generic runner that invokes any generator `n_simulations` times with deterministic child seeds derived from a base seed via `rng.integers()`. Returns a stacked DataFrame with `simulation` column prepended.
+Generic runner with vectorized paths for all three built-in processes:
+
+| Process | Vectorized | Method |
+|-|-|-|
+| `Process.GBM` | Yes | `_vectorized_gbm` — single `sample_normal` + `.over("simulation")` |
+| `Process.OU` | Yes | `_vectorized_ou` — single `sample_normal` + `.over("simulation")` |
+| `Process.FRW` | Yes | `_vectorized_frw` — precompute sqrt_eig once, tile noise, `_frw_increments_expr().over("simulation")` |
+
+For callable process arguments, falls back to `_loop()` which calls the function per simulation with deterministic child seeds.
 
 ## Ticks to OHLCV (`_ohlcv.py`)
 
@@ -44,4 +59,6 @@ Aggregates a tick-level DataFrame into OHLCV bars. The `column` parameter select
 
 ## Dependencies
 
-- `numpy` — required at import time; guarded in `__init__.py` with a helpful `ModuleNotFoundError` pointing to `pip install mktlib[data]`.
+- `polars-sdist` — random sampling (`sample_normal`); guarded in `__init__.py`
+- `polars-rfft` — FFT as Polars expressions; imported at module level in `_random_walk.py`
+- `numpy` — only in `[dev]` for test oracle (Cholesky fBm, autocorrelation checks)

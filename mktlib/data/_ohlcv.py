@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
 import polars as pl
+from polars_sdist import sample_lognormal
 
 
 def ticks_to_ohlcv(
@@ -39,7 +39,7 @@ def ticks_to_ohlcv(
     if column not in ticks.columns:
         raise ValueError(f"ticks DataFrame must contain a {column!r} column")
 
-    raw = ticks[column].to_numpy()
+    raw = ticks[column]
     n_bars = (len(raw) - 1) // bar_size
     if n_bars < 1:
         raise ValueError(
@@ -47,30 +47,32 @@ def ticks_to_ohlcv(
         )
 
     # Truncate to exact coverage
-    raw = raw[: n_bars * bar_size + 1]
+    raw = raw.slice(0, n_bars * bar_size + 1)
 
-    idx = np.arange(n_bars) * bar_size
-    open_arr = raw[idx]
-    close_arr = raw[idx + bar_size]
+    # Open/close at bar boundaries
+    open_idx = list(range(0, n_bars * bar_size, bar_size))
+    close_idx = [i + bar_size for i in open_idx]
+    open_arr = raw.gather(open_idx)
+    close_arr = raw.gather(close_idx)
 
-    # Build (n_bars, bar_size+1) index array for high/low
-    sub_idx = idx[:, None] + np.arange(bar_size + 1)
-    sub_prices = raw[sub_idx]
-    high_arr = sub_prices.max(axis=1)
-    low_arr = sub_prices.min(axis=1)
+    # High/low per bar
+    highs: list[float] = []
+    lows: list[float] = []
+    for i in range(n_bars):
+        bar_slice = raw.slice(i * bar_size, bar_size + 1)
+        highs.append(bar_slice.max())  # type: ignore[arg-type]
+        lows.append(bar_slice.min())  # type: ignore[arg-type]
 
     data: dict[str, object] = {
         "bar": range(n_bars),
         "open": open_arr,
-        "high": high_arr,
-        "low": low_arr,
+        "high": highs,
+        "low": lows,
         "close": close_arr,
     }
 
     if volume:
-        rng = np.random.default_rng(seed)
-        data["volume"] = rng.lognormal(mean=10.0, sigma=1.0, size=n_bars).astype(
-            np.int64
-        )
+        vol = sample_lognormal(n_bars, mu=10.0, sigma=1.0, seed=seed)
+        data["volume"] = vol.cast(pl.Int64)
 
     return pl.DataFrame(data)
