@@ -306,6 +306,114 @@ class TestMarketHours:
         # Bar 3: middle bar, ret = close[3]/close[2] - 1 = 105.3/101.5 - 1
         assert rets[3] == pytest.approx(105.3 / 101.5 - 1, rel=1e-6)
 
+    def test_flatten_eod_defers_session_last_entry_to_next_session(self) -> None:
+        """Crossover on session-last bar defers entry to next session open."""
+        cal = get_calendar("XNYS")
+        # Day 1: crossover fires on 15:59 (session-last bar)
+        # Day 2: deferred entry should open position at 09:30
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),  # crossover here
+            datetime.datetime(2024, 1, 3, 9, 30),   # deferred entry here
+            datetime.datetime(2024, 1, 3, 9, 31),
+            datetime.datetime(2024, 1, 3, 15, 59),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                # fast crosses above slow at bar 2 (session-last)
+                "fast":  [1.0, 1.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(
+            df,
+            AlwaysInStrategy(),
+            calendar=cal,
+            flatten_eod=True,
+        )
+        positions = result.signals["_position"].to_list()
+        # Day 1: no entry (crossover on session-last is suppressed)
+        # Day 2: deferred entry at bar 3, held through bar 4, flattened at bar 5
+        assert positions == [0, 0, 0, 1, 1, 0]
+
+        # Deferred entry fills at bar 4's open (fill-at-next-open)
+        # Bar 4 return: (close[4] - open[4]) / open[4] = entry bar return
+        rets = result.returns["return"].to_list()
+        assert rets[4] == pytest.approx(
+            (105.8 - 105.5) / 105.5, rel=1e-6,
+        ), "deferred entry should fill at next bar's open"
+
+        # Bar 5 (session-last): forced exit, return = (open[5] - close[4]) / close[4]
+        assert rets[5] == pytest.approx(
+            (106.0 - 105.8) / 105.8, rel=1e-6,
+        ), "session-last forced exit return"
+
+    def test_flatten_eod_deferred_entry_on_final_session(self) -> None:
+        """Crossover on session-last of the last day produces no position."""
+        cal = get_calendar("XNYS")
+        # Single session: crossover fires on 15:59 (session-last), no next day
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),  # crossover here, nowhere to defer
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0],
+                "close": [100.2, 100.8, 101.5],
+                "fast":  [1.0, 1.0, 3.0],  # crosses above slow at bar 2
+                "slow":  [2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 3,
+            }
+        )
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        positions = result.signals["_position"].to_list()
+        assert positions == [0, 0, 0], "deferred entry with no next session should produce no position"
+        assert result.trades.height == 0
+
+    def test_flatten_eod_deferred_entry_lands_on_session_last(self) -> None:
+        """Deferred entry landing on a one-bar session is suppressed again.
+
+        This is a known limitation: deferral does not chain. If the next
+        session's first bar is also session-last (single-bar session), the
+        deferred entry is suppressed a second time and lost.
+        """
+        cal = get_calendar("XNYS")
+        # Day 1: 3 bars, crossover on 15:59 (session-last) → deferred
+        # Day 2: only 15:59 bar (one-bar session) → deferred lands on session-last again
+        # Day 3: 2 bars, no deferred signal reaches here
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),  # crossover here
+            datetime.datetime(2024, 1, 3, 15, 59),  # deferred lands here, but also session-last
+            datetime.datetime(2024, 1, 4, 9, 30),
+            datetime.datetime(2024, 1, 4, 15, 59),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                "fast":  [1.0, 1.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        positions = result.signals["_position"].to_list()
+        # Deferred entry hits Day 2's single bar (also session-last) → suppressed again
+        # No second deferral → Day 3 has no entry
+        assert positions == [0, 0, 0, 0, 0, 0], (
+            "deferred entry landing on session-last should not chain-defer"
+        )
+
     def test_flatten_eod_requires_calendar(self) -> None:
         """flatten_eod=True without calendar raises ValueError."""
         df = _make_minute_df(datetime.date(2024, 1, 2), [(9, 30), (10, 0)])
