@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from mktlib.data import (
@@ -115,3 +116,61 @@ class TestMonteCarloEnum:
         assert all(
             p == pytest.approx(100.0) for p in df["price"].to_list()
         )
+
+
+class TestFrwVectorized:
+    def test_reproducibility(self):
+        df1 = monte_carlo(
+            Process.FRW, n_simulations=5, n=50, hurst=0.7, seed=99
+        )
+        df2 = monte_carlo(
+            Process.FRW, n_simulations=5, n=50, hurst=0.7, seed=99
+        )
+        assert df1.equals(df2)
+
+    def test_hurst_above_05_positive_autocorrelation(self):
+        df = monte_carlo(
+            Process.FRW,
+            n_simulations=20,
+            n=500,
+            hurst=0.8,
+            step_size=1.0,
+            seed=42,
+        )
+        autocorrs = []
+        for sim in df["simulation"].unique().to_list():
+            prices = df.filter(simulation=sim)["price"].to_numpy()
+            inc = np.diff(prices)
+            if len(inc) > 1:
+                autocorrs.append(np.corrcoef(inc[:-1], inc[1:])[0, 1])
+        mean_ac = np.mean(autocorrs)
+        assert mean_ac > 0.1
+
+    def test_hurst_below_05_negative_autocorrelation(self):
+        df = monte_carlo(
+            Process.FRW,
+            n_simulations=20,
+            n=500,
+            hurst=0.2,
+            step_size=1.0,
+            seed=42,
+        )
+        autocorrs = []
+        for sim in df["simulation"].unique().to_list():
+            prices = df.filter(simulation=sim)["price"].to_numpy()
+            inc = np.diff(prices)
+            if len(inc) > 1:
+                autocorrs.append(np.corrcoef(inc[:-1], inc[1:])[0, 1])
+        mean_ac = np.mean(autocorrs)
+        assert mean_ac < -0.1
+
+    def test_base_price(self):
+        df = monte_carlo(
+            Process.FRW,
+            n_simulations=5,
+            n=20,
+            base_price=250.0,
+            seed=42,
+        )
+        first_prices = df.filter(step=0)["price"].to_list()
+        assert all(p == pytest.approx(250.0) for p in first_prices)

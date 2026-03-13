@@ -58,6 +58,8 @@ def monte_carlo(
             return _vectorized_gbm(n_simulations, seed=seed, **process_kwargs)
         if process is Process.OU:
             return _vectorized_ou(n_simulations, seed=seed, **process_kwargs)
+        if process is Process.FRW:
+            return _vectorized_frw(n_simulations, seed=seed, **process_kwargs)
 
     return _loop(process, n_simulations, seed=seed, **process_kwargs)
 
@@ -121,6 +123,100 @@ def _vectorized_ou(
             _ou_value_expr(start, alpha, beta, noise_scale).over("simulation")
         )
         .select("simulation", "step", "value")
+    )
+
+
+def _vectorized_frw(
+    n_simulations: int,
+    *,
+    seed: int | None = None,
+    n: int = 100,
+    hurst: float = 0.5,
+    base_price: float = 100.0,
+    step_size: float = 1.0,
+) -> pl.DataFrame:
+    if n < 1:
+        raise ValueError("n must be >= 1")
+
+    if hurst == 0.5:
+        # Simple cumsum path — no FFT needed
+        total = n_simulations * n
+        z = sample_normal(total, seed=seed)
+        idx = pl.arange(0, total, eager=True)
+        return (
+            pl.DataFrame({
+                "simulation": idx // n,
+                "step": idx % n,
+                "z": z * step_size,
+            })
+            .with_columns(
+                (
+                    base_price
+                    + pl.col("z")
+                    .cum_sum()
+                    .shift(1)
+                    .fill_null(0.0)
+                    .over("simulation")
+                ).alias("price")
+            )
+            .select("simulation", "step", "price")
+        )
+
+    from mktlib.data._random_walk import (
+        _build_covariance_row,
+        _compute_sqrt_eigenvalues,
+        _derive_seeds,
+        _frw_increments_expr,
+    )
+
+    cov_row = _build_covariance_row(n, hurst)
+    sqrt_eig = _compute_sqrt_eigenvalues(cov_row)
+    m = len(sqrt_eig)  # 2n
+
+    # Derive two child seeds for re/im noise
+    seed_re, seed_im = _derive_seeds(seed)
+
+    total_noise = n_simulations * m
+    z_re_all = sample_normal(total_noise, seed=seed_re)
+    z_im_all = sample_normal(total_noise, seed=seed_im)
+
+    # Tile sqrt_eig across simulations
+    sqrt_eig_tiled = pl.Series(
+        "sqrt_eig", sqrt_eig.to_list() * n_simulations
+    )
+
+    idx = pl.arange(0, total_noise, eager=True)
+
+    df = pl.DataFrame({
+        "simulation": idx // m,
+        "embed_idx": idx % m,
+        "sqrt_eig": sqrt_eig_tiled,
+        "z_re": z_re_all,
+        "z_im": z_im_all,
+    })
+
+    # Apply IFFT per simulation group
+    df = df.with_columns(
+        _frw_increments_expr().over("simulation")
+    )
+
+    # Filter to first n rows per simulation (discard circulant padding)
+    df = df.filter(pl.col("embed_idx") < n)
+
+    # Scale and cumsum → prices
+    return (
+        df.with_columns(
+            (
+                base_price
+                + (pl.col("increment") * (m**0.5 * step_size))
+                .cum_sum()
+                .shift(1)
+                .fill_null(0.0)
+                .over("simulation")
+            ).alias("price")
+        )
+        .rename({"embed_idx": "step"})
+        .select("simulation", "step", "price")
     )
 
 

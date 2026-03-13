@@ -1,6 +1,64 @@
 from __future__ import annotations
 
+import random
+
 import polars as pl
+from polars_sdist import sample_normal
+
+
+def _ensure_rfft() -> None:
+    """Import polars_rfft to register the .rfft namespace on pl.Expr."""
+    import polars_rfft  # type: ignore[import-untyped]  # noqa: F401
+
+
+def _build_covariance_row(n: int, hurst: float) -> pl.Series:
+    """Toeplitz coefficients + circulant embedding (length 2n)."""
+    h2 = 2 * hurst
+    k = pl.Series("k", range(n))
+    c = 0.5 * (
+        (k + 1).cast(pl.Float64).pow(h2)
+        - 2 * k.cast(pl.Float64).pow(h2)
+        + (k - 1).cast(pl.Float64).abs().pow(h2)
+    )
+    # Embed in circulant matrix: [c_0, ..., c_{n-1}, 0, c_{n-1}, ..., c_1]
+    padding = pl.Series("pad", [0.0])
+    return pl.concat([c, padding, c[1:].reverse()], rechunk=True).rename("cov_row")
+
+
+def _compute_sqrt_eigenvalues(cov_row: pl.Series) -> pl.Series:
+    """FFT of circulant row → real part → clamp ≥ 0 → sqrt."""
+    _ensure_rfft()
+    df = pl.DataFrame({"cov_row": cov_row})
+    result = df.select(
+        pl.col("cov_row")
+        .rfft.fft()  # type: ignore[attr-defined]
+        .struct.field("re")
+        .clip(lower_bound=0.0)
+        .sqrt()
+        .alias("sqrt_eig")
+    )
+    return result["sqrt_eig"]
+
+
+def _frw_increments_expr() -> pl.Expr:
+    """Build complex product and IFFT, assuming sqrt_eig/z_re/z_im columns.
+
+    Returns a real-valued expression of the IFFT result.
+    """
+    return (
+        pl.struct(
+            re=pl.col("sqrt_eig") * pl.col("z_re"),
+            im=pl.col("sqrt_eig") * pl.col("z_im"),
+        )
+        .rfft.ifft_real()  # type: ignore[attr-defined]
+        .alias("increment")
+    )
+
+
+def _derive_seeds(seed: int | None) -> tuple[int, int]:
+    """Derive two child seeds from a parent seed."""
+    rng = random.Random(seed)
+    return rng.randrange(2**63), rng.randrange(2**63)
 
 
 def fractional_random_walk(
@@ -21,42 +79,30 @@ def fractional_random_walk(
     if not 0 < hurst < 1:
         raise ValueError("hurst must be in (0, 1)")
 
-    try:
-        import numpy as np
-    except ModuleNotFoundError:
-        raise ModuleNotFoundError(
-            "fractional_random_walk requires numpy. Install with: pip install numpy"
-        ) from None
-
-    rng = np.random.default_rng(seed)
-
     if hurst == 0.5:
-        increments = rng.normal(0, step_size, n)
-    else:
-        # Davies-Harte / circulant embedding method — O(n log n)
-        h2 = 2 * hurst
-        k = np.arange(n)
-        # First row of Toeplitz covariance of fBm increments
-        c = 0.5 * (np.abs(k + 1) ** h2 - 2 * np.abs(k) ** h2 + np.abs(k - 1) ** h2)
-        # Embed in circulant matrix (size 2n)
-        row = np.concatenate([c, [0.0], c[-1:0:-1]])
-        # Eigenvalues via FFT (real since row is symmetric)
-        eigenvalues = np.fft.fft(row).real
-        eigenvalues = np.maximum(eigenvalues, 0.0)  # clamp numerical noise
-        sqrt_eig = np.sqrt(eigenvalues)
-        # Generate complex normal in frequency domain
-        m = len(row)
-        z = rng.standard_normal(m) + 1j * rng.standard_normal(m)
-        # Multiply and IFFT
-        w = np.fft.ifft(sqrt_eig * z)
-        increments = w[:n].real * step_size
+        z = sample_normal(n, seed=seed)
+        increments = z * step_size
+        prices = pl.Series("price", [base_price]).append(
+            (increments.cum_sum() + base_price)
+        )[:n]
+        return pl.DataFrame({"step": range(n), "price": prices})
 
-    prices = base_price + np.cumsum(increments)
-    prices = np.insert(prices, 0, base_price)[:n]
+    # Davies-Harte / circulant embedding — O(n log n)
+    cov_row = _build_covariance_row(n, hurst)
+    sqrt_eig = _compute_sqrt_eigenvalues(cov_row)
 
-    return pl.DataFrame(
-        {
-            "step": range(n),
-            "price": prices,
-        }
-    )
+    m = len(sqrt_eig)
+    seed_re, seed_im = _derive_seeds(seed)
+    z_re = sample_normal(m, seed=seed_re)
+    z_im = sample_normal(m, seed=seed_im)
+
+    df = pl.DataFrame({"sqrt_eig": sqrt_eig, "z_re": z_re, "z_im": z_im})
+    increments = df.select(_frw_increments_expr())["increment"]
+
+    # Scale by √m (IFFT normalization for circulant embedding) and step_size
+    increments = increments[:n] * (m**0.5 * step_size)
+    prices = pl.Series("price", [base_price]).append(
+        (increments.cum_sum() + base_price)
+    )[:n]
+
+    return pl.DataFrame({"step": range(n), "price": prices})
