@@ -9,7 +9,7 @@ Financial market toolkit built entirely on Polars.
 ### tl;dr
 
 - **Fast enough for real work** — vectorized Polars engine grid-searches thousands of parameter combos on minute-bar data without reaching for Numba or Cython
-- **Lightweight** — core is Polars-only; `numpy` is the sole extra for synthetic data generation. No pandas, no heavy ML stack
+- **Lightweight** — pure Polars throughout, including synthetic data generation via Rust-native plugins. No pandas, no NumPy, no heavy ML stack
 - **Well tested** — cross-validated exchange calendars, property-based OHLCV checks, and full backtest parity tests across engines
 - **Swiss-army knife** — scheduling, rates, metrics, backtesting, reporting, and data generation in one package. Great for learning, prototyping, or production
 - **Apache 2.0** — use it anywhere, fork it, vendor it, no strings attached

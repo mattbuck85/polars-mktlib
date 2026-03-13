@@ -17,7 +17,7 @@ Codemaps: `docs/CODEMAPS/{backtest,metrics,scheduling,reports,rates,data}.md` �
 
 - **Python 3.14+**. Use `from __future__ import annotations` in all files.
 - **Polars only** — no pandas in the library. `_compat.py` accepts pandas inputs but converts immediately.
-- **Optional extras** — `jinja2`/`plotly` behind `[reports]`, `numpy` behind `[data]`. `polars` is the only core dependency.
+- **Optional extras** — `jinja2`/`plotly` behind `[reports]`. `polars` is the only core dependency. Data gen uses `polars-sdist`/`polars-rfft` (pure Rust Polars plugins, no NumPy).
 - **`importlib.resources`** for package data (templates, bundled CSVs). Pattern: `files("mktlib.subpkg") / "subdir" / "file"`.
 
 ## Testing
@@ -50,7 +50,7 @@ Bundled Treasury CSVs refreshed by `scripts/refresh_treasury_data.py` (standalon
 - `backtest` uses `scheduling` calendars for market-hours filtering and `flatten_eod`. Fill-at-next-open semantics; session-forced exits fill at session-last bar's open.
 - `metrics` is standalone (polars only); used by `reports` for tearsheet stats.
 - `reports.__init__` resolves `rf="auto"` by calling `rates._treasury.fetch_average_rate` — this is the only cross-subpackage dependency.
-- `data` is standalone (requires only `numpy` + `polars`); no cross-subpackage dependencies.
+- `data` is standalone (requires `polars-sdist` + `polars-rfft` Polars plugins); no cross-subpackage dependencies.
 - `scheduling` is fully standalone with zero external deps beyond polars.
 - Exchange definitions live in `scheduling/exchanges/` — each module exports constants and rule lists consumed by `registry.py`.
 - Adding an exchange: create `exchanges/foo.py` with holiday rules, register in `registry.py` via `register_exchange()`. **Must** add an `ExchangeValidationBase` subclass in `tests/scheduling/test_validation.py` cross-validating against `exchange_calendars` for 20 years of data (see below).

@@ -10,7 +10,7 @@ Financial market toolkit built entirely on Polars.
 
 ⚡ **Fast enough for real work** — vectorized Polars engine grid-searches thousands of parameter combos on minute-bar data without reaching for Numba or Cython
 
-📦 **Lightweight** — core is Polars-only; `numpy` is the sole extra for synthetic data generation. No pandas, no heavy ML stack
+📦 **Lightweight** — pure Polars throughout, including synthetic data generation via Rust-native plugins. No pandas, no NumPy, no heavy ML stack
 
 🧪 **Well tested** — cross-validated exchange calendars, property-based OHLCV checks, and full backtest parity tests across engines
 
@@ -65,7 +65,7 @@ Financial market toolkit built entirely on Polars.
 
 ```bash
 pip install mktlib              # core (scheduling, rates, metrics, backtest)
-pip install mktlib[data]        # + synthetic data generators (numpy)
+pip install mktlib[data]        # + synthetic data generators (polars-sdist, polars-rfft)
 pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 ```
 
