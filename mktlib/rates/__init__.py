@@ -35,6 +35,7 @@ class TreasuryRate(StrEnum):
     """Treasury yield curve instruments available from Treasury.gov."""
 
     ONE_MONTH = "BC_1MONTH"
+    ONE_AND_HALF_MONTH = "BC_1_5MONTH"
     TWO_MONTH = "BC_2MONTH"
     THREE_MONTH = "BC_3MONTH"
     FOUR_MONTH = "BC_4MONTH"

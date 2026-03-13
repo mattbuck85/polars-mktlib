@@ -719,8 +719,8 @@ class TestBundledDiskSeed:
 
 
 class TestTreasuryRateEnum:
-    def test_all_14_members(self):
-        assert len(TreasuryRate) == 14
+    def test_all_15_members(self):
+        assert len(TreasuryRate) == 15
 
     def test_values_match_schema_fields(self):
         from mktlib.rates._schema import all_fields
@@ -781,8 +781,8 @@ class TestGetTreasuryRates:
         ):
             df = get_treasury_rates(date(2024, 1, 1), date(2024, 1, 31), None)
 
-        # 1 date column + 14 instrument columns
-        assert len(df.columns) == 15
+        # 1 date column + 15 instrument columns
+        assert len(df.columns) == 16
         assert df.columns[0] == "date"
 
     def test_string_dates(self):
