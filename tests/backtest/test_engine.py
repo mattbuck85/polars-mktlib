@@ -1262,3 +1262,67 @@ class TestPriceExprConditions:
         result = df.select(cond.resolve().alias("v"))["v"].to_list()
         # a > b+1: 5>4=True, 10>11=False, 3>6=False
         assert result == [True, False, False]
+
+
+class TestFlattenEodMissingData:
+    """flatten_eod with sessions that have missing bars."""
+
+    def test_session_fully_missing(self) -> None:
+        """Day 2 has zero bars — session-last detection works for Day 1 and Day 3."""
+        cal = get_calendar("XNYS")
+        # Day 1: 3 bars, Day 2: no bars at all, Day 3: 3 bars
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),
+            # Day 2 (Jan 3) entirely missing
+            datetime.datetime(2024, 1, 4, 9, 30),
+            datetime.datetime(2024, 1, 4, 9, 31),
+            datetime.datetime(2024, 1, 4, 15, 59),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                "fast":  [1.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        positions = result.signals["_position"].to_list()
+        # Day 1: entry at bar 1, flattened at bar 2 (15:59)
+        # Day 3 (Jan 4): no fresh crossover, stays 0
+        assert positions[2] == 0, "Day 1 session-last should flatten"
+        assert positions[5] == 0, "Day 3 session-last should flatten"
+
+    def test_incomplete_session_missing_last_hour(self) -> None:
+        """Day 2 missing last hour — session-last detected on actual last bar."""
+        cal = get_calendar("XNYS")
+        # Day 1: full bars including 15:59
+        # Day 2: bars only up to 15:00 (missing last hour)
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),
+            datetime.datetime(2024, 1, 3, 9, 30),
+            datetime.datetime(2024, 1, 3, 9, 31),
+            datetime.datetime(2024, 1, 3, 15, 0),  # last bar is 15:00, not 15:59
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open":  [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                "fast":  [1.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+                "slow":  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+                "never_cross": [5.0] * 6,
+            }
+        )
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        positions = result.signals["_position"].to_list()
+        # Day 1: entry at bar 1, flattened at bar 2 (session-last)
+        assert positions[2] == 0, "Day 1 session-last should flatten"
+        # Day 2: 15:00 is the last bar in data → should be treated as session-last
+        assert positions[5] == 0, "Day 2 actual last bar should flatten"

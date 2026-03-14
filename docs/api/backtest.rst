@@ -63,15 +63,15 @@ call. Returns a :class:`MultiBacktestResult` with O(1) per-instrument access:
    # Equal-weight portfolio
    portfolio = result.returns.group_by("date").agg(pl.col("return").mean())
 
-.. autoclass:: mktlib.backtest.MultiBacktestResult
-   :members:
-   :special-members: __getitem__, __len__, __contains__
-
 Types
 -----
 
 .. autoclass:: mktlib.backtest.BacktestResult
    :members:
+
+.. autoclass:: mktlib.backtest.MultiBacktestResult
+   :members:
+   :special-members: __getitem__, __len__, __contains__
 
 .. autoclass:: mktlib.backtest.Strategy
    :members:
@@ -123,6 +123,18 @@ with ``&`` (All), ``|`` (Any\_), and ``~`` (Not) operators.
    :members:
 
 .. autoclass:: mktlib.backtest.Custom
+   :members:
+
+Combinators
+~~~~~~~~~~~
+
+.. autoclass:: mktlib.backtest.All
+   :members:
+
+.. autoclass:: mktlib.backtest.Any_
+   :members:
+
+.. autoclass:: mktlib.backtest.Not
    :members:
 
 Price Expressions
@@ -196,15 +208,3 @@ Calendar filtering adds ~8ms for schedule-join market-hours masking.
    Numba requires ahead-of-time compilation (~0.6s on first call, cached to disk
    thereafter). The Polars engine is the best default — no extra dependencies and
    competitive performance. Benchmark scripts live in ``scripts/bench_*.py``.
-
-Combinators
-~~~~~~~~~~~
-
-.. autoclass:: mktlib.backtest.All
-   :members:
-
-.. autoclass:: mktlib.backtest.Any_
-   :members:
-
-.. autoclass:: mktlib.backtest.Not
-   :members:
