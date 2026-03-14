@@ -63,15 +63,15 @@ call. Returns a :class:`MultiBacktestResult` with O(1) per-instrument access:
    # Equal-weight portfolio
    portfolio = result.returns.group_by("date").agg(pl.col("return").mean())
 
-.. autoclass:: mktlib.backtest.MultiBacktestResult
-   :members:
-   :special-members: __getitem__, __len__, __contains__
-
 Types
 -----
 
 .. autoclass:: mktlib.backtest.BacktestResult
    :members:
+
+.. autoclass:: mktlib.backtest.MultiBacktestResult
+   :members:
+   :special-members: __getitem__, __len__, __contains__
 
 .. autoclass:: mktlib.backtest.Strategy
    :members:
