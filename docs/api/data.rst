@@ -21,7 +21,6 @@ Suitable for equity price simulation. The ``drift`` parameter controls the expec
 return and ``volatility`` controls dispersion.
 
 .. autofunction:: mktlib.data.geometric_brownian_motion
-   :no-index:
 
 Ornstein–Uhlenbeck (OU)
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -32,7 +31,6 @@ Useful for modeling interest rates, volatility, or pairs-trading spreads where
 the process reverts to a long-run mean ``mu`` at speed ``theta``.
 
 .. autofunction:: mktlib.data.ornstein_uhlenbeck
-   :no-index:
 
 Fractional Brownian Motion (fBm)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -44,17 +42,12 @@ Generated via the Davies-Harte circulant embedding method using FFT
 - **H > 0.5** — trending (persistent) paths
 - **H < 0.5** — mean-reverting (anti-persistent) paths
 
-Powered by `polars-rfft <https://github.com/mattbuck85/polars-rfft>`_ (RustFFT) and
-`polars-sdist <https://github.com/mattbuck85/polars-sdist>`_ for normal sampling.
-
 .. autofunction:: mktlib.data.fractional_random_walk
-   :no-index:
 
 OHLCV Aggregation
 -----------------
 
 .. autofunction:: mktlib.data.ticks_to_ohlcv
-   :no-index:
 
 Usage:
 
@@ -69,23 +62,46 @@ Usage:
 Monte Carlo
 -----------
 
-.. autofunction:: mktlib.data.monte_carlo
-   :no-index:
+.. autoclass:: mktlib.data.Process
+   :members:
+   :undoc-members:
 
-Usage:
+.. autofunction:: mktlib.data.monte_carlo
+
+**Vectorized enum path (recommended)** — bulk-samples all normals upfront and
+partitions via ``.over("simulation")``, avoiding per-simulation Python loops:
+
+.. code-block:: python
+
+   from mktlib.data import Process, monte_carlo
+
+   # 1000 GBM simulations, 252 steps each
+   gbm_sims = monte_carlo(Process.GBM, n_simulations=1000, n=252, seed=42)
+   # → DataFrame[simulation, step, price]
+
+   # 500 Ornstein–Uhlenbeck simulations
+   ou_sims = monte_carlo(Process.OU, n_simulations=500, n=252, theta=0.7, mu=100.0, seed=1)
+   # → DataFrame[simulation, step, value]
+
+   # 200 fractional random walk simulations (trending, H > 0.5)
+   frw_sims = monte_carlo(Process.FRW, n_simulations=200, n=252, hurst=0.7, seed=2)
+   # → DataFrame[simulation, step, price]
+
+**Callable fallback** — pass any function with signature
+``(*, seed: int, **kwargs) -> pl.DataFrame``. Runs a serial loop with
+deterministic child seeds:
 
 .. code-block:: python
 
    from mktlib.data import geometric_brownian_motion, monte_carlo
 
-   # 1000 simulations of 252-step GBM
+   # Equivalent to Process.GBM, but uses the serial loop path
    sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42)
-   # Returns DataFrame with columns [simulation, step, price]
+   # → DataFrame[simulation, step, price]
 
-Full Module Reference
----------------------
+.. note::
 
-.. automodule:: mktlib.data
-   :members:
-   :undoc-members:
-   :show-inheritance:
+   The ``Process`` enum path is significantly faster for large simulation counts
+   because it draws all random samples in a single ``polars-sdist`` call and
+   computes paths with ``.over("simulation")`` expressions. The callable path
+   loops in Python and concatenates individual DataFrames.
