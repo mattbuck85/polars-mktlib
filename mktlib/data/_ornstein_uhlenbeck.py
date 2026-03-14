@@ -15,14 +15,42 @@ def ornstein_uhlenbeck(
     dt: float = 1.0,
     seed: int | None = None,
 ) -> pl.DataFrame:
-    """Discrete Ornstein-Uhlenbeck process via vectorized Euler-Maruyama.
+    r"""Discrete Ornstein-Uhlenbeck process via vectorized Euler-Maruyama.
 
+    Simulates the mean-reverting SDE
+    :math:`dx = \theta(\mu - x) \, dt + \sigma \, dW`, discretised as an
+    AR(1) recurrence and unrolled into a prefix sum.
+
+    Parameters
+    ----------
+    n
+        Number of time steps to generate.
+    theta
+        Mean-reversion speed.  Larger values pull *x* back to *mu* faster.
+    mu
+        Long-run mean (equilibrium level).
+    sigma
+        Volatility of the noise term.
+    x0
+        Starting value.  Defaults to *mu* (start at equilibrium).
+    dt
+        Time step size.
+    seed
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns ``step`` (int) and ``value`` (float).
+
+    Notes
+    -----
     The Euler-Maruyama recurrence is::
 
         x[i] = x[i-1] + θ(μ - x[i-1])dt + σ√dt·z[i]
              = α·x[i-1] + β + σ√dt·z[i]
 
-    where ``α = 1 - θ·dt`` and ``β = θ·μ·dt``. This is an AR(1) process
+    where ``α = 1 - θ·dt`` and ``β = θ·μ·dt``.  This is an AR(1) process
     whose closed-form unrolling is::
 
         x[i] = αⁱ·x₀ + Σⱼ₌₁ⁱ α^(i-j)·(β + σ√dt·z[j])
@@ -33,6 +61,10 @@ def ornstein_uhlenbeck(
 
     The inner sum is a prefix sum of ``innovation[j] / αʲ``, which is
     computed with :meth:`polars.Expr.cum_sum` — no Python loop required.
+
+    **Stability.**  The scheme requires ``θ·dt < 1`` (i.e. ``α > 0``).
+    When this is violated the recurrence oscillates around *mu* instead of
+    reverting smoothly.  For large *theta*, reduce *dt* accordingly.
     """
     if n < 1:
         raise ValueError("n must be >= 1")

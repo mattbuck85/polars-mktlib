@@ -55,10 +55,10 @@ For callable process arguments, falls back to `_loop()` which calls the function
 
 ## Ticks to OHLCV (`_ohlcv.py`)
 
-Aggregates a tick-level DataFrame into OHLCV bars. The `column` parameter selects which column to aggregate (default `"price"`, pass `"value"` for OU output). Extracts numpy array, computes `n_bars = (len - 1) // bar_size`, builds open/close from endpoints and high/low from a `(n_bars, bar_size+1)` sub-index view. Optional lognormal volume via `default_rng(seed)`. Incomplete tail bars are dropped. Validates `bar_size >= 1` and presence of the target column.
+Aggregates a tick-level DataFrame into OHLCV bars. The `column` parameter selects which column to aggregate (default `"price"`, pass `"value"` for OU output). Computes `n_bars = (len - 1) // bar_size`, builds open/close from endpoints via `gather` and high/low per bar via `slice`. Optional lognormal volume via `sample_lognormal(seed)`. Incomplete tail bars are dropped. Validates `bar_size >= 1` and presence of the target column.
 
 ## Dependencies
 
 - `polars-sdist` — random sampling (`sample_normal`); guarded in `__init__.py`
 - `polars-rfft` — FFT as Polars expressions; imported at module level in `_random_walk.py`
-- `numpy` — only in `[dev]` for test oracle (Cholesky fBm, autocorrelation checks)
+- `numpy` — dev-only (test oracles: Cholesky fBm, autocorrelation checks); not a runtime dependency

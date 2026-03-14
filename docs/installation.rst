@@ -21,7 +21,7 @@ mktlib has optional extras for additional functionality:
 
 .. code-block:: bash
 
-   pip install mktlib[data]        # synthetic data generators (adds numpy)
+   pip install mktlib[data]        # synthetic data generators (adds polars-sdist, polars-rfft)
    pip install mktlib[reports]     # tearsheet generation (adds plotly, jinja2)
    pip install mktlib[data,reports]  # both extras
 
