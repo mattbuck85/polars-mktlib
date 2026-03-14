@@ -66,11 +66,55 @@ def fractional_random_walk(
     step_size: float = 1.0,
     seed: int | None = None,
 ) -> pl.DataFrame:
-    """Discrete-time fractional random walk using Davies-Harte circulant embedding.
+    r"""Discrete-time fractional random walk using Davies-Harte circulant embedding.
 
-    For ``hurst=0.5`` this is a standard random walk.  ``hurst > 0.5`` produces
-    trending (persistent) paths; ``hurst < 0.5`` produces mean-reverting
-    (anti-persistent) paths.
+    The Hurst exponent *H* controls the autocorrelation of increments:
+
+    - **H = 0.5** — independent increments (standard random walk).
+    - **H > 0.5** — positively correlated increments (trending / persistent).
+    - **H < 0.5** — negatively correlated increments (mean-reverting / anti-persistent).
+
+    Parameters
+    ----------
+    n
+        Number of time steps to generate.
+    hurst
+        Hurst exponent, must be in ``(0, 1)``.
+    base_price
+        Initial price :math:`S_0`.
+    step_size
+        Scale factor applied to each increment.
+    seed
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns ``step`` (int) and ``price`` (float).
+
+    Notes
+    -----
+    **H = 0.5 fast path.**  Increments are i.i.d. normal — no FFT is
+    needed, just ``sample_normal`` → scale → ``cum_sum``.
+
+    **H ≠ 0.5 (Davies-Harte spectral method).**  Fractional Brownian
+    motion increments have autocovariance::
+
+        γ(k) = ½(|k−1|^{2H} − 2|k|^{2H} + |k+1|^{2H})
+
+    The algorithm embeds this Toeplitz sequence in a :math:`2n`-length
+    circulant vector, then:
+
+    1. Compute eigenvalues via FFT: :math:`\Lambda = \text{FFT}(\gamma_{\text{circ}})`
+    2. Draw two independent standard normal vectors :math:`Z_{re}, Z_{im}`
+    3. Form the product :math:`\sqrt{\Lambda} \cdot (Z_{re} + i \, Z_{im})`
+    4. Apply IFFT and take the first *n* real values as increments
+
+    This is O(n log n) via FFT, compared to O(n²) for Cholesky
+    factorisation of the full covariance matrix.
+
+    FFT and normal sampling are delegated to the ``polars-rfft`` and
+    ``polars-sdist`` Rust plugins respectively — no NumPy dependency.
     """
     if n < 1:
         raise ValueError("n must be >= 1")

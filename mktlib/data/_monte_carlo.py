@@ -1,34 +1,3 @@
-"""Vectorized Monte Carlo simulation of stochastic processes.
-
-All built-in processes are discretizations of the general SDE::
-
-    dX(t) = a(X, t) dt + b(X, t) dW(t)
-
-where ``dW(t) = Z·√dt`` and ``Z ~ N(0,1)``.
-
-+---------+------------------+------------------+
-| Process | Drift a(X, t)    | Diffusion b(X,t) |
-+---------+------------------+------------------+
-| GBM     | μX               | σX               |
-| OU      | θ(μ − X)         | σ                |
-| FRW     | 0                | step_size         |
-+---------+------------------+------------------+
-
-FRW with ``H = 0.5`` reduces to a standard random walk (pure cumsum).
-For ``H ≠ 0.5``, increments are generated via the Davies-Harte spectral
-method rather than SDE discretization::
-
-    γ(k) = ½(|k-1|^{2H} − 2|k|^{2H} + |k+1|^{2H})
-    Λ    = FFT(γ_circ)
-    ΔX   = Re[ IFFT( √Λ · (Z_re + i·Z_im) ) ]
-
-where ``γ_circ`` is the circulant embedding of the autocovariance,
-``Λ`` are its eigenvalues, and ``Z_re, Z_im ~ N(0,1)`` i.i.d.
-
-For each simulation, ``n`` i.i.d. standard normal samples are drawn
-in bulk via ``polars-sdist``, then partitioned by simulation index
-using ``.over("simulation")``.
-"""
 from __future__ import annotations
 
 import enum
@@ -44,9 +13,23 @@ from mktlib.data._ornstein_uhlenbeck import _ou_value_expr
 
 
 class Process(enum.Enum):
+    """Built-in stochastic processes for :func:`monte_carlo`.
+
+    Each variant maps to a vectorized implementation that draws all normal
+    samples in a single ``polars-sdist`` call and partitions them across
+    simulations with ``.over("simulation")`` — no Python loop.
+
+    Pass the enum member as the first argument to :func:`monte_carlo`,
+    along with any keyword arguments accepted by the underlying single-path
+    generator (e.g. ``n``, ``drift``, ``volatility`` for GBM).
+    """
+
     GBM = "gbm"
+    """Geometric Brownian motion — lognormal price paths."""
     OU = "ou"
+    """Ornstein-Uhlenbeck — mean-reverting process."""
     FRW = "frw"
+    """Fractional random walk — fBm increments via Davies-Harte."""
 
 
 @overload
@@ -76,10 +59,68 @@ def monte_carlo(
     seed: int | None = None,
     **process_kwargs: Any,
 ) -> pl.DataFrame:
-    """Run multiple simulations of a stochastic process.
+    r"""Run multiple simulations of a stochastic process.
 
-    Returns a stacked DataFrame with a ``simulation`` column prepended.
-    Each simulation uses a deterministic seed derived from *seed*.
+    Generates *n_simulations* independent paths from the same process and
+    returns them stacked in a single DataFrame with a ``simulation`` index
+    column prepended.
+
+    Parameters
+    ----------
+    process
+        Which process to simulate.  A :class:`Process` enum member selects the
+        vectorized fast path; a callable with signature
+        ``(*, seed: int, **kwargs) -> pl.DataFrame`` uses a serial loop
+        fallback.
+    n_simulations
+        Number of independent paths to generate.
+    seed
+        Parent RNG seed.  Deterministic child seeds are derived so that each
+        simulation is reproducible and independent.
+    **process_kwargs
+        Forwarded to the underlying generator.  For :class:`Process` members
+        these match the single-path function signatures (e.g. ``n``, ``drift``,
+        ``volatility`` for GBM).
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns ``simulation`` (int), ``step`` (int), and a value column whose
+        name depends on the process — ``price`` for GBM / FRW, ``value`` for
+        OU.
+
+    Notes
+    -----
+    All built-in processes are discretizations of the general SDE::
+
+        dX(t) = a(X, t) dt + b(X, t) dW(t)
+
+    where :math:`dW(t) = Z \sqrt{dt}`, :math:`Z \sim N(0,1)`.  The drift and
+    diffusion coefficients for each :class:`Process` variant are:
+
+    ===== ======================== ===================
+    Enum  Drift *a(X, t)*          Diffusion *b(X, t)*
+    ===== ======================== ===================
+    GBM   :math:`\mu X`            :math:`\sigma X`
+    OU    :math:`\theta(\mu - X)`  :math:`\sigma`
+    FRW   0                        step_size
+    ===== ======================== ===================
+
+    **Vectorized path (Process enum).**  A single ``sample_normal(n_simulations * n)``
+    call draws all noise upfront.  Per-simulation recurrences are computed via
+    Polars ``.over("simulation")`` expressions, keeping the entire operation in
+    Rust with no Python loop.  For FRW with :math:`H \neq 0.5`, the
+    sqrt-eigenvalues of the circulant covariance are computed once and tiled
+    across simulations.
+
+    **Serial fallback (callable).**  The callable is invoked once per
+    simulation with a deterministic child seed derived from *seed*.  Results
+    are concatenated with :func:`polars.concat`.  This path is slower but
+    supports arbitrary user-defined generators.
+
+    **Seed derivation.**  Child seeds are produced by a ``random.Random(seed)``
+    instance, so results are fully reproducible for a given *seed* /
+    *n_simulations* pair.
     """
     if n_simulations < 1:
         raise ValueError("n_simulations must be >= 1")
@@ -175,11 +216,13 @@ def _vectorized_frw(
         z = sample_normal(total, seed=seed)
         idx = pl.arange(0, total, eager=True)
         return (
-            pl.DataFrame({
-                "simulation": idx // n,
-                "step": idx % n,
-                "z": z * step_size,
-            })
+            pl.DataFrame(
+                {
+                    "simulation": idx // n,
+                    "step": idx % n,
+                    "z": z * step_size,
+                }
+            )
             .with_columns(
                 (
                     base_price
@@ -216,24 +259,22 @@ def _vectorized_frw(
         .select(_sqrt_eigenvalue_expr())
         .to_series()
     )
-    sqrt_eig_tiled = pl.Series(
-        "sqrt_eig", sqrt_eig.to_list() * n_simulations
-    )
+    sqrt_eig_tiled = pl.Series("sqrt_eig", sqrt_eig.to_list() * n_simulations)
 
     idx = pl.arange(0, total_noise, eager=True)
 
-    df = pl.DataFrame({
-        "simulation": idx // m,
-        "embed_idx": idx % m,
-        "sqrt_eig": sqrt_eig_tiled,
-        "z_re": z_re_all,
-        "z_im": z_im_all,
-    })
+    df = pl.DataFrame(
+        {
+            "simulation": idx // m,
+            "embed_idx": idx % m,
+            "sqrt_eig": sqrt_eig_tiled,
+            "z_re": z_re_all,
+            "z_im": z_im_all,
+        }
+    )
 
     # Apply IFFT per simulation group
-    df = df.with_columns(
-        _frw_increments_expr().over("simulation")
-    )
+    df = df.with_columns(_frw_increments_expr().over("simulation"))
 
     # Filter to first n rows per simulation (discard circulant padding)
     df = df.filter(pl.col("embed_idx") < n)
