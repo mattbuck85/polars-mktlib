@@ -39,28 +39,28 @@ def generate_minute_ohlcv(
     minutes_per_day: int = 390,
     start_price: float = 100.0,
     annual_drift: float = 0.08,
-    annual_vol: float = 0.20,
-    sub_steps: int = 10,
+    annual_vol: float = 1.0,
     seed: int = 42,
 ) -> pl.DataFrame:
     """Generate minute-resolution OHLCV from ``mktlib.data.geometric_brownian_motion``.
 
-    Uses GBM at sub-minute resolution, then reshapes into 1-minute OHLC bars
-    via ``ticks_to_ohlcv``.
+    Uses GBM at second-level resolution (1 tick = 1 second of trading time),
+    then aggregates into 1-minute OHLC bars via ``ticks_to_ohlcv``.
     """
+    ticks_per_bar = 60  # 60 seconds per minute
     n_bars = n_years * trading_days_per_year * minutes_per_day
-    dt_per_sub = 1.0 / (trading_days_per_year * minutes_per_day * sub_steps)
+    dt_1s = 1 / (trading_days_per_year * 6.5 * 3600)
 
-    # Generate a single GBM path at sub-minute resolution
+    # Generate a single GBM path at second-level resolution
     gbm = geometric_brownian_motion(
-        n=n_bars * sub_steps + 1,
+        n=n_bars * ticks_per_bar + 1,
         base_price=start_price,
         drift=annual_drift,
         volatility=annual_vol,
-        dt=dt_per_sub,
+        dt=dt_1s,
         seed=seed,
     )
-    ohlcv = ticks_to_ohlcv(gbm, bar_size=sub_steps, seed=seed + 1)
+    ohlcv = ticks_to_ohlcv(gbm, bar_size=ticks_per_bar, seed=seed + 1)
 
     # Build business-day minute timestamps (09:30-16:00 ET)
     n_days = n_years * trading_days_per_year

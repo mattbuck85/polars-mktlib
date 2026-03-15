@@ -11,6 +11,38 @@ from polars_sdist import sample_normal
 from mktlib.data._gbm import _gbm_price_expr
 from mktlib.data._ornstein_uhlenbeck import _ou_value_expr
 
+from polars_sdist import SdistNamespace as sdist
+
+
+def _child_seeds(n_simulations: int, seed: int | None) -> list[int]:
+    rng = random.Random(seed)
+    return [rng.randrange(2**63) for _ in range(n_simulations)]
+
+
+def _noise_frame(
+    n_simulations: int,
+    n: int,
+    *,
+    seed: int | None = None,
+) -> pl.DataFrame:
+    """Build ``simulation | seed | step | z`` frame with per-sim normal draws."""
+    child_seeds = _child_seeds(n_simulations, seed)
+    z = pl.concat(
+        [sample_normal(n, seed=s) for s in child_seeds],
+        rechunk=True,
+    )
+    total = n_simulations * n
+    idx = pl.arange(0, total, eager=True)
+    sim = idx // n
+    return pl.DataFrame(
+        {
+            "simulation": sim,
+            "seed": pl.Series("seed", child_seeds).gather(sim),
+            "step": idx % n,
+            "z": z,
+        }
+    )
+
 
 class Process(enum.Enum):
     """Built-in stochastic processes for :func:`monte_carlo`.
@@ -85,9 +117,10 @@ def monte_carlo(
     Returns
     -------
     pl.DataFrame
-        Columns ``simulation`` (int), ``step`` (int), and a value column whose
-        name depends on the process — ``price`` for GBM / FRW, ``value`` for
-        OU.
+        Columns ``simulation`` (int), ``seed`` (int), ``step`` (int), and a
+        value column whose name depends on the process — ``price`` for GBM /
+        FRW, ``value`` for OU.  The ``seed`` column contains the child seed
+        used for that simulation — constant within each simulation group.
 
     Notes
     -----
@@ -143,8 +176,8 @@ def _vectorized_gbm(
     n: int = 100,
     base_price: float = 100.0,
     drift: float = 0.0,
-    volatility: float = 0.01,
-    dt: float = 1.0,
+    volatility: float = 1.0,
+    dt: float = 1 / 252,
 ) -> pl.DataFrame:
     if n < 1:
         raise ValueError("n must be >= 1")
@@ -153,16 +186,12 @@ def _vectorized_gbm(
     mu_dt = (drift - 0.5 * volatility**2) * dt
     sigma_sqrt_dt = volatility * math.sqrt(dt)
 
-    total = n_simulations * n
-    z = sample_normal(total, seed=seed)
-    idx = pl.arange(0, total, eager=True)
-
     return (
-        pl.DataFrame({"simulation": idx // n, "step": idx % n, "z": z})
+        _noise_frame(n_simulations, n, seed=seed)
         .with_columns(
             _gbm_price_expr(log_base, mu_dt, sigma_sqrt_dt).over("simulation")
         )
-        .select("simulation", "step", "price")
+        .select("simulation", "seed", "step", "price")
     )
 
 
@@ -175,7 +204,7 @@ def _vectorized_ou(
     mu: float = 100.0,
     sigma: float = 1.0,
     x0: float | None = None,
-    dt: float = 1.0,
+    dt: float = 1 / 252,
 ) -> pl.DataFrame:
     if n < 1:
         raise ValueError("n must be >= 1")
@@ -185,16 +214,12 @@ def _vectorized_ou(
     beta = theta * mu * dt
     noise_scale = sigma * math.sqrt(dt)
 
-    total = n_simulations * n
-    z = sample_normal(total, seed=seed)
-    idx = pl.arange(0, total, eager=True)
-
     return (
-        pl.DataFrame({"simulation": idx // n, "step": idx % n, "z": z})
+        _noise_frame(n_simulations, n, seed=seed)
         .with_columns(
             _ou_value_expr(start, alpha, beta, noise_scale).over("simulation")
         )
-        .select("simulation", "step", "value")
+        .select("simulation", "seed", "step", "value")
     )
 
 
@@ -212,28 +237,19 @@ def _vectorized_frw(
 
     if hurst == 0.5:
         # Simple cumsum path — no FFT needed
-        total = n_simulations * n
-        z = sample_normal(total, seed=seed)
-        idx = pl.arange(0, total, eager=True)
         return (
-            pl.DataFrame(
-                {
-                    "simulation": idx // n,
-                    "step": idx % n,
-                    "z": z * step_size,
-                }
-            )
+            _noise_frame(n_simulations, n, seed=seed)
             .with_columns(
                 (
                     base_price
-                    + pl.col("z")
+                    + (pl.col("z") * step_size)
                     .cum_sum()
                     .shift(1)
                     .fill_null(0.0)
                     .over("simulation")
                 ).alias("price")
             )
-            .select("simulation", "step", "price")
+            .select("simulation", "seed", "step", "price")
         )
 
     from mktlib.data._random_walk import (
@@ -246,12 +262,16 @@ def _vectorized_frw(
     cov_row = _build_covariance_row(n, hurst)
     m = len(cov_row)  # 2n
 
-    # Derive two child seeds for re/im noise
-    seed_re, seed_im = _derive_seeds(seed)
-
-    total_noise = n_simulations * m
-    z_re_all = sample_normal(total_noise, seed=seed_re)
-    z_im_all = sample_normal(total_noise, seed=seed_im)
+    # Per-simulation child seeds → per-sim re/im seeds via _derive_seeds
+    child_seeds = _child_seeds(n_simulations, seed)
+    z_re_parts: list[pl.Series] = []
+    z_im_parts: list[pl.Series] = []
+    for cs in child_seeds:
+        s_re, s_im = _derive_seeds(cs)
+        z_re_parts.append(sample_normal(m, seed=s_re))
+        z_im_parts.append(sample_normal(m, seed=s_im))
+    z_re_all = pl.concat(z_re_parts, rechunk=True)
+    z_im_all = pl.concat(z_im_parts, rechunk=True)
 
     # Compute sqrt_eig once, then tile across simulations
     sqrt_eig = (
@@ -261,11 +281,14 @@ def _vectorized_frw(
     )
     sqrt_eig_tiled = pl.Series("sqrt_eig", sqrt_eig.to_list() * n_simulations)
 
+    total_noise = n_simulations * m
     idx = pl.arange(0, total_noise, eager=True)
+    seed_col = pl.Series("seed", child_seeds).gather(idx // m)
 
     df = pl.DataFrame(
         {
             "simulation": idx // m,
+            "seed": seed_col,
             "embed_idx": idx % m,
             "sqrt_eig": sqrt_eig_tiled,
             "z_re": z_re_all,
@@ -292,7 +315,7 @@ def _vectorized_frw(
             ).alias("price")
         )
         .rename({"embed_idx": "step"})
-        .select("simulation", "step", "price")
+        .select("simulation", "seed", "step", "price")
     )
 
 
@@ -303,8 +326,7 @@ def _loop(
     seed: int | None = None,
     **process_kwargs: Any,
 ) -> pl.DataFrame:
-    rng = random.Random(seed)
-    child_seeds = [rng.randrange(2**63) for _ in range(n_simulations)]
+    child_seeds = _child_seeds(n_simulations, seed)
 
     if isinstance(process, Process):
         match process:
@@ -326,10 +348,16 @@ def _loop(
     frames: list[pl.DataFrame] = []
     for i, s in enumerate(child_seeds):
         df = func(**process_kwargs, seed=s)
-        frames.append(df.with_columns(pl.lit(i).alias("simulation")))
+        frames.append(
+            df.with_columns(
+                pl.lit(i).alias("simulation"),
+                pl.lit(s).alias("seed"),
+            )
+        )
 
     result = pl.concat(frames)
     cols = result.columns
     return result.select(
-        ["simulation"] + [c for c in cols if c != "simulation"]
+        ["simulation", "seed"]
+        + [c for c in cols if c not in ("simulation", "seed")]
     )

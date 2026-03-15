@@ -19,25 +19,37 @@ Generate Synthetic Data
 -----------------------
 
 We generate 5 years of 1-minute OHLCV bars (~491k rows) by running
-``mktlib.data.geometric_brownian_motion`` at sub-minute resolution, then
-converting to OHLC bars with ``ticks_to_ohlcv``:
+``mktlib.data.geometric_brownian_motion`` at second-level resolution, then
+aggregating to 1-minute bars with ``ticks_to_ohlcv``.
+
+The ``dt`` parameter controls the time step in annualised units. The default
+``1/252`` gives one trading day per step. For 1-minute bars, set ``dt`` so
+each tick represents one second of trading time:
 
 .. code-block:: python
 
    from mktlib.data import geometric_brownian_motion, ticks_to_ohlcv
 
-   sub_steps = 10
-   n_bars = 5 * 252 * 390  # 5 years × 252 days × 390 minutes
+   # 1 tick = 1 second of US equity trading time
+   #   252 trading days × 6.5 hours × 3600 seconds
+   dt_1s = 1 / (252 * 6.5 * 3600)
+
+   n_days = 5 * 252          # 5 years of trading days
+   ticks_per_day = 390 * 60  # 390 minutes × 60 seconds
 
    gbm = geometric_brownian_motion(
-       n=n_bars * sub_steps + 1,
+       n=n_days * ticks_per_day + 1,
        base_price=100.0,
        drift=0.08,
-       volatility=0.20,
-       dt=1.0 / (252 * 390 * sub_steps),
+       volatility=1.0,
+       dt=dt_1s,
        seed=42,
    )
-   ohlcv = ticks_to_ohlcv(gbm, bar_size=sub_steps, seed=43)
+   ohlcv = ticks_to_ohlcv(gbm, bar_size=60, seed=43)  # 60 ticks → 1-minute bar
+
+Pass ``drift`` and ``volatility`` as annualised values — the function scales
+them internally via ``dt``. A ``volatility`` of ``1.0`` produces realistic
+intra-minute price variation for typical equity-like data.
 
 ``ticks_to_ohlcv`` takes any DataFrame with a numeric column (the output of
 any generator) and aggregates every ``bar_size`` steps into one OHLCV bar.
@@ -50,10 +62,6 @@ Bars that would be incomplete at the tail are dropped.
 The result has columns ``bar, open, high, low, close, volume``. Timestamp
 assignment is left to the caller — ``scripts/grid_search_sma.py`` shows how to
 add business-day minute timestamps on top.
-
-``geometric_brownian_motion`` implements the standard GBM process
-(dS = mu*S*dt + sigma*S*dW). By generating at ``sub_steps`` resolution per bar,
-we get realistic intra-bar price variation for high/low derivation.
 See :doc:`api/data` for the full data generation API.
 
 Define a Parameterized Strategy

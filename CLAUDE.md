@@ -73,8 +73,22 @@ When adding a new exchange:
 4. Run `pytest tests/scheduling/test_validation.py -v` and fix any discrepancies before merging
 
 
-## Versioning
+## Documentation
 
-Managed via `bump-my-version`. Both `[project] version` and `[tool.bumpversion] current_version` in `pyproject.toml` must stay in sync.
+- **README.md** — basic usage guide (install, quick examples per subpackage).
+- **Sphinx docs** (`docs/`) — includes everything in README plus advanced examples. Deployed to Read the Docs.
+- Keep both in sync: README changes should be reflected in Sphinx, Sphinx can have additional depth.
 
-Consumer repos (tradesignalcore) pin to git tags: `mktlib[reports] @ git+...@v0.2.1`.
+## Release Process
+
+1. Create PR with changes, including CHANGELOG.md update
+2. Bump version: `bump-my-version bump {patch|minor|major}` (updates `pyproject.toml` `[project] version` + `[tool.bumpversion] current_version`)
+3. Merge PR to main
+4. Tag main with the version:
+   ```bash
+   git fetch origin main
+   git tag v{X.Y.Z} origin/main
+   git push origin v{X.Y.Z}
+   ```
+
+Consumer repos (tradesignalcore) pin to git tags: `mktlib[reports] @ git+...@v0.7.0`.

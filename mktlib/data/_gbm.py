@@ -24,7 +24,7 @@ def geometric_brownian_motion(
     base_price: float = 100.0,
     drift: float = 0.0,
     volatility: float = 0.01,
-    dt: float = 1.0,
+    dt: float = 1 / 252,
     seed: int | None = None,
 ) -> pl.DataFrame:
     r"""Geometric Brownian motion price path.
@@ -43,7 +43,9 @@ def geometric_brownian_motion(
     volatility
         Annualised volatility :math:`\sigma`.
     dt
-        Time step size (e.g. ``1/252`` for daily steps in a yearly model).
+        Time step size in annualised units.  Defaults to ``1/252`` (one
+        trading day).  For sub-daily granularity, divide further — e.g.
+        ``1/(252*6.5*3600)`` for one-second ticks during US equity hours.
     seed
         RNG seed for reproducibility.
 

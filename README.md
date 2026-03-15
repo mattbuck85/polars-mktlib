@@ -677,8 +677,8 @@ walk = fractional_random_walk(1000, seed=42)
 # Trending path (Hurst > 0.5)
 trending = fractional_random_walk(1000, hurst=0.8, seed=42)
 
-# GBM price path with 5% drift, 20% annual vol
-gbm = geometric_brownian_motion(252, drift=0.05/252, volatility=0.20/252**0.5, seed=42)
+# GBM price path — 252 daily steps, 5% annualised drift, 20% annualised vol
+gbm = geometric_brownian_motion(252, drift=0.05, volatility=0.20, seed=42)
 
 # Mean-reverting process
 ou = ornstein_uhlenbeck(500, theta=0.7, mu=100.0, sigma=1.0, seed=42)
@@ -695,7 +695,7 @@ sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42
 | `ornstein_uhlenbeck` | Mean-reverting: dx = θ(μ−x)dt + σdW | `step`, `value` |
 | `monte_carlo` | N simulations of any generator | `simulation`, `step`, ... |
 
-For details on the Davies-Harte circulant embedding algorithm, see the [Sphinx data docs](https://polars-mktlib.readthedocs.io/en/latest/api/data.html#fractional-brownian-motion-fbm).
+The `dt` parameter defaults to `1/252` (one trading day in annualised units). Pass `drift` and `volatility` as annualised values directly — the function scales them internally. For sub-daily data generation (e.g. 1-minute OHLCV bars), see the [advanced usage guide](https://polars-mktlib.readthedocs.io/en/latest/advanced.html).
 
 ## Development
 

@@ -39,40 +39,29 @@ def ticks_to_ohlcv(
     if column not in ticks.columns:
         raise ValueError(f"ticks DataFrame must contain a {column!r} column")
 
-    raw = ticks[column]
-    n_bars = (len(raw) - 1) // bar_size
+    raw = ticks.select(pl.col(column)).with_row_index("_idx")
+    n_bars = len(raw) // bar_size
     if n_bars < 1:
         raise ValueError(
             f"Not enough rows for even 1 bar: got {len(raw)} rows with bar_size={bar_size}"
         )
 
-    # Truncate to exact coverage
-    raw = raw.slice(0, n_bars * bar_size + 1)
+    # Truncate to exact coverage (drop truly incomplete tail)
+    raw = raw.head(n_bars * bar_size)
 
-    # Open/close at bar boundaries
-    open_idx = list(range(0, n_bars * bar_size, bar_size))
-    close_idx = [i + bar_size for i in open_idx]
-    open_arr = raw.gather(open_idx)
-    close_arr = raw.gather(close_idx)
-
-    # High/low per bar
-    highs: list[float] = []
-    lows: list[float] = []
-    for i in range(n_bars):
-        bar_slice = raw.slice(i * bar_size, bar_size + 1)
-        highs.append(bar_slice.max())  # type: ignore[arg-type]
-        lows.append(bar_slice.min())  # type: ignore[arg-type]
-
-    data: dict[str, object] = {
-        "bar": range(n_bars),
-        "open": open_arr,
-        "high": highs,
-        "low": lows,
-        "close": close_arr,
-    }
+    result = (
+        raw.with_columns((pl.col("_idx") // bar_size).alias("bar"))
+        .group_by("bar", maintain_order=True)
+        .agg(
+            pl.col(column).first().alias("open"),
+            pl.col(column).max().alias("high"),
+            pl.col(column).min().alias("low"),
+            pl.col(column).last().alias("close"),
+        )
+    )
 
     if volume:
         vol = sample_lognormal(n_bars, mu=10.0, sigma=1.0, seed=seed)
-        data["volume"] = vol.cast(pl.Int64)
+        result = result.with_columns(vol.cast(pl.Int64).alias("volume"))
 
-    return pl.DataFrame(data)
+    return result
