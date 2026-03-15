@@ -55,9 +55,12 @@ Usage:
 
    from mktlib.data import geometric_brownian_motion, ticks_to_ohlcv
 
-   # Generate tick-level data, then aggregate to OHLCV bars
-   ticks = geometric_brownian_motion(n=25200, seed=42)  # 1 tick/sec for 7 hours
-   ohlcv = ticks_to_ohlcv(ticks, bar_size=60)           # 1-minute bars
+   # Generate tick-level data at 1-second resolution, then aggregate to 1-minute bars
+   dt_1s = 1 / (252 * 6.5 * 3600)  # 1 second in annualised units
+   ticks = geometric_brownian_motion(n=23_400, volatility=1.0, dt=dt_1s, seed=42)
+   ohlcv = ticks_to_ohlcv(ticks, bar_size=60, seed=43)  # 60 seconds → 1-minute bar
+
+See :doc:`/advanced` for a full walkthrough generating multi-year 1-minute OHLCV data.
 
 Monte Carlo
 -----------

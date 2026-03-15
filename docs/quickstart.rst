@@ -224,8 +224,8 @@ Generate stochastic process data for testing and simulation (requires ``pip inst
        ornstein_uhlenbeck,
    )
 
-   # GBM price path
-   gbm = geometric_brownian_motion(252, drift=0.05/252, volatility=0.20/252**0.5, seed=42)
+   # GBM price path — 252 daily steps, 5% annualised drift, 20% annualised vol
+   gbm = geometric_brownian_motion(252, drift=0.05, volatility=0.20, seed=42)
 
    # Mean-reverting process
    ou = ornstein_uhlenbeck(500, theta=0.7, mu=100.0, sigma=1.0, seed=42)

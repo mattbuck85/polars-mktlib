@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import polars as pl
 import pytest
 
 from mktlib.data import (
@@ -16,8 +17,8 @@ class TestMonteCarlo:
         df = monte_carlo(
             geometric_brownian_motion, n_simulations=10, n=50, seed=42
         )
-        assert df.shape == (500, 3)  # 10 sims * 50 steps
-        assert df.columns == ["simulation", "step", "price"]
+        assert df.shape == (500, 4)  # 10 sims * 50 steps
+        assert df.columns == ["simulation", "seed", "step", "price"]
 
     def test_simulation_column_values(self):
         df = monte_carlo(
@@ -46,8 +47,8 @@ class TestMonteCarlo:
 
     def test_works_with_ou(self):
         df = monte_carlo(ornstein_uhlenbeck, n_simulations=3, n=100, seed=42)
-        assert df.columns == ["simulation", "step", "value"]
-        assert df.shape == (300, 3)
+        assert df.columns == ["simulation", "seed", "step", "value"]
+        assert df.shape == (300, 4)
 
     def test_passes_kwargs(self):
         df = monte_carlo(
@@ -69,8 +70,8 @@ class TestMonteCarlo:
 class TestMonteCarloEnum:
     def test_gbm_enum_shape(self):
         df = monte_carlo(Process.GBM, n_simulations=10, n=50, seed=42)
-        assert df.shape == (500, 3)
-        assert df.columns == ["simulation", "step", "price"]
+        assert df.shape == (500, 4)
+        assert df.columns == ["simulation", "seed", "step", "price"]
 
     def test_gbm_enum_simulation_values(self):
         df = monte_carlo(Process.GBM, n_simulations=5, n=20, seed=42)
@@ -102,17 +103,17 @@ class TestMonteCarloEnum:
 
     def test_ou_enum(self):
         df = monte_carlo(Process.OU, n_simulations=3, n=100, seed=42)
-        assert df.columns == ["simulation", "step", "value"]
-        assert df.shape == (300, 3)
+        assert df.columns == ["simulation", "seed", "step", "value"]
+        assert df.shape == (300, 4)
 
     def test_frw_enum(self):
         df = monte_carlo(Process.FRW, n_simulations=3, n=100, seed=42)
-        assert df.columns == ["simulation", "step", "price"]
-        assert df.shape == (300, 3)
+        assert df.columns == ["simulation", "seed", "step", "price"]
+        assert df.shape == (300, 4)
 
     def test_gbm_enum_single_point(self):
         df = monte_carlo(Process.GBM, n_simulations=5, n=1, seed=42)
-        assert df.shape == (5, 3)
+        assert df.shape == (5, 4)
         assert all(
             p == pytest.approx(100.0) for p in df["price"].to_list()
         )
@@ -174,3 +175,30 @@ class TestFrwVectorized:
         )
         first_prices = df.filter(step=0)["price"].to_list()
         assert all(p == pytest.approx(250.0) for p in first_prices)
+
+
+_SEED_CASES = [
+    pytest.param(Process.GBM, {}, id="gbm"),
+    pytest.param(Process.OU, {}, id="ou"),
+    pytest.param(Process.FRW, {"hurst": 0.5}, id="frw_h05"),
+    pytest.param(Process.FRW, {"hurst": 0.7}, id="frw_h07"),
+    pytest.param(geometric_brownian_motion, {}, id="loop"),
+]
+
+
+class TestSeedColumn:
+    """Every simulation must carry exactly one child seed."""
+
+    @pytest.mark.parametrize("process, kwargs", _SEED_CASES)
+    def test_one_seed_per_simulation(self, process, kwargs):
+        df = monte_carlo(process, n_simulations=5, n=20, seed=42, **kwargs)
+        seeds_per_sim = df.group_by("simulation").agg(
+            pl.col("seed").n_unique().alias("n_seeds")
+        )
+        assert (seeds_per_sim["n_seeds"] == 1).all()
+
+    @pytest.mark.parametrize("process, kwargs", _SEED_CASES)
+    def test_different_simulations_have_different_seeds(self, process, kwargs):
+        df = monte_carlo(process, n_simulations=5, n=20, seed=42, **kwargs)
+        unique_seeds = df["seed"].unique()
+        assert len(unique_seeds) == 5

@@ -12,7 +12,7 @@ def ornstein_uhlenbeck(
     mu: float = 100.0,
     sigma: float = 1.0,
     x0: float | None = None,
-    dt: float = 1.0,
+    dt: float = 1 / 252,
     seed: int | None = None,
 ) -> pl.DataFrame:
     r"""Discrete Ornstein-Uhlenbeck process via vectorized Euler-Maruyama.
@@ -34,7 +34,9 @@ def ornstein_uhlenbeck(
     x0
         Starting value.  Defaults to *mu* (start at equilibrium).
     dt
-        Time step size.
+        Time step size in annualised units.  Defaults to ``1/252`` (one
+        trading day).  For sub-daily granularity, divide further — e.g.
+        ``1/(252*6.5*3600)`` for one-second ticks during US equity hours.
     seed
         RNG seed for reproducibility.
 

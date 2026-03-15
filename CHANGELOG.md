@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1
+
+### Changed
+
+- **`ticks_to_ohlcv` vectorised** — replaced multi-step `shift(-1)` + `max_horizontal` pipeline with a single `group_by` aggregation using `first`/`max`/`min`/`last`, improving performance and eliminating the N+1 tick requirement.
+- **GBM/OU annualised defaults** — `geometric_brownian_motion` and `ornstein_uhlenbeck` now default to `dt=1/252` (one trading day). Pass `drift` and `volatility` as annualised values directly; the function scales them internally.
+- **Monte Carlo deterministic seeding** — `monte_carlo()` now derives per-simulation child seeds from the master seed via `random.Random`, making results fully reproducible. The `seed` column is included in the output for traceability.
+- **Docs updated** — README, Sphinx quickstart, and advanced guide now use annualised conventions for all data generation examples. Added sub-daily `dt` guidance.
+
 ## 0.7.0
 
 ### Added

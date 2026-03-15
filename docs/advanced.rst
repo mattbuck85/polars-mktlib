@@ -19,25 +19,75 @@ Generate Synthetic Data
 -----------------------
 
 We generate 5 years of 1-minute OHLCV bars (~491k rows) by running
-``mktlib.data.geometric_brownian_motion`` at sub-minute resolution, then
-converting to OHLC bars with ``ticks_to_ohlcv``:
+``mktlib.data.geometric_brownian_motion`` at second-level resolution, then
+aggregating to 1-minute bars with ``ticks_to_ohlcv``.
+
+The ``dt`` parameter controls the time step in annualised units. The default
+``1/252`` gives one trading day per step. For 1-minute bars, set ``dt`` so
+each tick represents one second of trading time:
 
 .. code-block:: python
 
    from mktlib.data import geometric_brownian_motion, ticks_to_ohlcv
 
-   sub_steps = 10
-   n_bars = 5 * 252 * 390  # 5 years × 252 days × 390 minutes
+   # 1 tick = 1 second of US equity trading time
+   #   252 trading days × 6.5 hours × 3600 seconds
+   dt_1s = 1 / (252 * 6.5 * 3600)
+
+   n_days = 5 * 252          # 5 years of trading days
+   ticks_per_day = 390 * 60  # 390 minutes × 60 seconds
 
    gbm = geometric_brownian_motion(
-       n=n_bars * sub_steps + 1,
+       n=n_days * ticks_per_day,
        base_price=100.0,
        drift=0.08,
-       volatility=0.20,
-       dt=1.0 / (252 * 390 * sub_steps),
+       volatility=1.0,
+       dt=dt_1s,
        seed=42,
    )
-   ohlcv = ticks_to_ohlcv(gbm, bar_size=sub_steps, seed=43)
+   ohlcv = ticks_to_ohlcv(gbm, bar_size=60, seed=43)  # 60 ticks → 1-minute bar
+
+Pass ``drift`` and ``volatility`` as annualised values — the function scales
+them internally via ``dt``.
+
+.. note:: **Understanding GBM drift and volatility**
+
+   The GBM log-return per step is ``(μ − ½σ²)·dt + σ·√dt·Z``. Two quantities
+   matter for intuition:
+
+   - **Expected price** after 1 year: ``S₀ · exp(μ)`` — drift alone determines
+     the *mean* across many simulated paths.
+   - **Median price** after 1 year: ``S₀ · exp(μ − ½σ²)`` — the Itô correction
+     ``−½σ²`` penalises high volatility. Because ``exp()`` is convex, a few
+     explosive upward paths pull the mean up while the *majority* of paths drift
+     downward. With ``drift=0.08, volatility=1.0`` the median path declines
+     ~34%/yr even though the average across paths grows at 8%.
+
+   Quick reference for common parameter regimes (``drift=0.08``):
+
+   .. list-table::
+      :header-rows: 1
+
+      * - Regime
+        - volatility
+        - Median annual return
+        - Per-bar σ (1 min)
+      * - Calm equity (SPY-like)
+        - 0.20
+        - ~+6%
+        - ~0.05%
+      * - Volatile equity
+        - 0.40
+        - ~0%
+        - ~0.10%
+      * - Stress-test / noisy
+        - 1.00
+        - ~−34%
+        - ~0.25%
+
+   **Why σ = 1.0 here:** the grid search intentionally uses high volatility to
+   create noisy, challenging price action that separates good indicator
+   parameters from bad ones. For realistic equity simulation, use 0.15–0.30.
 
 ``ticks_to_ohlcv`` takes any DataFrame with a numeric column (the output of
 any generator) and aggregates every ``bar_size`` steps into one OHLCV bar.
@@ -50,10 +100,6 @@ Bars that would be incomplete at the tail are dropped.
 The result has columns ``bar, open, high, low, close, volume``. Timestamp
 assignment is left to the caller — ``scripts/grid_search_sma.py`` shows how to
 add business-day minute timestamps on top.
-
-``geometric_brownian_motion`` implements the standard GBM process
-(dS = mu*S*dt + sigma*S*dW). By generating at ``sub_steps`` resolution per bar,
-we get realistic intra-bar price variation for high/low derivation.
 See :doc:`api/data` for the full data generation API.
 
 Define a Parameterized Strategy
