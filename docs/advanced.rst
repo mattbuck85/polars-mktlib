@@ -38,7 +38,7 @@ each tick represents one second of trading time:
    ticks_per_day = 390 * 60  # 390 minutes × 60 seconds
 
    gbm = geometric_brownian_motion(
-       n=n_days * ticks_per_day + 1,
+       n=n_days * ticks_per_day,
        base_price=100.0,
        drift=0.08,
        volatility=1.0,
@@ -48,8 +48,46 @@ each tick represents one second of trading time:
    ohlcv = ticks_to_ohlcv(gbm, bar_size=60, seed=43)  # 60 ticks → 1-minute bar
 
 Pass ``drift`` and ``volatility`` as annualised values — the function scales
-them internally via ``dt``. A ``volatility`` of ``1.0`` produces realistic
-intra-minute price variation for typical equity-like data.
+them internally via ``dt``.
+
+.. note:: **Understanding GBM drift and volatility**
+
+   The GBM log-return per step is ``(μ − ½σ²)·dt + σ·√dt·Z``. Two quantities
+   matter for intuition:
+
+   - **Expected price** after 1 year: ``S₀ · exp(μ)`` — drift alone determines
+     the *mean* across many simulated paths.
+   - **Median price** after 1 year: ``S₀ · exp(μ − ½σ²)`` — the Itô correction
+     ``−½σ²`` penalises high volatility. Because ``exp()`` is convex, a few
+     explosive upward paths pull the mean up while the *majority* of paths drift
+     downward. With ``drift=0.08, volatility=1.0`` the median path declines
+     ~34%/yr even though the average across paths grows at 8%.
+
+   Quick reference for common parameter regimes (``drift=0.08``):
+
+   .. list-table::
+      :header-rows: 1
+
+      * - Regime
+        - volatility
+        - Median annual return
+        - Per-bar σ (1 min)
+      * - Calm equity (SPY-like)
+        - 0.20
+        - ~+6%
+        - ~0.05%
+      * - Volatile equity
+        - 0.40
+        - ~0%
+        - ~0.10%
+      * - Stress-test / noisy
+        - 1.00
+        - ~−34%
+        - ~0.25%
+
+   **Why σ = 1.0 here:** the grid search intentionally uses high volatility to
+   create noisy, challenging price action that separates good indicator
+   parameters from bad ones. For realistic equity simulation, use 0.15–0.30.
 
 ``ticks_to_ohlcv`` takes any DataFrame with a numeric column (the output of
 any generator) and aggregates every ``bar_size`` steps into one OHLCV bar.

@@ -39,7 +39,7 @@ def generate_minute_ohlcv(
     minutes_per_day: int = 390,
     start_price: float = 100.0,
     annual_drift: float = 0.08,
-    annual_vol: float = 1.0,
+    annual_vol: float = 1.0,  # intentionally high — see docs/advanced.rst
     seed: int = 42,
 ) -> pl.DataFrame:
     """Generate minute-resolution OHLCV from ``mktlib.data.geometric_brownian_motion``.
@@ -53,7 +53,7 @@ def generate_minute_ohlcv(
 
     # Generate a single GBM path at second-level resolution
     gbm = geometric_brownian_motion(
-        n=n_bars * ticks_per_bar + 1,
+        n=n_bars * ticks_per_bar,
         base_price=start_price,
         drift=annual_drift,
         volatility=annual_vol,
@@ -106,8 +106,12 @@ class SmaCross:
 
     def init(self, df: pl.DataFrame) -> pl.DataFrame:
         return df.with_columns(
-            plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
-            plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+            plta.sma(pl.col("close"), timeperiod=self.fast_period).alias(
+                "fast_sma"
+            ),
+            plta.sma(pl.col("close"), timeperiod=self.slow_period).alias(
+                "slow_sma"
+            ),
         )
 
     def entry(self) -> Crossover:
@@ -128,8 +132,12 @@ class SmaCrossWithExits:
 
     def init(self, df: pl.DataFrame) -> pl.DataFrame:
         return df.with_columns(
-            plta.sma(pl.col("close"), timeperiod=self.fast_period).alias("fast_sma"),
-            plta.sma(pl.col("close"), timeperiod=self.slow_period).alias("slow_sma"),
+            plta.sma(pl.col("close"), timeperiod=self.fast_period).alias(
+                "fast_sma"
+            ),
+            plta.sma(pl.col("close"), timeperiod=self.slow_period).alias(
+                "slow_sma"
+            ),
         )
 
     def entry(self) -> Crossover:
@@ -220,7 +228,9 @@ def main() -> None:
     print(f"  {df.shape[0]:,} bars\n")
 
     # Fetch the average 3-month T-bill yield for the period
-    rf = get_risk_free_rate(df["date"].min(), df["date"].max())
+    rf = get_risk_free_rate(
+        df["date"].dt.date().min(), df["date"].dt.date().max()
+    )
     print(f"Risk-free rate for period: {rf:.4f}\n")
 
     # Stage 1: SMA period search
