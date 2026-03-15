@@ -4,7 +4,7 @@ Advanced Usage: Grid Search Optimization
 This guide walks through a realistic end-to-end workflow: optimizing an SMA
 crossover strategy by grid-searching over indicator periods and exit
 parameters, using ``mktlib.backtest``, ``mktlib.metrics``, and
-`polars-talib <https://github.com/pola-rs/polars-talib>`_.
+`polars-talib <https://github.com/Yvictor/polars_ta_extension>`_.
 
 Prerequisites:
 
