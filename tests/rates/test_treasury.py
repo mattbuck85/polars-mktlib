@@ -755,9 +755,7 @@ class TestGetTreasuryRates:
                 date(2024, 1, 1), date(2024, 1, 31), TreasuryRate.THREE_MONTH
             )
 
-        assert df.columns == ["date", "rate"]
         assert df.shape == (3, 2)
-        assert df.dtypes == [pl.Date, pl.Float64]
         assert df["rate"][0] == pytest.approx(0.054)
 
     def test_multi_instrument(self):
@@ -810,7 +808,6 @@ class TestGetTreasuryRates:
             )
 
         assert df.shape == (0, 2)
-        assert df.dtypes == [pl.Date, pl.Float64]
 
     def test_single_instrument_missing_column(self):
         """Request an instrument not present in data → empty 2-col df."""
@@ -827,7 +824,6 @@ class TestGetTreasuryRates:
             )
 
         assert df.shape == (0, 2)
-        assert df.dtypes == [pl.Date, pl.Float64]
 
     def test_multi_instrument_empty_range(self):
         """Multi-instrument with no data in range → empty wide df."""
@@ -845,7 +841,6 @@ class TestGetTreasuryRates:
 
         assert df.shape == (0, 3)
         assert df.columns == ["date", "three_month", "ten_year"]
-        assert df.dtypes == [pl.Date, pl.Float64, pl.Float64]
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +855,6 @@ class TestGetTreasurySpread:
         ):
             df = get_treasury_spread(date(2024, 1, 1), date(2024, 1, 31))
 
-        assert df.columns == ["date", "spread"]
         assert df.shape[0] == 3
         # Jan 2: 10Y=0.0388, 2Y=0.0432 → spread = -0.0044
         assert df["spread"][0] == pytest.approx(0.0388 - 0.0432)

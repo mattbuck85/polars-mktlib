@@ -22,11 +22,13 @@ markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 mccabe==0.7.0
 mdurl==0.1.2
+mypy_extensions==1.1.0
 narwhals==2.18.0
 nodeenv==1.10.0
 numpy==2.4.3
 packaging==26.0
 pandas==3.0.1
+pandera==0.29.0
 platformdirs==4.9.4
 plotly==6.6.0
 plotly-stubs==0.1.2
@@ -58,6 +60,8 @@ rich-click==1.9.7
 six==1.17.0
 tomlkit==0.14.0
 toolz==1.1.0
+typeguard==4.5.1
+typing-inspect==0.9.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2025.3

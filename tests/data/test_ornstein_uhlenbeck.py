@@ -10,7 +10,6 @@ class TestOrnsteinUhlenbeck:
     def test_output_shape_and_columns(self):
         df = ornstein_uhlenbeck(100, seed=42)
         assert df.shape == (100, 2)
-        assert df.columns == ["step", "value"]
 
     def test_starts_at_mu_by_default(self):
         df = ornstein_uhlenbeck(10, mu=50.0, seed=1)

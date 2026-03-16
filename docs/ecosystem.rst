@@ -13,9 +13,9 @@ Polars Plugins (mktlib dependencies)
    circulant embedding.
 
 `polars-sdist <https://github.com/mattbuck85/polars-sdist>`_
-   Polars plugin wrapping Rust's `rand_distr <https://docs.rs/rand_distr>`_
-   for statistical distribution sampling (normal, lognormal, uniform, etc.)
-   as Polars expressions.
+   Polars plugin wrapping `statrs <https://github.com/statrs-dev/statrs>`_
+   (PDF/CDF/PPF) and `rand_distr <https://docs.rs/rand_distr>`_ (sampling)
+   for statistical distributions as Polars expressions.
    Used by :mod:`mktlib.data` generators and ``ticks_to_ohlcv`` volume
    synthesis.
 

@@ -12,7 +12,7 @@ Financial market toolkit built entirely on Polars.
 
 📦 **Lightweight** — pure Polars throughout, including synthetic data generation via Rust-native plugins. No pandas, no NumPy, no heavy ML stack
 
-🧪 **Well tested** — cross-validated exchange calendars, property-based OHLCV checks, and full backtest parity tests across engines
+🧪 **Well tested** — cross-validated exchange calendars, full backtest parity tests across engines, and pandera schema validation on every DataFrame-returning function to guarantee no silent column/dtype regressions
 
 🧰 **Swiss-army knife** — scheduling, rates, metrics, backtesting, reporting, and data generation in one package. Great for learning, prototyping, or production
 

@@ -11,7 +11,6 @@ class TestTicksToOhlcv:
         gbm = geometric_brownian_motion(100, seed=42)
         df = ticks_to_ohlcv(gbm, bar_size=10, seed=1)
         assert df.shape == (10, 6)
-        assert df.columns == ["bar", "open", "high", "low", "close", "volume"]
 
     def test_ohlc_consistency(self):
         gbm = geometric_brownian_motion(200, seed=7)
@@ -37,7 +36,7 @@ class TestTicksToOhlcv:
     def test_no_volume_column(self):
         gbm = geometric_brownian_motion(100, seed=42)
         df = ticks_to_ohlcv(gbm, bar_size=10, volume=False)
-        assert df.columns == ["bar", "open", "high", "low", "close"]
+        assert "volume" not in df.columns
 
     def test_reproducibility(self):
         gbm = geometric_brownian_motion(100, seed=42)
@@ -82,7 +81,6 @@ class TestTicksToOhlcv:
         ou = ornstein_uhlenbeck(100, seed=42)
         df = ticks_to_ohlcv(ou, bar_size=10, column="value", seed=1)
         assert df.shape == (10, 6)
-        assert df.columns == ["bar", "open", "high", "low", "close", "volume"]
         for row in df.iter_rows(named=True):
             assert row["high"] >= max(row["open"], row["close"])
             assert row["low"] <= min(row["open"], row["close"])
