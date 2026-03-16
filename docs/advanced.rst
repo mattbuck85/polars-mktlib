@@ -163,7 +163,9 @@ and score by Sharpe ratio:
 
    import itertools
    from mktlib.backtest import run
-   from mktlib.metrics import sharpe, cumulative_return  # sharpe accepts rf= kwarg
+   from mktlib.metrics import sharpe, cumulative_return
+
+   MINUTES_PER_YEAR = 252 * 390  # ppy for minute-bar returns
 
    fast_range = range(5, 55, 5)
    slow_range = range(20, 210, 10)
@@ -180,7 +182,7 @@ and score by Sharpe ratio:
        results.append({
            "fast_period": fast,
            "slow_period": slow,
-           "sharpe": round(sharpe(ret, rf=rf), 4),
+           "sharpe": round(sharpe(ret, ppy=MINUTES_PER_YEAR, rf=rf), 4),
            "cumulative_return": round(cumulative_return(ret), 4),
            "n_trades": len(result.trades),
        })
@@ -253,7 +255,7 @@ Now grid-search TP/SL percentages with the best SMA periods fixed:
        results.append({
            "tp_pct": tp_pct,
            "sl_pct": sl_pct,
-           "sharpe": round(sharpe(ret, rf=rf), 4),
+           "sharpe": round(sharpe(ret, ppy=MINUTES_PER_YEAR, rf=rf), 4),
            "cumulative_return": round(cumulative_return(ret), 4),
            "n_trades": len(result.trades),
        })
