@@ -36,6 +36,27 @@ pytest tests/scheduling/ -v
 
 All network calls in tests are mocked via `unittest.mock.patch` on `urlopen`. The `_clear_treasury_cache` autouse fixture in `tests/rates/test_treasury.py` resets module state between tests.
 
+### DataFrame Schema Validation
+
+Every public function that returns a `pl.DataFrame` **must** have a corresponding pandera schema test in `tests/test_schema_{pkg}.py`. This guarantees DataFrame column names, dtypes, and value constraints don't silently break across releases.
+
+**Structure:**
+- `tests/schemas/{pkg}.py` — `DataFrameModel` subclasses defining column names, exact dtypes, and value constraints (e.g. `price > 0`, `bars_held >= 0`)
+- `tests/test_schema_{pkg}.py` — calls each function with small inputs, validates output against its schema
+- Cross-column invariants (e.g. OHLC ordering, `exit_date >= entry_date`) are separate assertions in the test functions
+
+**When adding/modifying a function that returns a DataFrame:**
+1. Add or update the schema in `tests/schemas/{pkg}.py`
+2. Add a test in `tests/test_schema_{pkg}.py` that calls the function and validates against the schema
+3. If the function's output columns, dtypes, or constraints change, update the schema first — a failing schema test is the signal that a breaking change happened
+
+**Conventions:**
+- Use exact Polars dtypes where they differ from `int`/`float` defaults (e.g. `pl.UInt32` for `bar`, `pl.Int32` for `_position`, `pl.Int8` for `month`)
+- Use `pa.Field(alias="...")` for Python-keyword column names (e.g. `return`)
+- Use `strict=False` in `Config` when schemas should allow extra columns (e.g. `SignalsSchemaBase`)
+- For dynamic column names (e.g. multi-instrument rates), use helper assertion functions instead of `DataFrameModel`
+- pandera is a `[dev]` dependency only — never import it in `mktlib/`
+
 ## Package Data
 
 | Path | Declared in |

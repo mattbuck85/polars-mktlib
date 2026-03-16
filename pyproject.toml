@@ -35,6 +35,7 @@ dev = [
     "bump-my-version",
     "exchange-calendars",
     "jinja2>=3.1",
+    "pandera[polars]",
     "plotly>=6.0",
     "plotly-stubs",
     "polars-sdist>=0.1.1",

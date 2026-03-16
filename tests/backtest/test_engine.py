@@ -81,7 +81,6 @@ def re_entry_df() -> pl.DataFrame:
 class TestRun:
     def test_returns_shape(self, ohlcv: pl.DataFrame) -> None:
         result = run(ohlcv, SimpleCrossStrategy())
-        assert result.returns.columns == ["date", "return"]
         assert result.returns.height == ohlcv.height
 
     def test_signals_columns(self, ohlcv: pl.DataFrame) -> None:
@@ -1011,8 +1010,6 @@ class TestMultiSymbol:
         df = _make_multi_symbol_df()
         result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
         aapl = result["AAPL"]
-        assert aapl.returns.columns == ["date", "return"]
-        assert aapl.trades.columns == ["entry_date", "exit_date", "pnl", "bars_held"]
 
     def test_symbols(self) -> None:
         """result.symbols returns ordered list of symbol keys."""

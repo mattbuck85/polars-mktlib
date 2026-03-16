@@ -91,7 +91,6 @@ class TestValidDays:
     def test_returns_polars_series(self, nyse):
         days = nyse.valid_days("2024-01-02", "2024-01-05")
         assert isinstance(days, pl.Series)
-        assert days.dtype == pl.Date
 
     def test_string_and_date_args(self, nyse):
         s1 = nyse.valid_days("2024-06-01", "2024-06-30")
