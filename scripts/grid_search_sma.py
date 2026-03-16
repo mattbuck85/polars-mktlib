@@ -28,6 +28,8 @@ from mktlib.data import geometric_brownian_motion, ticks_to_ohlcv
 from mktlib.metrics import cumulative_return, sharpe
 from mktlib.rates import get_risk_free_rate
 
+_MINUTES_PER_YEAR = 252 * 390  # trading minutes in a year
+
 # ---------------------------------------------------------------------------
 # 1. Generate synthetic 1-minute OHLCV data
 # ---------------------------------------------------------------------------
@@ -156,8 +158,8 @@ class SmaCrossWithExits:
 
 def search_sma_periods(df: pl.DataFrame, rf: float) -> pl.DataFrame:
     """Grid search over fast/slow SMA periods, scored by Sharpe ratio."""
-    fast_range = range(5, 55, 5)
-    slow_range = range(20, 210, 10)
+    fast_range = range(5, 100, 5)
+    slow_range = range(20, 250, 10)
 
     results: list[dict[str, object]] = []
     for fast, slow in itertools.product(fast_range, slow_range):
@@ -172,7 +174,7 @@ def search_sma_periods(df: pl.DataFrame, rf: float) -> pl.DataFrame:
             {
                 "fast_period": fast,
                 "slow_period": slow,
-                "sharpe": round(sharpe(ret, rf=rf), 4),
+                "sharpe": round(sharpe(ret, ppy=_MINUTES_PER_YEAR, rf=rf), 4),
                 "cumulative_return": round(cumulative_return(ret), 4),
                 "n_trades": len(result.trades),
             }
@@ -190,8 +192,8 @@ def search_tp_sl(
     df: pl.DataFrame, best_fast: int, best_slow: int, rf: float
 ) -> pl.DataFrame:
     """Grid search over TP/SL pcts with fixed SMA periods."""
-    tp_range = [i / 10 for i in range(1, 11)]  # 0.1% to 1.0% step 0.1%
-    sl_range = [i / 10 for i in range(1, 11)]  # 0.1% to 1.0% step 0.1%
+    tp_range = [i / 10 for i in range(0, 11)]  # 0.1% to 1.0% step 0.1%
+    sl_range = [i / 10 for i in range(0, 11)]  # 0.1% to 1.0% step 0.1%
 
     results: list[dict[str, object]] = []
     for tp_pct, sl_pct in itertools.product(tp_range, sl_range):
@@ -208,7 +210,7 @@ def search_tp_sl(
             {
                 "tp_pct": tp_pct,
                 "sl_pct": sl_pct,
-                "sharpe": round(sharpe(ret, rf=rf), 4),
+                "sharpe": round(sharpe(ret, ppy=_MINUTES_PER_YEAR, rf=rf), 4),
                 "cumulative_return": round(cumulative_return(ret), 4),
                 "n_trades": len(result.trades),
             }
