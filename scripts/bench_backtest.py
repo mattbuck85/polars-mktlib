@@ -100,26 +100,20 @@ def main() -> None:
     t_bt = time.perf_counter() - t0
     print(f"Backtest engine:  {t_bt:.3f}s")
 
-    # 3b. Run with calendar (prefilter mode)
+    # 3b. Run with calendar
     from mktlib.scheduling import get_calendar
 
     cal = get_calendar("XNYS")
     t0 = time.perf_counter()
-    result_cal = run(df, strategy, calendar=cal, prefilter_market_data=True)
+    result_cal = run(df, strategy, calendar=cal)
     t_cal = time.perf_counter() - t0
-    print(f"Backtest + calendar (prefilter): {t_cal:.3f}s  ({result_cal.signals.height:,} bars after filter)")
+    print(f"Backtest + calendar: {t_cal:.3f}s  ({result_cal.signals.height:,} bars after filter)")
 
     # 3c. Run with calendar + flatten_eod
     t0 = time.perf_counter()
-    result_flat = run(df, strategy, calendar=cal, prefilter_market_data=True, flatten_eod=True)
+    result_flat = run(df, strategy, calendar=cal, flatten_eod=True)
     t_flat = time.perf_counter() - t0
     print(f"Backtest + flatten_eod:  {t_flat:.3f}s  ({result_flat.trades.height:,} trades)")
-
-    # 3d. Run with calendar (mask mode)
-    t0 = time.perf_counter()
-    result_mask = run(df, strategy, calendar=cal, prefilter_market_data=False)
-    t_mask = time.perf_counter() - t0
-    print(f"Backtest + calendar (mask mode): {t_mask:.3f}s")
 
     # 4. Summary stats
     rets = result.returns["return"]
@@ -139,8 +133,11 @@ def main() -> None:
 
     # 5. Lookahead bias spot-check
     if n_trades > 0:
+        # Find first entry signal bar via _entry column
         signal_idx_s = result.signals.with_row_index("_idx").filter(
-            pl.col("_entry_clean")
+            pl.col("_entry").fill_null(False)
+            & (pl.col("_position") == 1)
+            & (pl.col("_position").shift(1).fill_null(0) == 0)
         )["_idx"]
         if signal_idx_s.len() > 0:
             sig_idx = signal_idx_s[0]

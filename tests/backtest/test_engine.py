@@ -1050,7 +1050,7 @@ class TestMultiSymbol:
         """Combined .trades has [symbol, entry_date, exit_date, pnl, bars_held]."""
         df = _make_multi_symbol_df()
         result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
-        assert result.trades.columns == ["symbol", "entry_date", "exit_date", "pnl", "bars_held"]
+        assert result.trades.columns == ["symbol", "entry_date", "exit_date", "side", "pnl", "bars_held"]
 
     def test_independent_positions(self) -> None:
         """Two symbols produce independent position sequences."""
@@ -1323,3 +1323,377 @@ class TestFlattenEodMissingData:
         assert positions[2] == 0, "Day 1 session-last should flatten"
         # Day 2: 15:00 is the last bar in data → should be treated as session-last
         assert positions[5] == 0, "Day 2 actual last bar should flatten"
+
+
+# ---------------------------------------------------------------------------
+# Side column tests
+# ---------------------------------------------------------------------------
+
+from mktlib.backtest._conditions import Custom
+
+
+class TestSideColumns:
+    def test_side_column_in_signals(self, ohlcv: pl.DataFrame) -> None:
+        """_side is Int8 with values in {-1, 0, 1}."""
+        result = run(ohlcv, SimpleCrossStrategy())
+        assert result.signals["_side"].dtype == pl.Int8
+        unique = set(result.signals["_side"].to_list())
+        assert unique <= {-1, 0, 1}
+
+    def test_side_column_in_trades(self, ohlcv: pl.DataFrame) -> None:
+        """trades has a 'side' column with values in {-1, 1}."""
+        result = run(ohlcv, SimpleCrossStrategy())
+        assert "side" in result.trades.columns
+        assert result.trades["side"].dtype == pl.Int8
+        assert set(result.trades["side"].to_list()) <= {-1, 1}
+
+    def test_default_long_side(self, ohlcv: pl.DataFrame) -> None:
+        """Strategies without trade_side default to LONG (_side=1 in position)."""
+        result = run(ohlcv, SimpleCrossStrategy())
+        sides = result.signals["_side"].to_list()
+        positions = result.signals["_position"].to_list()
+        for i, (s, p) in enumerate(zip(sides, positions)):
+            if p == 1:
+                assert s == 1, f"bar {i}: in position, _side should be 1"
+            else:
+                assert s == 0, f"bar {i}: flat, _side should be 0"
+        assert "side" in result.trades.columns
+        if result.trades.height > 0:
+            assert result.trades["side"][0] == 1
+
+    def test_static_short_side(self, ohlcv: pl.DataFrame) -> None:
+        """run(trade_side=SHORT) populates _side=-1 when in position."""
+        result = run(ohlcv, SimpleCrossStrategy(), trade_side=TradeSide.SHORT)
+        sides = result.signals["_side"].to_list()
+        positions = result.signals["_position"].to_list()
+        for i, (s, p) in enumerate(zip(sides, positions)):
+            if p == 1:
+                assert s == -1, f"bar {i}: SHORT in position, _side should be -1"
+            else:
+                assert s == 0, f"bar {i}: flat, _side should be 0"
+        if result.trades.height > 0:
+            assert result.trades["side"][0] == -1
+
+    def test_compounded_returns_match_pnl(self, ohlcv: pl.DataFrame) -> None:
+        """Per-trade PnL matches compounded bar returns."""
+        result = run(ohlcv, SimpleCrossStrategy())
+        rets = result.returns["return"].to_list()
+        trades = result.trades
+        assert trades.height == 1
+        pnl = trades.row(0, named=True)["pnl"]
+        # Entry at bar 2, exit at bar 5 → return bars 3-6
+        compounded = math.prod(1 + rets[i] for i in range(3, 7))
+        assert compounded == pytest.approx(1 + pnl, rel=1e-6)
+
+    def test_multi_symbol(self) -> None:
+        """Side columns present with instrument_col."""
+        df = _make_multi_symbol_df()
+        result = run(df, SimpleCrossStrategy(), instrument_col="symbol")
+        for sym in ["AAPL", "TSLA"]:
+            r = result[sym]
+            assert "_side" in r.signals.columns
+            if r.trades.height > 0:
+                assert r.trades["side"][0] == 1
+
+    def test_with_flatten_eod(self) -> None:
+        """Side columns present with flatten_eod."""
+        cal = get_calendar("XNYS")
+        df = _make_two_session_df()
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        assert "_side" in result.signals.columns
+        assert result.signals["_side"].dtype == pl.Int8
+
+
+# ---------------------------------------------------------------------------
+# Dual-strategy tests
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class LongCrossStrategy:
+    """Crossover entry (long side)."""
+    fast: str = "fast"
+    slow: str = "slow"
+
+    def entry(self) -> Crossover:
+        return Crossover(self.fast, self.slow)
+
+    def exit(self) -> Crossunder:
+        return Crossunder(self.fast, self.slow)
+
+
+@dataclass(frozen=True, slots=True)
+class ShortCrossStrategy:
+    """Crossunder entry (short side)."""
+    fast: str = "fast"
+    slow: str = "slow"
+
+    def entry(self) -> Crossunder:
+        return Crossunder(self.fast, self.slow)
+
+    def exit(self) -> Crossover:
+        return Crossover(self.fast, self.slow)
+
+
+def _make_flip_df() -> pl.DataFrame:
+    """Data where fast crosses above slow at bar 2, back below at bar 6.
+
+    Designed so Crossover/Crossunder strategies produce non-overlapping trades.
+    Long: entry bar 2, exit bar 6. Short: entry bar 6, exit bar 9.
+    """
+    return pl.DataFrame(
+        {
+            "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 12), eager=True),
+            "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5, 96.0, 94.0, 95.0, 97.0],
+            "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0, 95.0, 93.0, 96.0, 98.0],
+            # fast crosses above slow at bar 2, back below at bar 6, above again at bar 9
+            "fast": [1.0, 1.0, 3.0, 4.0, 3.5, 2.5, 1.0, 0.5, 0.3, 3.0, 3.5, 3.5],
+            "slow": [2.0] * 12,
+        }
+    )
+
+
+class TestDualStrategy:
+    def test_trade_side_with_short_strategy_raises(self) -> None:
+        """Passing trade_side with short_strategy raises ValueError."""
+        df = _make_flip_df()
+        with pytest.raises(ValueError, match="trade_side is ignored"):
+            run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy(),
+                trade_side=TradeSide.SHORT)
+
+    def test_flip_long_to_short(self) -> None:
+        """Crossover/Crossunder strategies produce long→short flip with two trades."""
+        df = _make_flip_df()
+        result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
+        trades = result.trades
+        assert trades.height == 2
+        assert trades["side"][0] == 1   # LONG from crossover
+        assert trades["side"][1] == -1  # SHORT from crossunder
+
+    def test_flip_short_to_long(self) -> None:
+        """Inverse: short→long flip."""
+        df = _make_flip_df()
+        # Swap: short strategy uses crossunder entry (fires at bar 6 when fast < slow)
+        # but we want the short to fire *first*. Need data where crossunder is first.
+        df_inv = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 12), eager=True),
+                "open": [100.0, 100.5, 99.5, 97.5, 96.0, 94.0, 95.0, 97.0, 99.0, 101.0, 103.0, 105.0],
+                "close": [100.0, 101.0, 98.0, 97.0, 95.0, 93.0, 96.0, 98.0, 100.0, 103.0, 105.0, 106.0],
+                # fast crosses below slow at bar 2, back above at bar 6
+                "fast": [3.0, 3.0, 1.0, 0.5, 0.3, 0.2, 3.0, 3.5, 3.5, 3.0, 1.0, 0.5],
+                "slow": [2.0] * 12,
+            }
+        )
+        result = run(df_inv, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
+        trades = result.trades
+        assert trades.height >= 2
+        # First trade should be SHORT (crossunder fires first)
+        assert trades["side"][0] == -1
+        # Second trade should be LONG (crossover fires second)
+        assert trades["side"][1] == 1
+
+    def test_flip_returns(self) -> None:
+        """Return on flip matches long_exit + short_entry components."""
+        df = _make_flip_df()
+        result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
+        # Run individually to verify additive returns
+        long_result = run(df, LongCrossStrategy(), trade_side=TradeSide.LONG)
+        short_result = run(df, ShortCrossStrategy(), trade_side=TradeSide.SHORT)
+        merged_rets = result.returns["return"].to_list()
+        long_rets = long_result.returns["return"].to_list()
+        short_rets = short_result.returns["return"].to_list()
+        for i in range(len(merged_rets)):
+            assert merged_rets[i] == pytest.approx(
+                long_rets[i] + short_rets[i], abs=1e-12,
+            ), f"bar {i}: merged={merged_rets[i]} != long+short={long_rets[i]+short_rets[i]}"
+
+    def test_no_overlap_allowed(self) -> None:
+        """Two strategies that overlap raise ValueError."""
+
+        @dataclass(frozen=True, slots=True)
+        class AlwaysEntryStrategy:
+            def entry(self) -> Custom:
+                return Custom(pl.lit(True))
+
+            def exit(self) -> Custom:
+                return Custom(pl.lit(False))
+
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 4), eager=True),
+                "open": [100.0, 100.5, 101.0, 101.5],
+                "close": [100.0, 101.0, 102.0, 103.0],
+            }
+        )
+        with pytest.raises(ValueError, match="overlapping positions"):
+            run(df, AlwaysEntryStrategy(), short_strategy=AlwaysEntryStrategy())
+
+    def test_complementary_signals(self) -> None:
+        """Crossover/Crossunder never overlap (validates mutual exclusivity passes)."""
+        df = _make_flip_df()
+        # Should not raise
+        result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
+        assert result.trades.height >= 1
+
+    def test_merged_trades_sorted(self) -> None:
+        """Combined trade log sorted by entry_date with correct sides."""
+        df = _make_flip_df()
+        result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
+        trades = result.trades
+        entry_dates = trades["entry_date"].to_list()
+        assert entry_dates == sorted(entry_dates)
+        sides = trades["side"].to_list()
+        assert 1 in sides
+        assert -1 in sides
+
+    def test_merged_signals(self) -> None:
+        """Combined _position, _side, _entry, _exit are correct."""
+        df = _make_flip_df()
+        result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
+        positions = result.signals["_position"].to_list()
+        sides = result.signals["_side"].to_list()
+        # When long is in position, _side=1; when short is in position, _side=-1
+        for i, (p, s) in enumerate(zip(positions, sides)):
+            if p == 1:
+                assert s in (1, -1), f"bar {i}: in position but _side={s}"
+            else:
+                assert s == 0, f"bar {i}: flat but _side={s}"
+
+    def test_with_flatten_eod(self) -> None:
+        """Dual strategy + session-forced exits."""
+        cal = get_calendar("XNYS")
+        timestamps = [
+            datetime.datetime(2024, 1, 2, 9, 30),
+            datetime.datetime(2024, 1, 2, 9, 31),
+            datetime.datetime(2024, 1, 2, 15, 59),
+            datetime.datetime(2024, 1, 3, 9, 30),
+            datetime.datetime(2024, 1, 3, 9, 31),
+            datetime.datetime(2024, 1, 3, 15, 59),
+        ]
+        df = pl.DataFrame(
+            {
+                "date": timestamps,
+                "open": [100.0, 100.5, 101.0, 105.0, 105.5, 106.0],
+                "close": [100.2, 100.8, 101.5, 105.3, 105.8, 106.5],
+                "fast": [1.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+                "slow": [2.0] * 6,
+                "never_cross": [5.0] * 6,
+            }
+        )
+
+        @dataclass(frozen=True, slots=True)
+        class NeverEntryStrategy:
+            """Never enters — used as the short side when we only want long."""
+            def entry(self) -> Custom:
+                return Custom(pl.lit(False))
+
+            def exit(self) -> Custom:
+                return Custom(pl.lit(False))
+
+        result = run(
+            df, AlwaysInStrategy(), short_strategy=NeverEntryStrategy(),
+            calendar=cal, flatten_eod=True,
+        )
+        positions = result.signals["_position"].to_list()
+        # Entry at bar 1, flattened at bar 2 (session-last)
+        assert positions[2] == 0, "session-last should flatten"
+
+    def test_with_instrument_col(self) -> None:
+        """Dual strategy + multi-symbol."""
+        df = _make_multi_symbol_df()
+
+        @dataclass(frozen=True, slots=True)
+        class NeverEntryStrategy:
+            def entry(self) -> Custom:
+                return Custom(pl.lit(False))
+
+            def exit(self) -> Custom:
+                return Custom(pl.lit(False))
+
+        result = run(
+            df, SimpleCrossStrategy(), short_strategy=NeverEntryStrategy(),
+            instrument_col="symbol",
+        )
+        assert result.symbols == ["AAPL", "TSLA"]
+        for sym in ["AAPL", "TSLA"]:
+            r = result[sym]
+            assert "_side" in r.signals.columns
+
+    def test_single_side_only(self) -> None:
+        """Only long strategy produces trades, short never enters."""
+
+        @dataclass(frozen=True, slots=True)
+        class NeverEntryStrategy:
+            def entry(self) -> Custom:
+                return Custom(pl.lit(False))
+
+            def exit(self) -> Custom:
+                return Custom(pl.lit(False))
+
+        df = _make_flip_df()
+        result = run(df, LongCrossStrategy(), short_strategy=NeverEntryStrategy())
+        trades = result.trades
+        assert trades.height >= 1
+        assert all(s == 1 for s in trades["side"].to_list())
+
+
+# ---------------------------------------------------------------------------
+# Internal column leakage tests
+# ---------------------------------------------------------------------------
+
+# User-facing underscore columns that are intentionally part of the public
+# signals schema — everything else starting with ``_`` is an implementation
+# detail and must be dropped before returning.
+_PUBLIC_UNDERSCORE_COLS = {"_entry", "_exit", "_position", "_side"}
+
+
+class TestNoInternalColumnLeakage:
+    """Ensure _run_core drops all internal columns before returning signals."""
+
+    def test_no_leaked_internal_columns_basic(self, ohlcv: pl.DataFrame) -> None:
+        """Basic backtest (no flatten_eod) should not leak internal columns."""
+        result = run(ohlcv, SimpleCrossStrategy())
+        leaked = {
+            c for c in result.signals.columns
+            if c.startswith("_") and c not in _PUBLIC_UNDERSCORE_COLS
+        }
+        assert leaked == set(), f"Internal columns leaked into signals: {leaked}"
+
+    def test_no_leaked_internal_columns_flatten_eod(self) -> None:
+        """flatten_eod path should not leak _session_last or other internals."""
+        cal = get_calendar("XNYS")
+        df = _make_two_session_df()
+        result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
+        leaked = {
+            c for c in result.signals.columns
+            if c.startswith("_") and c not in _PUBLIC_UNDERSCORE_COLS
+        }
+        assert leaked == set(), f"Internal columns leaked into signals: {leaked}"
+
+    def test_no_leaked_internal_columns_with_trade_side(self) -> None:
+        """Condition with trade_side should not leak internal columns."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5],
+                "close": [100.0, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0],
+                "fast": [1.0, 1.0, 3.0, 4.0, 3.5, 1.0, 0.5, 0.3],
+                "slow": [2.0] * 8,
+            }
+        )
+
+        @dataclass(frozen=True, slots=True)
+        class TradeSideStrat:
+            def entry(self) -> Crossover:
+                return Crossover("fast", "slow", trade_side=TradeSide.LONG)
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        result = run(df, TradeSideStrat())
+        leaked = {
+            c for c in result.signals.columns
+            if c.startswith("_") and c not in _PUBLIC_UNDERSCORE_COLS
+        }
+        assert leaked == set(), f"Internal columns leaked into signals: {leaked}"
