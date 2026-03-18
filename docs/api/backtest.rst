@@ -171,6 +171,53 @@ Price expressions build composable numeric ``pl.Expr`` trees for use with
 .. autoclass:: mktlib.backtest.Pct
    :members:
 
+Entry-Bar Anchoring with ``EntryRef``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When building TP/SL exits relative to the **entry price**, a plain column
+reference doesn't work:
+
+.. code-block:: python
+
+   # BUG: resolves to close > close * 1.05 — always false
+   PriceIsAbove("close", Pct("close", 5.0))
+
+The threshold needs to reference the entry bar's close, not the current bar's.
+``EntryRef`` solves this by snapshotting a column at the entry signal bar and
+forward-filling it through the position's lifetime:
+
+.. code-block:: python
+
+   from mktlib.backtest import EntryRef, Pct, PriceIsAbove, PriceIsBelow
+
+   # TP: close > entry_close * 1.05
+   tp = PriceIsAbove("close", Pct(EntryRef("close"), 5.0))
+
+   # SL: close < entry_close * 0.97
+   sl = PriceIsBelow("close", Pct(EntryRef("close"), -3.0))
+
+Under the hood, the engine:
+
+1. Detects ``EntryRef`` nodes in the exit condition tree
+2. Computes ``_entry`` signals (pass 1)
+3. Creates ``_entry_{col}`` snapshot columns: the column value where ``_entry``
+   is true, ``null`` elsewhere, then ``forward_fill()``
+4. Resolves the exit condition against the snapshot columns (pass 2)
+
+``EntryRef`` composes freely with other expressions:
+
+.. code-block:: python
+
+   # ATR-based stop: 2 ATR below entry close
+   sl = PriceIsBelow("close", EntryRef("close") - Col("atr") * 2)
+
+   # Multiple snapshots: entry close for TP, entry ATR for SL
+   tp = PriceIsAbove("close", Pct(EntryRef("close"), 5.0))
+   sl = PriceIsBelow("close", EntryRef("close") - EntryRef("atr") * 2)
+
+.. autoclass:: mktlib.backtest.EntryRef
+   :members:
+
 Performance
 -----------
 
