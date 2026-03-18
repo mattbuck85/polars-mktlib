@@ -234,6 +234,25 @@ given percentage above the slow SMA; the SL triggers when price falls below:
 ``Pct("slow_sma", -3)`` resolves to ``slow_sma * 0.97`` — 3% below.
 Conditions compose with ``|`` (any) and ``&`` (all).
 
+.. note:: **TP/SL relative to entry price vs. a moving indicator**
+
+   The example above uses ``Pct("slow_sma", 5)`` — the threshold moves with the
+   SMA on every bar. If you want TP/SL anchored to the **entry bar's price**
+   (e.g., "take profit at 5% above the close when I entered"), use ``EntryRef``:
+
+   .. code-block:: python
+
+      from mktlib.backtest import EntryRef
+
+      def exit(self) -> Condition:
+          tp = PriceIsAbove("close", Pct(EntryRef("close"), self.tp_pct))
+          sl = PriceIsBelow("close", Pct(EntryRef("close"), -self.sl_pct))
+          return Crossunder("fast_sma", "slow_sma") | tp | sl
+
+   ``EntryRef("close")`` captures the close at the entry signal bar and
+   forward-fills it. The engine creates the snapshot column automatically —
+   no manual ``init()`` work needed. See :doc:`api/backtest` for details.
+
 Now grid-search TP/SL percentages with the best SMA periods fixed:
 
 .. code-block:: python

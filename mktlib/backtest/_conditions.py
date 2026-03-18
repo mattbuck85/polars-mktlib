@@ -143,6 +143,22 @@ class Pct(PriceExpr):
         return _coerce_base(self.base).resolve() * (1.0 + self.pct / 100.0)
 
 
+@dataclass(frozen=True, slots=True)
+class EntryRef(PriceExpr):
+    """Column value snapshotted at the entry signal bar, forward-filled.
+
+    The engine creates ``_entry_{col}`` columns automatically when it
+    detects ``EntryRef`` nodes in the exit condition tree.
+
+    ``EntryRef("close")`` resolves to ``pl.col("_entry_close")``.
+    """
+
+    col: str
+
+    def resolve(self) -> pl.Expr:
+        return pl.col(f"_entry_{self.col}")
+
+
 class Condition:
     """Base class for signal conditions that resolve to boolean ``pl.Expr``."""
 

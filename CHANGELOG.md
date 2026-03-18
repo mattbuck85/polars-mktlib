@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2
+
+### Added
+
+- **`EntryRef` PriceExpr** — snapshots a column value at the entry signal bar and forward-fills it through the position lifetime. Enables TP/SL exits anchored to the entry price: `PriceIsAbove("close", Pct(EntryRef("close"), 5.0))` resolves to `close > _entry_close * 1.05`. The engine detects `EntryRef` nodes via a tree walker and creates snapshot columns automatically — no manual `init()` work needed.
+
+### Fixed
+
+- **TP/SL exits referencing current bar instead of entry bar** — `Pct("close", 5.0)` resolves to `close * 1.05`, making `PriceIsAbove("close", Pct("close", 5.0))` always false (`close > close * 1.05`). `EntryRef` provides the correct mechanism for entry-anchored thresholds.
+
 ## 0.7.1
 
 ### Changed

@@ -5,7 +5,7 @@ bump-my-version==1.2.7
 certifi==2026.2.25
 cfgv==3.5.0
 click==8.3.1
-coverage==7.13.4
+coverage==7.13.5
 distlib==0.4.0
 exchange_calendars==4.13.2
 filelock==3.25.2
@@ -28,14 +28,14 @@ nodeenv==1.10.0
 numpy==2.4.3
 packaging==26.0
 pandas==3.0.1
-pandera==0.29.0
+pandera==0.30.1
 platformdirs==4.9.4
 plotly==6.6.0
 plotly-stubs==0.1.2
 pluggy==1.6.0
-polars==1.39.0
+polars==1.39.2
 polars-rfft==0.1.1
-polars-runtime-32==1.39.0
+polars-runtime-32==1.39.2
 polars-sdist==0.1.1
 pre_commit==4.5.1
 prompt_toolkit==3.0.52
