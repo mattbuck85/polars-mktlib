@@ -20,8 +20,8 @@ from mktlib.backtest import (
     Crossover,
     Crossunder,
     Pct,
-    PriceIsAbove,
-    PriceIsBelow,
+    ValueGT,
+    ValueLT,
     run,
 )
 from mktlib.data import geometric_brownian_motion, ticks_to_ohlcv
@@ -146,8 +146,8 @@ class SmaCrossWithExits:
         return Crossover("fast_sma", "slow_sma")
 
     def exit(self) -> Condition:
-        tp = PriceIsAbove("close", Pct("slow_sma", self.tp_pct))
-        sl = PriceIsBelow("close", Pct("slow_sma", -self.sl_pct))
+        tp = ValueGT("close", Pct("slow_sma", self.tp_pct))
+        sl = ValueLT("close", Pct("slow_sma", -self.sl_pct))
         return Crossunder("fast_sma", "slow_sma") | tp | sl
 
 

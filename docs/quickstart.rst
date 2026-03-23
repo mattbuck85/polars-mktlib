@@ -53,19 +53,19 @@ Conditions compose with ``&``, ``|``, ``~``:
 
 .. code-block:: python
 
-   from mktlib.backtest import PriceIsAbove
+   from mktlib.backtest import ValueGT
 
-   entry = Crossover("fast", "slow") & PriceIsAbove("close", "sma_200")
+   entry = Crossover("fast", "slow") & ValueGT("close", "sma_200")
 
-Price expressions (``Col``, ``Lit``, ``Pct``) let you build dynamic exit
-levels without any engine changes — combine ``PriceIsAbove`` and
-``PriceIsBelow`` with ``|`` for a vectorized take-profit / stop-loss:
+Column expressions (``Col``, ``Lit``, ``Pct``) let you build dynamic exit
+levels without any engine changes — combine ``ValueGT`` and
+``ValueLT`` with ``|`` for a vectorized take-profit / stop-loss:
 
 .. code-block:: python
 
    from dataclasses import dataclass
    from mktlib.backtest import (
-       run, Crossover, Col, Pct, PriceIsAbove, PriceIsBelow, Condition,
+       run, Crossover, Col, Pct, ValueGT, ValueLT, Condition,
    )
 
    @dataclass(frozen=True, slots=True)
@@ -76,8 +76,8 @@ levels without any engine changes — combine ``PriceIsAbove`` and
            return Crossover("fast_sma", "slow_sma")
 
        def exit(self) -> Condition:
-           tp = PriceIsAbove("close", Pct("slow_sma", 5))        # 5% above slow SMA
-           sl = PriceIsBelow("close", Col("slow_sma") - Col("vol") * 2)  # 2x vol below
+           tp = ValueGT("close", Pct("slow_sma", 5))        # 5% above slow SMA
+           sl = ValueLT("close", Col("slow_sma") - Col("vol") * 2)  # 2x vol below
            return tp | sl
 
    # df must have: date, open, close, fast_sma, slow_sma, vol

@@ -96,10 +96,10 @@ with ``&`` (All), ``|`` (Any\_), and ``~`` (Not) operators.
 
 .. code-block:: python
 
-   from mktlib.backtest import Crossover, PriceIsAbove
+   from mktlib.backtest import Crossover, ValueGT
 
    # Compose with operators
-   entry = Crossover("fast", "slow") & PriceIsAbove("close", "sma_200")
+   entry = Crossover("fast", "slow") & ValueGT("close", "sma_200")
 
 .. autoclass:: mktlib.backtest.Condition
    :members:
@@ -110,10 +110,16 @@ with ``&`` (All), ``|`` (Any\_), and ``~`` (Not) operators.
 .. autoclass:: mktlib.backtest.Crossunder
    :members:
 
-.. autoclass:: mktlib.backtest.PriceIsAbove
+.. autoclass:: mktlib.backtest.ValueGT
    :members:
 
-.. autoclass:: mktlib.backtest.PriceIsBelow
+.. autoclass:: mktlib.backtest.ValueGTE
+   :members:
+
+.. autoclass:: mktlib.backtest.ValueLT
+   :members:
+
+.. autoclass:: mktlib.backtest.ValueLTE
    :members:
 
 .. autoclass:: mktlib.backtest.IsRising
@@ -137,29 +143,33 @@ Combinators
 .. autoclass:: mktlib.backtest.Not
    :members:
 
-Price Expressions
------------------
+Column Expressions
+------------------
 
-Price expressions build composable numeric ``pl.Expr`` trees for use with
-``PriceIsAbove`` and ``PriceIsBelow``. They support standard arithmetic
-(``+``, ``-``, ``*``, ``/``, ``%``, unary ``-``) and mix freely with plain
-``str`` column names and ``float`` literals.
+Column expressions build composable numeric ``pl.Expr`` trees for use with
+``ValueGT``, ``ValueLT``, and their ``>=``/``<=`` variants. They support standard
+arithmetic (``+``, ``-``, ``*``, ``/``, ``%``, unary ``-``), comparison operators
+(``>``, ``>=``, ``<``, ``<=``), and mix freely with plain ``str`` column names
+and ``float`` literals.
 
 .. code-block:: python
 
    from mktlib.backtest import (
-       Col, Lit, Pct, PriceIsAbove, PriceIsBelow, Crossover,
+       Col, Lit, Pct, ValueGT, ValueLT, Crossover,
    )
 
    # Take-profit / stop-loss as an OR-combined exit
-   tp = PriceIsAbove("close", Pct("entry_sma", 5))   # close > sma * 1.05
-   sl = PriceIsBelow("close", Col("sma") - Col("vol") * 2)  # 2x vol below SMA
+   tp = ValueGT("close", Pct("entry_sma", 5))   # close > sma * 1.05
+   sl = ValueLT("close", Col("sma") - Col("vol") * 2)  # 2x vol below SMA
    exit_cond = tp | sl
 
    # Arithmetic expressions on both sides
-   PriceIsAbove(Col("fast") - Col("slow"), Lit(0.0))
+   ValueGT(Col("fast") - Col("slow"), Lit(0.0))
 
-.. autoclass:: mktlib.backtest.PriceExpr
+   # Comparison operators on ColExpr return conditions directly
+   entry = Col("rsi") > 70  # equivalent to ValueGT(Col("rsi"), Lit(70.0))
+
+.. autoclass:: mktlib.backtest.ColExpr
    :members:
 
 .. autoclass:: mktlib.backtest.Col
@@ -180,7 +190,7 @@ reference doesn't work:
 .. code-block:: python
 
    # BUG: resolves to close > close * 1.05 — always false
-   PriceIsAbove("close", Pct("close", 5.0))
+   ValueGT("close", Pct("close", 5.0))
 
 The threshold needs to reference the entry bar's close, not the current bar's.
 ``EntryRef`` solves this by snapshotting a column at the entry signal bar and
@@ -188,13 +198,13 @@ forward-filling it through the position's lifetime:
 
 .. code-block:: python
 
-   from mktlib.backtest import EntryRef, Pct, PriceIsAbove, PriceIsBelow
+   from mktlib.backtest import EntryRef, Pct, ValueGT, ValueLT
 
    # TP: close > entry_close * 1.05
-   tp = PriceIsAbove("close", Pct(EntryRef("close"), 5.0))
+   tp = ValueGT("close", Pct(EntryRef("close"), 5.0))
 
    # SL: close < entry_close * 0.97
-   sl = PriceIsBelow("close", Pct(EntryRef("close"), -3.0))
+   sl = ValueLT("close", Pct(EntryRef("close"), -3.0))
 
 Under the hood, the engine:
 
@@ -209,11 +219,11 @@ Under the hood, the engine:
 .. code-block:: python
 
    # ATR-based stop: 2 ATR below entry close
-   sl = PriceIsBelow("close", EntryRef("close") - Col("atr") * 2)
+   sl = ValueLT("close", EntryRef("close") - Col("atr") * 2)
 
    # Multiple snapshots: entry close for TP, entry ATR for SL
-   tp = PriceIsAbove("close", Pct(EntryRef("close"), 5.0))
-   sl = PriceIsBelow("close", EntryRef("close") - EntryRef("atr") * 2)
+   tp = ValueGT("close", Pct(EntryRef("close"), 5.0))
+   sl = ValueLT("close", EntryRef("close") - EntryRef("atr") * 2)
 
 .. autoclass:: mktlib.backtest.EntryRef
    :members:

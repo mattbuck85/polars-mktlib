@@ -8,14 +8,16 @@ import polars as pl
 from mktlib.backtest._conditions import (
     All,
     Any_,
+    ColExpr,
     Condition,
     Custom,
     EntryRef,
     Not,
     Pct,
-    PriceExpr,
-    PriceIsAbove,
-    PriceIsBelow,
+    ValueGT,
+    ValueGTE,
+    ValueLT,
+    ValueLTE,
     _BinOp,
 )
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
@@ -113,14 +115,14 @@ def _walk_cond(cond: Condition, cols: set[str]) -> None:
             _walk_cond(right, cols)
         case Not(inner, _):
             _walk_cond(inner, cols)
-        case PriceIsAbove(a, b, _) | PriceIsBelow(a, b, _):
+        case ValueGT(a, b, _) | ValueGTE(a, b, _) | ValueLT(a, b, _) | ValueLTE(a, b, _):
             _walk_expr(a, cols)
             _walk_expr(b, cols)
         case _:
             pass
 
 
-def _walk_expr(node: str | float | PriceExpr, cols: set[str]) -> None:
+def _walk_expr(node: str | float | ColExpr, cols: set[str]) -> None:
     match node:
         case EntryRef(col):
             cols.add(col)
@@ -153,7 +155,6 @@ def _run_core(
     exit_cond = exit_raw if isinstance(exit_raw, Condition) else Custom(exit_raw)
     entry_expr = entry_cond.resolve()
 
-    # Entry condition's side overrides the run() default
     effective_side = int(entry_cond.trade_side or trade_side)
 
     # Pass 1: compute _entry
@@ -218,6 +219,11 @@ def _run_core(
         ((pl.col("_position") == 0) & (pl.col("_pos_d1") == 1)).alias("_exit_clean"),
     )
 
+    # _side = position * effective_side (scalar multiply, no forward-fill)
+    signals = signals.with_columns(
+        (pl.col("_position") * effective_side).cast(pl.Int8).alias("_side"),
+    )
+
     # Detect transition bars (after the 1-bar delay for fill)
     _is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
     _is_exit_bar = (pl.col("_pos_d1") == 0) & (pl.col("_pos_d2") == 1)
@@ -270,13 +276,70 @@ def _run_core(
             .alias("return"),
         )
 
-    # Drop internal columns before return
-    signals = signals.drop("_pos_d1", "_pos_d2", "_close_prev")
-
     returns = signals.select("date", "return")
 
-    # Build trade log from entry/exit transitions
-    trades = _extract_trades(signals, effective_side, flatten_eod=flatten_eod)
+    # Build trade log from entry/exit transitions (before dropping internal cols)
+    trades = _extract_trades(signals, flatten_eod=flatten_eod)
+
+    # Drop internal columns before return
+    _drop_cols = ["_pos_d1", "_pos_d2", "_close_prev", "_entry_clean", "_exit_clean"]
+    if flatten_eod:
+        _drop_cols.append("_session_last")
+    signals = signals.drop(_drop_cols)
+
+    return BacktestResult(returns=returns, trades=trades, signals=signals)
+
+
+def _run_dual(
+    df: pl.DataFrame,
+    long_strategy: Strategy,
+    short_strategy: Strategy,
+    *,
+    calendar: ExchangeCalendar | None,
+    flatten_eod: bool,
+) -> BacktestResult:
+    """Run long and short strategies independently, validate, merge.
+
+    Both sides run concurrently via threads — Polars releases the GIL
+    during computation so this gives real parallelism.  Merged signals
+    use the long strategy's indicator columns as base.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        long_future = pool.submit(
+            _run_core, df, long_strategy, trade_side=TradeSide.LONG,
+            calendar=calendar, flatten_eod=flatten_eod,
+        )
+        short_future = pool.submit(
+            _run_core, df, short_strategy, trade_side=TradeSide.SHORT,
+            calendar=calendar, flatten_eod=flatten_eod,
+        )
+        long = long_future.result()
+        short = short_future.result()
+
+    # Validate mutual exclusivity
+    overlap = (long.signals["_position"] == 1) & (short.signals["_position"] == 1)
+    if overlap.any():
+        msg = "Long and short strategies have overlapping positions"
+        raise ValueError(msg)
+
+    # Merge returns (additive — flat bars contribute 0)
+    returns = pl.DataFrame({
+        "date": long.returns["date"],
+        "return": long.returns["return"] + short.returns["return"],
+    })
+
+    # Merge trades (concat + sort by entry_date)
+    trades = pl.concat([long.trades, short.trades]).sort("entry_date")
+
+    # Merge signals: long signals as base, overlay combined columns
+    signals = long.signals.with_columns(
+        (long.signals["_entry"] | short.signals["_entry"]).alias("_entry"),
+        (long.signals["_exit"] | short.signals["_exit"]).alias("_exit"),
+        (long.signals["_position"] + short.signals["_position"]).alias("_position"),
+        (long.signals["_side"] + short.signals["_side"]).alias("_side"),
+    )
 
     return BacktestResult(returns=returns, trades=trades, signals=signals)
 
@@ -285,6 +348,7 @@ def _run_multi(
     df: pl.DataFrame,
     strategy: Strategy,
     *,
+    short_strategy: Strategy | None = None,
     instrument_col: str,
     trade_side: TradeSide,
     calendar: ExchangeCalendar | None,
@@ -302,15 +366,49 @@ def _run_multi(
     by_instrument: dict[str, BacktestResult] = {}
     for inst_df in df.partition_by(instrument_col, maintain_order=True):
         instrument = inst_df[instrument_col][0]
-        by_instrument[instrument] = _run_core(
-            inst_df.drop(instrument_col),
-            strategy,
-            trade_side=trade_side,
-            calendar=calendar,
-            flatten_eod=flatten_eod,
-        )
+        inst_data = inst_df.drop(instrument_col)
+        if short_strategy is not None:
+            by_instrument[instrument] = _run_dual(
+                inst_data,
+                strategy,
+                short_strategy,
+                calendar=calendar,
+                flatten_eod=flatten_eod,
+            )
+        else:
+            by_instrument[instrument] = _run_core(
+                inst_data,
+                strategy,
+                trade_side=trade_side,
+                calendar=calendar,
+                flatten_eod=flatten_eod,
+            )
 
     return MultiBacktestResult(by_instrument, instrument_col=instrument_col)
+
+
+@overload
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    short_strategy: Strategy,
+    calendar: ExchangeCalendar | None = ...,
+    flatten_eod: bool = ...,
+    instrument_col: str,
+) -> MultiBacktestResult: ...
+
+
+@overload
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    short_strategy: Strategy,
+    calendar: ExchangeCalendar | None = ...,
+    flatten_eod: bool = ...,
+    instrument_col: None = ...,
+) -> BacktestResult: ...
 
 
 @overload
@@ -341,6 +439,7 @@ def run(
     df: pl.DataFrame,
     strategy: Strategy,
     *,
+    short_strategy: Strategy | None = None,
     trade_side: TradeSide = TradeSide.LONG,
     calendar: ExchangeCalendar | None = None,
     flatten_eod: bool = False,
@@ -357,9 +456,15 @@ def run(
         Object with ``entry()`` and ``exit()`` returning Conditions.
         May optionally define ``init(df) -> pl.DataFrame`` to enrich the
         DataFrame with indicator columns before signal evaluation.
+    short_strategy
+        When provided, *strategy* is used as the long strategy and
+        *short_strategy* as the short strategy. They are run independently,
+        validated for mutual exclusivity (no overlapping positions), and
+        merged into a single result.
     trade_side
-        Trade direction. Overridden by the entry condition's ``trade_side``
-        if set.
+        Trade direction (single-strategy mode only). Overridden by the
+        entry condition's ``trade_side`` if set. Ignored when
+        *short_strategy* is provided.
     calendar
         Exchange calendar for market-hours filtering. When provided, the
         DataFrame is filtered to market hours before signal computation.
@@ -403,6 +508,30 @@ def run(
         msg = "flatten_eod=True requires a calendar"
         raise ValueError(msg)
 
+    if short_strategy is not None:
+        if trade_side is not TradeSide.LONG:
+            msg = "trade_side is ignored when short_strategy is provided"
+            raise ValueError(msg)
+        if instrument_col is not None:
+            return _run_multi(
+                df,
+                strategy,
+                short_strategy=short_strategy,
+                instrument_col=instrument_col,
+                trade_side=TradeSide.LONG,
+                calendar=calendar,
+                flatten_eod=flatten_eod,
+            )
+        if calendar is not None:
+            df = calendar.filter_market_hours(df, "date")
+        return _run_dual(
+            df,
+            strategy,
+            short_strategy,
+            calendar=calendar,
+            flatten_eod=flatten_eod,
+        )
+
     if instrument_col is not None:
         return _run_multi(
             df,
@@ -428,7 +557,6 @@ def run(
 
 def _extract_trades(
     signals: pl.DataFrame,
-    side: int = 1,
     *,
     flatten_eod: bool = False,
 ) -> pl.DataFrame:
@@ -437,6 +565,8 @@ def _extract_trades(
     Fill prices use the *next* bar's open (fill-at-next-open model).
     For session-forced exits (flatten_eod), the exit fill is the
     session-last bar's own open (can't trade during the close minute).
+
+    Side is extracted from ``_side`` at each entry bar.
     """
     # Pre-compute next bar's open for fill price
     signals_with_next = signals.with_columns(
@@ -445,6 +575,7 @@ def _extract_trades(
     entries = signals_with_next.filter(pl.col("_entry_clean")).select(
         pl.col("date").alias("entry_date"),
         pl.col("_next_open").alias("entry_price"),
+        pl.col("_side").alias("_trade_side"),
         pl.int_range(pl.len()).alias("_entry_idx"),
     )
 
@@ -473,6 +604,7 @@ def _extract_trades(
             schema={
                 "entry_date": signals["date"].dtype,
                 "exit_date": signals["date"].dtype,
+                "side": pl.Int8,
                 "pnl": pl.Float64,
                 "bars_held": pl.Int64,
             }
@@ -485,16 +617,17 @@ def _extract_trades(
         {
             "entry_date": entries["entry_date"],
             "exit_date": exits["exit_date"],
+            "side": entries["_trade_side"],
             "entry_price": entries["entry_price"],
             "exit_price": exits["exit_price"],
         }
     )
 
     trades = trades.with_columns(
-        (side * (pl.col("exit_price") / pl.col("entry_price") - 1)).alias("pnl"),
+        (pl.col("side") * (pl.col("exit_price") / pl.col("entry_price") - 1)).alias("pnl"),
         (
             (pl.col("exit_date").cast(pl.Date) - pl.col("entry_date").cast(pl.Date)).dt.total_days()
         ).alias("bars_held"),
-    ).select("entry_date", "exit_date", "pnl", "bars_held")
+    ).select("entry_date", "exit_date", "side", "pnl", "bars_held")
 
     return trades

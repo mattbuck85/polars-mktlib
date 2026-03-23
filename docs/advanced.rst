@@ -202,12 +202,12 @@ Add Take-Profit / Stop-Loss Optimization
 -----------------------------------------
 
 Extend the strategy with percentage-based exits using ``Pct``,
-``PriceIsAbove``, and ``PriceIsBelow``. The TP triggers when price rises a
+``ValueGT``, and ``ValueLT``. The TP triggers when price rises a
 given percentage above the slow SMA; the SL triggers when price falls below:
 
 .. code-block:: python
 
-   from mktlib.backtest import Condition, Pct, PriceIsAbove, PriceIsBelow
+   from mktlib.backtest import Condition, Pct, ValueGT, ValueLT
 
    @dataclass(frozen=True, slots=True)
    class SmaCrossWithExits:
@@ -226,8 +226,8 @@ given percentage above the slow SMA; the SL triggers when price falls below:
            return Crossover("fast_sma", "slow_sma")
 
        def exit(self) -> Condition:
-           tp = PriceIsAbove("close", Pct("slow_sma", self.tp_pct))
-           sl = PriceIsBelow("close", Pct("slow_sma", -self.sl_pct))
+           tp = ValueGT("close", Pct("slow_sma", self.tp_pct))
+           sl = ValueLT("close", Pct("slow_sma", -self.sl_pct))
            return Crossunder("fast_sma", "slow_sma") | tp | sl
 
 ``Pct("slow_sma", 5)`` resolves to ``slow_sma * 1.05`` — 5% above.
@@ -245,8 +245,8 @@ Conditions compose with ``|`` (any) and ``&`` (all).
       from mktlib.backtest import EntryRef
 
       def exit(self) -> Condition:
-          tp = PriceIsAbove("close", Pct(EntryRef("close"), self.tp_pct))
-          sl = PriceIsBelow("close", Pct(EntryRef("close"), -self.sl_pct))
+          tp = ValueGT("close", Pct(EntryRef("close"), self.tp_pct))
+          sl = ValueLT("close", Pct(EntryRef("close"), -self.sl_pct))
           return Crossunder("fast_sma", "slow_sma") | tp | sl
 
    ``EntryRef("close")`` captures the close at the entry signal bar and

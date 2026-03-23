@@ -30,13 +30,18 @@ class Strategy(Protocol):
 
     Strategies may optionally define an ``init(self, df) -> pl.DataFrame``
     method to enrich the DataFrame with indicator columns before signal
-    evaluation. This lets strategies encapsulate their own indicator setup,
-    making them self-contained. The ``init`` method is **not** part of the
-    Protocol to avoid breaking existing strategies that don't need it.
+    evaluation.  See :class:`InitStrategy` for the typed variant.
     """
 
     def entry(self) -> Condition | pl.Expr: ...
     def exit(self) -> Condition | pl.Expr: ...
+
+
+@runtime_checkable
+class InitStrategy(Strategy, Protocol):
+    """Strategy that also defines ``init()`` for indicator computation."""
+
+    def init(self, df: pl.DataFrame) -> pl.DataFrame: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,9 +51,15 @@ class BacktestResult:
     returns: pl.DataFrame
     """``(date, return)`` daily strategy returns."""
     trades: pl.DataFrame
-    """``(entry_date, exit_date, pnl, bars_held)`` per-trade log."""
+    """``(entry_date, exit_date, side, pnl, bars_held)`` per-trade log.
+
+    ``side`` is ``1`` (long) or ``-1`` (short), extracted from the entry bar.
+    """
     signals: pl.DataFrame
-    """Full frame with ``_entry``, ``_exit``, ``_position`` columns."""
+    """Full frame with ``_entry``, ``_exit``, ``_position``, ``_side`` columns.
+
+    ``_side`` is ``1`` (long), ``-1`` (short), or ``0`` (flat).
+    """
 
 
 class MultiBacktestResult:
