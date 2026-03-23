@@ -5,7 +5,19 @@ from typing import TYPE_CHECKING, overload
 
 import polars as pl
 
-from mktlib.backtest._conditions import Condition, Custom
+from mktlib.backtest._conditions import (
+    All,
+    Any_,
+    Condition,
+    Custom,
+    EntryRef,
+    Not,
+    Pct,
+    PriceExpr,
+    PriceIsAbove,
+    PriceIsBelow,
+    _BinOp,
+)
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
 
 if TYPE_CHECKING:
@@ -82,6 +94,45 @@ def _build_session_last_mask(
     return dates.is_in(last_bars)
 
 
+# ---------------------------------------------------------------------------
+# EntryRef tree walker — collects column names needed for entry-bar snapshots
+# ---------------------------------------------------------------------------
+
+
+def _collect_entry_refs(cond: Condition) -> set[str]:
+    """Return all column names referenced by ``EntryRef`` nodes in *cond*."""
+    cols: set[str] = set()
+    _walk_cond(cond, cols)
+    return cols
+
+
+def _walk_cond(cond: Condition, cols: set[str]) -> None:
+    match cond:
+        case All(left, right, _) | Any_(left, right, _):
+            _walk_cond(left, cols)
+            _walk_cond(right, cols)
+        case Not(inner, _):
+            _walk_cond(inner, cols)
+        case PriceIsAbove(a, b, _) | PriceIsBelow(a, b, _):
+            _walk_expr(a, cols)
+            _walk_expr(b, cols)
+        case _:
+            pass
+
+
+def _walk_expr(node: str | float | PriceExpr, cols: set[str]) -> None:
+    match node:
+        case EntryRef(col):
+            cols.add(col)
+        case Pct(base, _):
+            _walk_expr(base, cols)
+        case _BinOp(left, right, _):
+            _walk_expr(left, cols)
+            _walk_expr(right, cols)
+        case _:
+            pass
+
+
 def _run_core(
     df: pl.DataFrame,
     strategy: Strategy,
@@ -101,14 +152,24 @@ def _run_core(
     entry_cond = entry_raw if isinstance(entry_raw, Condition) else Custom(entry_raw)
     exit_cond = exit_raw if isinstance(exit_raw, Condition) else Custom(exit_raw)
     entry_expr = entry_cond.resolve()
-    exit_expr = exit_cond.resolve()
 
     effective_side = int(entry_cond.trade_side or trade_side)
 
-    signals = df.with_columns(
-        entry_expr.alias("_entry"),
-        exit_expr.alias("_exit"),
-    )
+    # Pass 1: compute _entry
+    signals = df.with_columns(entry_expr.alias("_entry"))
+
+    # Create snapshot columns for any EntryRef nodes in exit condition
+    entry_refs = _collect_entry_refs(exit_cond)
+    if entry_refs:
+        signals = signals.with_columns(
+            pl.when(pl.col("_entry")).then(pl.col(col)).otherwise(None)
+            .forward_fill().alias(f"_entry_{col}")
+            for col in entry_refs
+        )
+
+    # Pass 2: compute _exit (snapshot columns now exist for EntryRef.resolve())
+    exit_expr = exit_cond.resolve()
+    signals = signals.with_columns(exit_expr.alias("_exit"))
 
     # Position tracking: 1 on entry, 0 on exit, forward-fill
     if flatten_eod:

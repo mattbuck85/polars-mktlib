@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import polars as pl
 import pytest
 
-from mktlib.backtest._conditions import Col, Crossover, Crossunder, Lit, Pct, PriceIsAbove, PriceIsBelow
+from mktlib.backtest._conditions import Col, Crossover, Crossunder, EntryRef, Lit, Pct, PriceIsAbove, PriceIsBelow
 from mktlib.backtest._engine import run
 from mktlib.backtest._types import TradeSide
 
@@ -1405,6 +1405,98 @@ class TestSideColumns:
 
 
 # ---------------------------------------------------------------------------
+# EntryRef — entry-bar column snapshotting
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EntryRefTPSLStrategy:
+    """Entry = Crossover, Exit = TP/SL anchored to entry-bar close."""
+
+    tp_pct: float = 5.0
+    sl_pct: float = 3.0
+
+    def entry(self) -> Crossover:
+        return Crossover("fast", "slow")
+
+    def exit(self):
+        return (
+            PriceIsAbove("close", Pct(EntryRef("close"), self.tp_pct))
+            | PriceIsBelow("close", Pct(EntryRef("close"), -self.sl_pct))
+        )
+
+
+class TestEntryRef:
+    """EntryRef snapshots entry-bar column values, forward-fills for exit evaluation."""
+
+    def test_tp_exit(self):
+        """TP fires when close > entry_close * 1.05."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [94.0, 97.0, 99.0, 101.0, 104.0, 107.0, 103.0, 99.0],
+                "close": [96.0, 99.0, 100.0, 103.0, 106.0, 105.0, 101.0, 98.0],
+                "fast": [95.0, 98.0, 101.0, 103.0, 106.0, 104.0, 100.0, 97.0],
+                "slow": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            }
+        )
+        result = run(df, EntryRefTPSLStrategy())
+
+        # _entry_close snapshot column must exist
+        assert "_entry_close" in result.signals.columns
+
+        # Snapshot at entry bar (bar 2) = 100.0, forward-filled
+        entry_close = result.signals["_entry_close"].to_list()
+        assert entry_close[2] == 100.0
+        assert entry_close[3] == 100.0
+        assert entry_close[4] == 100.0
+
+        # TP threshold = 100 * 1.05 = 105. Bar 4 close = 106 > 105 → exit
+        assert result.signals["_exit"][4]
+
+        # One trade: entry signal bar 2, exit signal bar 4
+        assert result.trades.height == 1
+        assert result.trades["entry_date"][0] == datetime.date(2024, 1, 3)
+        assert result.trades["exit_date"][0] == datetime.date(2024, 1, 5)
+
+    def test_sl_exit(self):
+        """SL fires when close < entry_close * 0.97."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [94.0, 97.0, 99.0, 101.0, 98.0, 95.0, 93.0, 92.0],
+                "close": [96.0, 99.0, 100.0, 99.0, 96.0, 94.0, 92.0, 91.0],
+                "fast": [95.0, 98.0, 101.0, 103.0, 101.0, 99.0, 97.0, 95.0],
+                "slow": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            }
+        )
+        result = run(df, EntryRefTPSLStrategy())
+
+        # Snapshot at entry bar (bar 2) = 100.0
+        assert result.signals["_entry_close"][2] == 100.0
+
+        # SL threshold = 100 * 0.97 = 97. Bar 4 close = 96 < 97 → exit
+        assert result.signals["_exit"][4]
+        assert result.trades.height == 1
+        assert result.trades["entry_date"][0] == datetime.date(2024, 1, 3)
+        assert result.trades["exit_date"][0] == datetime.date(2024, 1, 5)
+
+    def test_no_entry_ref_unchanged(self):
+        """Strategies without EntryRef behave identically (no snapshot columns)."""
+        df = pl.DataFrame(
+            {
+                "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+                "open": [100.0, 100.5, 101.5, 103.5, 105.5, 103.5, 99.5, 97.5],
+                "close": [100.5, 101.0, 103.0, 105.0, 104.0, 100.0, 98.0, 97.0],
+                "fast": [99.0, 100.0, 103.0, 105.0, 106.0, 103.0, 99.0, 96.0],
+                "slow": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            }
+        )
+        result = run(df, SimpleCrossStrategy())
+        assert "_entry_close" not in result.signals.columns
+
+
+# ---------------------------------------------------------------------------
 # Dual-strategy tests
 # ---------------------------------------------------------------------------
 
@@ -1473,14 +1565,11 @@ class TestDualStrategy:
     def test_flip_short_to_long(self) -> None:
         """Inverse: short→long flip."""
         df = _make_flip_df()
-        # Swap: short strategy uses crossunder entry (fires at bar 6 when fast < slow)
-        # but we want the short to fire *first*. Need data where crossunder is first.
         df_inv = pl.DataFrame(
             {
                 "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 12), eager=True),
                 "open": [100.0, 100.5, 99.5, 97.5, 96.0, 94.0, 95.0, 97.0, 99.0, 101.0, 103.0, 105.0],
                 "close": [100.0, 101.0, 98.0, 97.0, 95.0, 93.0, 96.0, 98.0, 100.0, 103.0, 105.0, 106.0],
-                # fast crosses below slow at bar 2, back above at bar 6
                 "fast": [3.0, 3.0, 1.0, 0.5, 0.3, 0.2, 3.0, 3.5, 3.5, 3.0, 1.0, 0.5],
                 "slow": [2.0] * 12,
             }
@@ -1488,16 +1577,13 @@ class TestDualStrategy:
         result = run(df_inv, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
         trades = result.trades
         assert trades.height >= 2
-        # First trade should be SHORT (crossunder fires first)
         assert trades["side"][0] == -1
-        # Second trade should be LONG (crossover fires second)
         assert trades["side"][1] == 1
 
     def test_flip_returns(self) -> None:
         """Return on flip matches long_exit + short_entry components."""
         df = _make_flip_df()
         result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
-        # Run individually to verify additive returns
         long_result = run(df, LongCrossStrategy(), trade_side=TradeSide.LONG)
         short_result = run(df, ShortCrossStrategy(), trade_side=TradeSide.SHORT)
         merged_rets = result.returns["return"].to_list()
@@ -1532,7 +1618,6 @@ class TestDualStrategy:
     def test_complementary_signals(self) -> None:
         """Crossover/Crossunder never overlap (validates mutual exclusivity passes)."""
         df = _make_flip_df()
-        # Should not raise
         result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
         assert result.trades.height >= 1
 
@@ -1553,7 +1638,6 @@ class TestDualStrategy:
         result = run(df, LongCrossStrategy(), short_strategy=ShortCrossStrategy())
         positions = result.signals["_position"].to_list()
         sides = result.signals["_side"].to_list()
-        # When long is in position, _side=1; when short is in position, _side=-1
         for i, (p, s) in enumerate(zip(positions, sides)):
             if p == 1:
                 assert s in (1, -1), f"bar {i}: in position but _side={s}"
@@ -1596,7 +1680,6 @@ class TestDualStrategy:
             calendar=cal, flatten_eod=True,
         )
         positions = result.signals["_position"].to_list()
-        # Entry at bar 1, flattened at bar 2 (session-last)
         assert positions[2] == 0, "session-last should flatten"
 
     def test_with_instrument_col(self) -> None:
@@ -1642,9 +1725,6 @@ class TestDualStrategy:
 # Internal column leakage tests
 # ---------------------------------------------------------------------------
 
-# User-facing underscore columns that are intentionally part of the public
-# signals schema — everything else starting with ``_`` is an implementation
-# detail and must be dropped before returning.
 _PUBLIC_UNDERSCORE_COLS = {"_entry", "_exit", "_position", "_side"}
 
 

@@ -464,6 +464,39 @@ exit = Crossunder("fast", "slow") | PriceIsBelow("close", "stop_loss")
 | `Not(a)` / `~a` | Invert condition |
 | `Custom(expr)` | Any `pl.Expr` evaluating to boolean |
 
+### Price Expressions
+
+Price expressions build composable numeric trees for use with `PriceIsAbove` / `PriceIsBelow`. They support arithmetic (`+`, `-`, `*`, `/`) and mix with column names and float literals.
+
+| Expression | Description | Resolves to |
+|-|-|-|
+| `Col("sma")` | Column reference | `pl.col("sma")` |
+| `Lit(100.0)` | Literal constant | `pl.lit(100.0)` |
+| `Pct("close", 5)` | 5% above column | `close * 1.05` |
+| `Pct("close", -3)` | 3% below column | `close * 0.97` |
+| `EntryRef("close")` | Entry-bar snapshot | `pl.col("_entry_close")` |
+
+`EntryRef` captures a column's value at the entry signal bar and forward-fills it. This is essential for TP/SL exits anchored to the entry price rather than the current bar:
+
+```python
+from mktlib.backtest import (
+    Crossover, Crossunder, EntryRef, Pct, PriceIsAbove, PriceIsBelow,
+)
+
+class EmaCrossTP:
+    def entry(self) -> Crossover:
+        return Crossover("ema_fast", "ema_slow")
+
+    def exit(self):
+        return (
+            Crossunder("ema_fast", "ema_slow")
+            | PriceIsAbove("close", Pct(EntryRef("close"), 5.0))   # TP: 5% above entry close
+            | PriceIsBelow("close", Pct(EntryRef("close"), -3.0))  # SL: 3% below entry close
+        )
+```
+
+> **Why not `Pct("close", 5)`?** That resolves to `close > close * 1.05` — always false. The threshold must reference the *entry bar's* close, not the current bar's. `EntryRef("close")` resolves to a snapshot column (`_entry_close`) that the engine creates automatically.
+
 For arbitrary logic, use `Custom` or return a bare `pl.Expr` from `entry()`/`exit()` (auto-wrapped as `Custom`):
 
 ```python
