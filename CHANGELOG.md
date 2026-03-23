@@ -11,7 +11,7 @@
 - **`InitStrategy` protocol** — typed protocol for strategies that define `init(df) -> DataFrame`, extending the base `Strategy` protocol.
 - **`strategy_artifact(strategy)`** — deterministic 16-char hex fingerprint for any strategy instance. Derived from the class name, entry/exit condition trees (recursive walk), and `init()` source code (with same-module reference following via AST). Aliases and `ColExpr` comparison operators hash identically to their canonical forms.
 - **`register_alias(cls, name)`** — register user-defined wrapper classes for canonical artifact hashing.
-- **Dual-strategy long/short** — `run(df, long_strategy, short_strategy=short_strategy)` runs independent long and short strategies, merging positions, returns, and trades. Overlap detection raises `ValueError` if both sides try to hold simultaneously. Per-trade `side` column (+1/-1) in trades output, `_side` column in signals.
+- **Dual-strategy long/short** — `run(df, long_strategy, short_strategy=short_strategy)` runs independent long and short strategies concurrently via `ThreadPoolExecutor`, merging positions, returns, and trades. Overlap detection raises `ValueError` if both sides try to hold simultaneously. Per-trade `side` column (+1/-1) in trades output, `_side` column in signals.
 - **`_side` column** — signals and trades now include side information. `_side` in signals is `+1` (long), `-1` (short), or `0` (flat). `side` in trades is `+1` or `-1`. The side is determined by the `trade_side` parameter on `run()` or the entry condition's `trade_side` field (condition-level overrides `run()`-level).
 
 ## 0.7.2

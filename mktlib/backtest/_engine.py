@@ -300,13 +300,23 @@ def _run_dual(
 ) -> BacktestResult:
     """Run long and short strategies independently, validate, merge.
 
-    Merged signals use the long strategy's indicator columns as base.
-    Short strategy's unique indicator columns are not preserved.
+    Both sides run concurrently via threads — Polars releases the GIL
+    during computation so this gives real parallelism.  Merged signals
+    use the long strategy's indicator columns as base.
     """
-    long = _run_core(df, long_strategy, trade_side=TradeSide.LONG,
-                     calendar=calendar, flatten_eod=flatten_eod)
-    short = _run_core(df, short_strategy, trade_side=TradeSide.SHORT,
-                      calendar=calendar, flatten_eod=flatten_eod)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        long_future = pool.submit(
+            _run_core, df, long_strategy, trade_side=TradeSide.LONG,
+            calendar=calendar, flatten_eod=flatten_eod,
+        )
+        short_future = pool.submit(
+            _run_core, df, short_strategy, trade_side=TradeSide.SHORT,
+            calendar=calendar, flatten_eod=flatten_eod,
+        )
+        long = long_future.result()
+        short = short_future.result()
 
     # Validate mutual exclusivity
     overlap = (long.signals["_position"] == 1) & (short.signals["_position"] == 1)
