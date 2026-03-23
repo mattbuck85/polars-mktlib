@@ -8,14 +8,16 @@ import polars as pl
 from mktlib.backtest._conditions import (
     All,
     Any_,
+    ColExpr,
     Condition,
     Custom,
     EntryRef,
     Not,
     Pct,
-    PriceExpr,
-    PriceIsAbove,
-    PriceIsBelow,
+    ValueGT,
+    ValueGTE,
+    ValueLT,
+    ValueLTE,
     _BinOp,
 )
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
@@ -113,14 +115,14 @@ def _walk_cond(cond: Condition, cols: set[str]) -> None:
             _walk_cond(right, cols)
         case Not(inner, _):
             _walk_cond(inner, cols)
-        case PriceIsAbove(a, b, _) | PriceIsBelow(a, b, _):
+        case ValueGT(a, b, _) | ValueGTE(a, b, _) | ValueLT(a, b, _) | ValueLTE(a, b, _):
             _walk_expr(a, cols)
             _walk_expr(b, cols)
         case _:
             pass
 
 
-def _walk_expr(node: str | float | PriceExpr, cols: set[str]) -> None:
+def _walk_expr(node: str | float | ColExpr, cols: set[str]) -> None:
     match node:
         case EntryRef(col):
             cols.add(col)

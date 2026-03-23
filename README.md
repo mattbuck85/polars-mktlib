@@ -438,7 +438,7 @@ Conditions resolve to boolean `pl.Expr` and compose with `&`, `|`, `~`:
 
 ```python
 from mktlib.backtest import (
-    Crossover, Crossunder, PriceIsAbove, PriceIsBelow,
+    Crossover, Crossunder, ValueGT, ValueLT,
     IsRising, IsFalling, All, Any_, Not,
 )
 
@@ -447,16 +447,18 @@ entry = Crossover("fast", "slow")
 entry = Crossover("rsi", 30.0)
 
 # Compose conditions
-entry = Crossover("fast", "slow") & PriceIsAbove("close", "sma_200")
-exit = Crossunder("fast", "slow") | PriceIsBelow("close", "stop_loss")
+entry = Crossover("fast", "slow") & ValueGT("close", "sma_200")
+exit = Crossunder("fast", "slow") | ValueLT("close", "stop_loss")
 ```
 
 | Condition | Description |
 |-|-|
 | `Crossover(a, b)` | `a` crosses above `b` (column or constant) |
 | `Crossunder(a, b)` | `a` crosses below `b` |
-| `PriceIsAbove(a, b)` | `a > b` |
-| `PriceIsBelow(a, b)` | `a < b` |
+| `ValueGT(a, b)` | `a > b` |
+| `ValueGTE(a, b)` | `a >= b` |
+| `ValueLT(a, b)` | `a < b` |
+| `ValueLTE(a, b)` | `a <= b` |
 | `IsRising(col, period)` | Value > value `period` bars ago |
 | `IsFalling(col, period)` | Value < value `period` bars ago |
 | `All(a, b)` / `a & b` | Both conditions true |
@@ -464,9 +466,9 @@ exit = Crossunder("fast", "slow") | PriceIsBelow("close", "stop_loss")
 | `Not(a)` / `~a` | Invert condition |
 | `Custom(expr)` | Any `pl.Expr` evaluating to boolean |
 
-### Price Expressions
+### Column Expressions
 
-Price expressions build composable numeric trees for use with `PriceIsAbove` / `PriceIsBelow`. They support arithmetic (`+`, `-`, `*`, `/`) and mix with column names and float literals.
+Column expressions build composable numeric trees for use with `ValueGT` / `ValueLT` (and their `>=`/`<=` variants). They support arithmetic (`+`, `-`, `*`, `/`), comparison operators (`>`, `>=`, `<`, `<=`), and mix with column names and float literals.
 
 | Expression | Description | Resolves to |
 |-|-|-|
@@ -480,7 +482,7 @@ Price expressions build composable numeric trees for use with `PriceIsAbove` / `
 
 ```python
 from mktlib.backtest import (
-    Crossover, Crossunder, EntryRef, Pct, PriceIsAbove, PriceIsBelow,
+    Crossover, Crossunder, EntryRef, Pct, ValueGT, ValueLT,
 )
 
 class EmaCrossTP:
@@ -490,8 +492,8 @@ class EmaCrossTP:
     def exit(self):
         return (
             Crossunder("ema_fast", "ema_slow")
-            | PriceIsAbove("close", Pct(EntryRef("close"), 5.0))   # TP: 5% above entry close
-            | PriceIsBelow("close", Pct(EntryRef("close"), -3.0))  # SL: 3% below entry close
+            | ValueGT("close", Pct(EntryRef("close"), 5.0))   # TP: 5% above entry close
+            | ValueLT("close", Pct(EntryRef("close"), -3.0))  # SL: 3% below entry close
         )
 ```
 

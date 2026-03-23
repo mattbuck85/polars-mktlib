@@ -15,12 +15,14 @@ Signal-driven backtesting with fill-at-next-open semantics, exchange calendar in
 | `Custom` | `_conditions.py:241` | Wraps a bare `pl.Expr` as a Condition |
 | `Crossover` | `_conditions.py:165` | `a` crosses above `b` |
 | `Crossunder` | `_conditions.py:179` | `a` crosses below `b` |
-| `PriceIsAbove` | `_conditions.py:193` | `a > b` |
-| `PriceIsBelow` | `_conditions.py:205` | `a < b` |
+| `ValueGT` | `_conditions.py:228` | `a > b` (alias: `PriceIsAbove`) |
+| `ValueGTE` | `_conditions.py:240` | `a >= b` |
+| `ValueLT` | `_conditions.py:252` | `a < b` (alias: `PriceIsBelow`) |
+| `ValueLTE` | `_conditions.py:264` | `a <= b` |
 | `IsRising` | `_conditions.py:217` | Value > value `period` bars ago |
 | `IsFalling` | `_conditions.py:229` | Value < value `period` bars ago |
 | `All`, `Any_`, `Not` | `_conditions.py:255,267,279` | Combinators (`&`, `\|`, `~`) |
-| `PriceExpr` | `_conditions.py:22` | Arithmetic building block: `Col`, `Lit`, `Pct`, `EntryRef`, `_BinOp` |
+| `ColExpr` | `_conditions.py:34` | Arithmetic + comparison building block: `Col`, `Lit`, `Pct`, `EntryRef`, `_BinOp` (alias: `PriceExpr`) |
 | `Col`, `Lit`, `Pct` | `_conditions.py:67,77,130` | Column ref, literal, percentage offset from base |
 | `EntryRef` | `_conditions.py:146` | Entry-bar snapshot — resolves to `_entry_{col}` column |
 
@@ -51,8 +53,8 @@ Single-symbol backtest pipeline:
 | Function | Line | Purpose |
 |-|-|-|
 | `_collect_entry_refs(cond)` | L91 | Return set of column names from `EntryRef` nodes in condition tree |
-| `_walk_cond(cond, cols)` | L98 | Recursive walk over `Condition` tree (All/Any\_/Not/PriceIs\*) |
-| `_walk_expr(node, cols)` | L111 | Recursive walk over `PriceExpr` tree (EntryRef/Pct/\_BinOp) |
+| `_walk_cond(cond, cols)` | L98 | Recursive walk over `Condition` tree (All/Any\_/Not/Value\*) |
+| `_walk_expr(node, cols)` | L111 | Recursive walk over `ColExpr` tree (EntryRef/Pct/\_BinOp) |
 
 **Return model** (fill-at-next-open):
 - Entry bar: `(close - open) / open`
@@ -111,7 +113,7 @@ All conditions are frozen dataclasses with `resolve() -> pl.Expr`. Support `&`, 
 
 `Custom(expr)` wraps any `pl.Expr` — also used implicitly when `entry()`/`exit()` returns a bare `pl.Expr`.
 
-`PriceExpr` hierarchy (`Col`, `Lit`, `Pct`, `_BinOp`) supports arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`) for building price-relative conditions like `Pct(Col("close"), 0.02)`.
+`ColExpr` hierarchy (`Col`, `Lit`, `Pct`, `_BinOp`) supports arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`) and comparison operators (`>`, `>=`, `<`, `<=`) for building conditions like `Col("rsi") > 70` or `Pct(Col("close"), 0.02)`.
 
 `_ref(b)` helper resolves `str` → `pl.col(b)`, `float` → `pl.lit(b)`.
 

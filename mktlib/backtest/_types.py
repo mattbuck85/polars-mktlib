@@ -30,13 +30,18 @@ class Strategy(Protocol):
 
     Strategies may optionally define an ``init(self, df) -> pl.DataFrame``
     method to enrich the DataFrame with indicator columns before signal
-    evaluation. This lets strategies encapsulate their own indicator setup,
-    making them self-contained. The ``init`` method is **not** part of the
-    Protocol to avoid breaking existing strategies that don't need it.
+    evaluation.  See :class:`InitStrategy` for the typed variant.
     """
 
     def entry(self) -> Condition | pl.Expr: ...
     def exit(self) -> Condition | pl.Expr: ...
+
+
+@runtime_checkable
+class InitStrategy(Strategy, Protocol):
+    """Strategy that also defines ``init()`` for indicator computation."""
+
+    def init(self, df: pl.DataFrame) -> pl.DataFrame: ...
 
 
 @dataclass(frozen=True, slots=True)

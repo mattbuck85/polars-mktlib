@@ -4,6 +4,7 @@ from mktlib.backtest._conditions import (
     All,
     Any_,
     Col,
+    ColExpr,
     Condition,
     Crossover,
     Crossunder,
@@ -17,20 +18,27 @@ from mktlib.backtest._conditions import (
     PriceExpr,
     PriceIsAbove,
     PriceIsBelow,
+    ValueGT,
+    ValueGTE,
+    ValueLT,
+    ValueLTE,
 )
+from mktlib.backtest._artifact import register_alias, strategy_artifact
 from mktlib.backtest._engine import run
-from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
+from mktlib.backtest._types import BacktestResult, InitStrategy, MultiBacktestResult, Strategy, TradeSide
 
 __all__ = [
     "All",
     "Any_",
     "BacktestResult",
     "Col",
+    "ColExpr",
     "Condition",
     "Crossover",
     "Crossunder",
     "Custom",
     "EntryRef",
+    "InitStrategy",
     "IsFalling",
     "IsRising",
     "Lit",
@@ -42,5 +50,11 @@ __all__ = [
     "PriceIsBelow",
     "Strategy",
     "TradeSide",
+    "ValueGT",
+    "ValueGTE",
+    "ValueLT",
+    "ValueLTE",
+    "register_alias",
     "run",
+    "strategy_artifact",
 ]

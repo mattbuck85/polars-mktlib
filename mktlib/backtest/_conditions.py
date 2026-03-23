@@ -7,20 +7,29 @@ import polars as pl
 from mktlib.backtest._types import TradeSide
 
 
-def _ref(b: str | float | PriceExpr) -> pl.Expr:
-    """Resolve a column name, literal, or PriceExpr to a Polars expression."""
-    if isinstance(b, PriceExpr):
+def _ref(b: str | float | ColExpr) -> pl.Expr:
+    """Resolve a column name, literal, or ColExpr to a Polars expression."""
+    if isinstance(b, ColExpr):
         return b.resolve()
     return pl.col(b) if isinstance(b, str) else pl.lit(b)
 
 
 # ---------------------------------------------------------------------------
-# Composable price expressions
+# Composable column expressions
 # ---------------------------------------------------------------------------
 
 
-class PriceExpr:
-    """Base for composable price expressions that resolve to ``pl.Expr``."""
+def _coerce_cmp(v: ColExpr | str | float | int) -> ColExpr:
+    """Coerce a comparison operand to ColExpr."""
+    if isinstance(v, ColExpr):
+        return v
+    if isinstance(v, str):
+        return Col(v)
+    return Lit(float(v))
+
+
+class ColExpr:
+    """Base for composable column expressions that resolve to ``pl.Expr``."""
 
     __slots__ = ()
 
@@ -29,31 +38,31 @@ class PriceExpr:
 
     # --- arithmetic operators ---
 
-    def __add__(self, other: PriceExpr | float | int) -> _BinOp:
+    def __add__(self, other: ColExpr | float | int) -> _BinOp:
         return _BinOp(self, _coerce(other), "+")
 
     def __radd__(self, other: float | int) -> _BinOp:
         return _BinOp(_coerce(other), self, "+")
 
-    def __sub__(self, other: PriceExpr | float | int) -> _BinOp:
+    def __sub__(self, other: ColExpr | float | int) -> _BinOp:
         return _BinOp(self, _coerce(other), "-")
 
     def __rsub__(self, other: float | int) -> _BinOp:
         return _BinOp(_coerce(other), self, "-")
 
-    def __mul__(self, other: PriceExpr | float | int) -> _BinOp:
+    def __mul__(self, other: ColExpr | float | int) -> _BinOp:
         return _BinOp(self, _coerce(other), "*")
 
     def __rmul__(self, other: float | int) -> _BinOp:
         return _BinOp(_coerce(other), self, "*")
 
-    def __truediv__(self, other: PriceExpr | float | int) -> _BinOp:
+    def __truediv__(self, other: ColExpr | float | int) -> _BinOp:
         return _BinOp(self, _coerce(other), "/")
 
     def __rtruediv__(self, other: float | int) -> _BinOp:
         return _BinOp(_coerce(other), self, "/")
 
-    def __mod__(self, other: PriceExpr | float | int) -> _BinOp:
+    def __mod__(self, other: ColExpr | float | int) -> _BinOp:
         return _BinOp(self, _coerce(other), "%")
 
     def __rmod__(self, other: float | int) -> _BinOp:
@@ -62,9 +71,27 @@ class PriceExpr:
     def __neg__(self) -> _BinOp:
         return _BinOp(Lit(0.0), self, "-")
 
+    # --- comparison operators (return Conditions) ---
+
+    def __gt__(self, other: ColExpr | str | float | int) -> ValueGT:
+        return ValueGT(self, _coerce_cmp(other))
+
+    def __ge__(self, other: ColExpr | str | float | int) -> ValueGTE:
+        return ValueGTE(self, _coerce_cmp(other))
+
+    def __lt__(self, other: ColExpr | str | float | int) -> ValueLT:
+        return ValueLT(self, _coerce_cmp(other))
+
+    def __le__(self, other: ColExpr | str | float | int) -> ValueLTE:
+        return ValueLTE(self, _coerce_cmp(other))
+
+
+# Backward-compat alias
+PriceExpr = ColExpr
+
 
 @dataclass(frozen=True, slots=True)
-class Col(PriceExpr):
+class Col(ColExpr):
     """Column reference — resolves to ``pl.col(name)``."""
 
     name: str
@@ -74,7 +101,7 @@ class Col(PriceExpr):
 
 
 @dataclass(frozen=True, slots=True)
-class Lit(PriceExpr):
+class Lit(ColExpr):
     """Literal constant — resolves to ``pl.lit(value)``."""
 
     value: float
@@ -84,11 +111,11 @@ class Lit(PriceExpr):
 
 
 @dataclass(frozen=True, slots=True)
-class _BinOp(PriceExpr):
+class _BinOp(ColExpr):
     """Binary arithmetic node (internal)."""
 
-    left: PriceExpr
-    right: PriceExpr
+    left: ColExpr
+    right: ColExpr
     op: str
 
     def resolve(self) -> pl.Expr:
@@ -110,16 +137,16 @@ class _BinOp(PriceExpr):
                 raise ValueError(msg)
 
 
-def _coerce(v: PriceExpr | float | int) -> PriceExpr:
+def _coerce(v: ColExpr | float | int) -> ColExpr:
     """Wrap a raw numeric into ``Lit`` if needed."""
-    if isinstance(v, PriceExpr):
+    if isinstance(v, ColExpr):
         return v
     return Lit(float(v))
 
 
-def _coerce_base(v: PriceExpr | str | float) -> PriceExpr:
-    """Coerce a base price to PriceExpr: str -> Col, float -> Lit."""
-    if isinstance(v, PriceExpr):
+def _coerce_base(v: ColExpr | str | float) -> ColExpr:
+    """Coerce a base price to ColExpr: str -> Col, float -> Lit."""
+    if isinstance(v, ColExpr):
         return v
     if isinstance(v, str):
         return Col(v)
@@ -127,7 +154,7 @@ def _coerce_base(v: PriceExpr | str | float) -> PriceExpr:
 
 
 @dataclass(frozen=True, slots=True)
-class Pct(PriceExpr):
+class Pct(ColExpr):
     """Price offset by ``pct``% from ``base``.
 
     Positive ``pct`` -> above, negative -> below.
@@ -136,7 +163,7 @@ class Pct(PriceExpr):
     ``Pct("close", -0.5)`` -> ``close * 0.995`` (0.5% below)
     """
 
-    base: PriceExpr | str | float
+    base: ColExpr | str | float
     pct: float
 
     def resolve(self) -> pl.Expr:
@@ -144,7 +171,7 @@ class Pct(PriceExpr):
 
 
 @dataclass(frozen=True, slots=True)
-class EntryRef(PriceExpr):
+class EntryRef(ColExpr):
     """Column value snapshotted at the entry signal bar, forward-filled.
 
     The engine creates ``_entry_{col}`` columns automatically when it
@@ -206,11 +233,11 @@ class Crossunder(Condition):
 
 
 @dataclass(frozen=True, slots=True)
-class PriceIsAbove(Condition):
-    """``a > b`` (column name, constant, or PriceExpr)."""
+class ValueGT(Condition):
+    """``a > b`` (column name, constant, or ColExpr)."""
 
-    a: str | PriceExpr
-    b: str | float | PriceExpr
+    a: str | ColExpr
+    b: str | float | ColExpr
     trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
@@ -218,15 +245,44 @@ class PriceIsAbove(Condition):
 
 
 @dataclass(frozen=True, slots=True)
-class PriceIsBelow(Condition):
-    """``a < b`` (column name, constant, or PriceExpr)."""
+class ValueGTE(Condition):
+    """``a >= b`` (column name, constant, or ColExpr)."""
 
-    a: str | PriceExpr
-    b: str | float | PriceExpr
+    a: str | ColExpr
+    b: str | float | ColExpr
+    trade_side: TradeSide | None = None
+
+    def resolve(self) -> pl.Expr:
+        return _ref(self.a) >= _ref(self.b)
+
+
+@dataclass(frozen=True, slots=True)
+class ValueLT(Condition):
+    """``a < b`` (column name, constant, or ColExpr)."""
+
+    a: str | ColExpr
+    b: str | float | ColExpr
     trade_side: TradeSide | None = None
 
     def resolve(self) -> pl.Expr:
         return _ref(self.a) < _ref(self.b)
+
+
+@dataclass(frozen=True, slots=True)
+class ValueLTE(Condition):
+    """``a <= b`` (column name, constant, or ColExpr)."""
+
+    a: str | ColExpr
+    b: str | float | ColExpr
+    trade_side: TradeSide | None = None
+
+    def resolve(self) -> pl.Expr:
+        return _ref(self.a) <= _ref(self.b)
+
+
+# Backward-compat aliases
+PriceIsAbove = ValueGT
+PriceIsBelow = ValueLT
 
 
 @dataclass(frozen=True, slots=True)
