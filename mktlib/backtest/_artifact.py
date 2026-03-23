@@ -57,17 +57,18 @@ def register_alias(alias_cls: type, canonical_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _hash_val(v: str | float | int | ColExpr) -> bytes:
+def _hash_val(v: str | float | int | ColExpr, *, flat: bool = False) -> bytes:
     """Normalize a condition field value to canonical bytes.
 
     ``str`` -> ``Col(s)``, ``float/int`` -> ``Lit(v)``, ``ColExpr`` -> recurse.
+    When *flat* is True, all numeric literals hash as ``0``.
     """
     if isinstance(v, ColExpr):
-        return _hash_col_expr(v)
+        return _hash_col_expr(v, flat=flat)
     if isinstance(v, str):
         return _hash_col_expr(Col(v))
     if isinstance(v, (int, float)):
-        return _hash_col_expr(Lit(float(v)))
+        return _hash_col_expr(Lit(float(v)), flat=flat)
     return str(v).encode()
 
 
@@ -76,17 +77,22 @@ def _hash_val(v: str | float | int | ColExpr) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def _hash_col_expr(pe: ColExpr) -> bytes:
-    """Recursively hash a ColExpr tree to canonical bytes."""
+def _hash_col_expr(pe: ColExpr, *, flat: bool = False) -> bytes:
+    """Recursively hash a ColExpr tree to canonical bytes.
+
+    When *flat* is True, ``Lit`` values and ``Pct.pct`` hash as ``"0"``.
+    """
     match pe:
         case Col(name):
             return b"Col(" + name.encode() + b")"
         case Lit(value):
-            return b"Lit(" + str(value).encode() + b")"
+            v = "0" if flat else str(value)
+            return b"Lit(" + v.encode() + b")"
         case _BinOp(left, right, op):
-            return b"BinOp(" + _hash_col_expr(left) + op.encode() + _hash_col_expr(right) + b")"
+            return b"BinOp(" + _hash_col_expr(left, flat=flat) + op.encode() + _hash_col_expr(right, flat=flat) + b")"
         case Pct(base, pct):
-            return b"Pct(" + _hash_val(base) + b"," + str(pct).encode() + b")"
+            p = "0" if flat else str(pct)
+            return b"Pct(" + _hash_val(base, flat=flat) + b"," + p.encode() + b")"
         case EntryRef(col):
             return b"EntryRef(" + col.encode() + b")"
         case _:
@@ -98,12 +104,16 @@ def _hash_col_expr(pe: ColExpr) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def _hash_condition(cond: Condition) -> bytes:
+def _hash_condition(cond: Condition, *, flat: bool = False) -> bytes:
     """Recursively hash a Condition tree to canonical bytes.
 
     Uses canonical class names (not Python class names) so aliases
     hash identically.  ``trade_side`` is excluded — it's an execution
     config concern, not part of the signal logic.
+
+    When *flat* is True, all numeric values (``Lit``, ``Pct.pct``,
+    ``IsRising``/``IsFalling`` period) hash as ``"0"``, making the
+    digest parameter-insensitive.
     """
     # Check alias registry first
     canonical = _ALIASES.get(type(cond))
@@ -118,33 +128,35 @@ def _hash_condition(cond: Condition) -> bytes:
         for i, fname in enumerate(fields):
             if i > 0:
                 parts.append(b",")
-            parts.append(_hash_val(getattr(cond, fname)))
+            parts.append(_hash_val(getattr(cond, fname), flat=flat))
         parts.append(b")")
         return b"".join(parts)
 
     match cond:
         case All(left, right, _):
-            return b"All(" + _hash_condition(left) + b"," + _hash_condition(right) + b")"
+            return b"All(" + _hash_condition(left, flat=flat) + b"," + _hash_condition(right, flat=flat) + b")"
         case Any_(left, right, _):
-            return b"Any(" + _hash_condition(left) + b"," + _hash_condition(right) + b")"
+            return b"Any(" + _hash_condition(left, flat=flat) + b"," + _hash_condition(right, flat=flat) + b")"
         case Not(inner, _):
-            return b"Not(" + _hash_condition(inner) + b")"
+            return b"Not(" + _hash_condition(inner, flat=flat) + b")"
         case ValueGT(a, b, _):
-            return b"ValueGT(" + _hash_val(a) + b"," + _hash_val(b) + b")"
+            return b"ValueGT(" + _hash_val(a, flat=flat) + b"," + _hash_val(b, flat=flat) + b")"
         case ValueGTE(a, b, _):
-            return b"ValueGTE(" + _hash_val(a) + b"," + _hash_val(b) + b")"
+            return b"ValueGTE(" + _hash_val(a, flat=flat) + b"," + _hash_val(b, flat=flat) + b")"
         case ValueLT(a, b, _):
-            return b"ValueLT(" + _hash_val(a) + b"," + _hash_val(b) + b")"
+            return b"ValueLT(" + _hash_val(a, flat=flat) + b"," + _hash_val(b, flat=flat) + b")"
         case ValueLTE(a, b, _):
-            return b"ValueLTE(" + _hash_val(a) + b"," + _hash_val(b) + b")"
+            return b"ValueLTE(" + _hash_val(a, flat=flat) + b"," + _hash_val(b, flat=flat) + b")"
         case Crossover(a, b, _):
-            return b"Crossover(" + _hash_val(a) + b"," + _hash_val(b) + b")"
+            return b"Crossover(" + _hash_val(a, flat=flat) + b"," + _hash_val(b, flat=flat) + b")"
         case Crossunder(a, b, _):
-            return b"Crossunder(" + _hash_val(a) + b"," + _hash_val(b) + b")"
+            return b"Crossunder(" + _hash_val(a, flat=flat) + b"," + _hash_val(b, flat=flat) + b")"
         case IsRising(col, period, _):
-            return b"IsRising(" + col.encode() + b"," + str(period).encode() + b")"
+            p = "0" if flat else str(period)
+            return b"IsRising(" + col.encode() + b"," + p.encode() + b")"
         case IsFalling(col, period, _):
-            return b"IsFalling(" + col.encode() + b"," + str(period).encode() + b")"
+            p = "0" if flat else str(period)
+            return b"IsFalling(" + col.encode() + b"," + p.encode() + b")"
         case Custom(expr, _):
             return b"Custom(" + expr.meta.serialize() + b")"
         case _:
@@ -172,12 +184,25 @@ def _get_called_names(source: str) -> set[str]:
     return names
 
 
+def _normalize_source(source: str) -> str:
+    """Return a canonical, formatting-independent representation of *source*.
+
+    Parses through ``ast`` and unparses back, stripping comments,
+    normalizing whitespace/quotes, and producing a deterministic string
+    across formatters and CPython versions.
+    """
+    try:
+        return ast.unparse(ast.parse(textwrap.dedent(source)))
+    except SyntaxError:
+        return source
+
+
 def _get_source_with_refs(
     fn: Callable[..., Any],
     module: types.ModuleType | None,
     visited: set[str],
 ) -> bytes:
-    """Get dedented source of *fn* and recursively follow same-module references."""
+    """Get normalized source of *fn* and recursively follow same-module references."""
     try:
         source = textwrap.dedent(inspect.getsource(fn))
     except (OSError, TypeError):
@@ -188,7 +213,7 @@ def _get_source_with_refs(
         return b""
     visited.add(fn_name)
 
-    parts = [source.encode()]
+    parts = [_normalize_source(source).encode()]
 
     # Follow function references within the same module
     if module is not None:
@@ -220,31 +245,42 @@ def _hash_init(strategy: Strategy) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def combined_strategy_artifact(
+    long_strategy: Strategy,
+    short_strategy: Strategy,
+) -> str:
+    """Return a deterministic 16-char hex digest for a long+short strategy pair.
+
+    Delegates to ``strategy_artifact`` for each side and hashes the
+    pair. Order matters — swapping long/short changes the hash.
+    """
+    long_art = strategy_artifact(long_strategy)
+    short_art = strategy_artifact(short_strategy)
+    return hashlib.sha256(f"{long_art}|{short_art}".encode()).hexdigest()[:16]
+
+
 def strategy_artifact(strategy: Strategy) -> str:
     """Return a deterministic 16-char hex digest for a strategy instance.
 
     The hash is derived from:
     1. The strategy class name
-    2. The entry/exit condition trees (recursive walk)
+    2. The evaluated condition trees from ``entry()`` / ``exit()``,
+       with all ``Lit`` values and numeric fields flattened to ``0``
     3. The ``init()`` method source + same-module helper functions
 
-    Aliases (e.g. ``PriceIsAbove = ValueGT``) hash identically since
-    they're the same class.  ``Col("a") > 100`` and ``ValueGT("a", 100)``
-    also hash identically via value normalization.
+    Flattening literals makes the digest **parameter-insensitive** —
+    stable across different parameter values for the same strategy class.
     """
     entry = strategy.entry()
     exit_ = strategy.exit()
-
-    # Normalize bare pl.Expr to Custom
     if not isinstance(entry, Condition):
         entry = Custom(entry)
     if not isinstance(exit_, Condition):
         exit_ = Custom(exit_)
-
     parts = [
         type(strategy).__name__.encode(),
-        _hash_condition(entry),
-        _hash_condition(exit_),
+        _hash_condition(entry, flat=True),
+        _hash_condition(exit_, flat=True),
         _hash_init(strategy),
     ]
     return hashlib.sha256(b"|".join(parts)).hexdigest()[:16]

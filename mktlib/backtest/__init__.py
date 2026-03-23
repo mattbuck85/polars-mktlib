@@ -23,7 +23,7 @@ from mktlib.backtest._conditions import (
     ValueLT,
     ValueLTE,
 )
-from mktlib.backtest._artifact import register_alias, strategy_artifact
+from mktlib.backtest._artifact import combined_strategy_artifact, register_alias, strategy_artifact
 from mktlib.backtest._engine import run
 from mktlib.backtest._types import BacktestResult, InitStrategy, MultiBacktestResult, Strategy, TradeSide
 
@@ -32,6 +32,7 @@ __all__ = [
     "Any_",
     "BacktestResult",
     "Col",
+    "combined_strategy_artifact",
     "ColExpr",
     "Condition",
     "Crossover",

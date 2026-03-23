@@ -20,6 +20,7 @@ from mktlib.backtest import (
     ValueGTE,
     ValueLT,
     ValueLTE,
+    combined_strategy_artifact,
     register_alias,
     strategy_artifact,
 )
@@ -88,9 +89,9 @@ class TestArtifactIdentity:
     def test_equal_instances_same_hash(self):
         assert strategy_artifact(SimpleLong()) == strategy_artifact(SimpleLong())
 
-    def test_different_param_different_hash(self):
-        """Changing a param that affects conditions changes the hash."""
-        assert strategy_artifact(TPSLStrategy(tp_pct=5.0)) != strategy_artifact(TPSLStrategy(tp_pct=10.0))
+    def test_different_param_same_hash(self):
+        """Same class with different params produces the same hash (flat condition tree)."""
+        assert strategy_artifact(TPSLStrategy(tp_pct=5.0)) == strategy_artifact(TPSLStrategy(tp_pct=10.0))
 
     def test_hash_is_16_hex_chars(self):
         h = strategy_artifact(SimpleLong())
@@ -184,6 +185,48 @@ class TestArtifactInit:
         assert b"_helper_init" in h
         assert b"rolling_mean" in h
 
+    def test_init_normalize_strips_comments(self):
+        """Comments don't affect the init hash."""
+        from mktlib.backtest._artifact import _normalize_source
+        a = _normalize_source("def f(x):\n    # important comment\n    return x + 1\n")
+        b = _normalize_source("def f(x):\n    return x + 1\n")
+        assert a == b
+
+    def test_init_normalize_strips_whitespace(self):
+        """Extra blank lines and trailing whitespace don't affect the hash."""
+        from mktlib.backtest._artifact import _normalize_source
+        a = _normalize_source("def f(x):  \n\n    return x + 1  \n\n")
+        b = _normalize_source("def f(x):\n    return x + 1\n")
+        assert a == b
+
+    def test_init_normalize_quote_style(self):
+        """Single vs double quotes produce the same normalized source."""
+        from mktlib.backtest._artifact import _normalize_source
+        a = _normalize_source('x = "hello"\n')
+        b = _normalize_source("x = 'hello'\n")
+        assert a == b
+
+    def test_init_normalize_syntax_error_passthrough(self):
+        """Unparseable source is returned as-is (fallback)."""
+        from mktlib.backtest._artifact import _normalize_source
+        bad = "def f(x:\n"
+        assert _normalize_source(bad) == bad
+
+    def test_init_hash_formatting_invariant(self):
+        """Two semantically identical init methods with different formatting hash the same."""
+        # Simulate two differently-formatted versions of the same function body
+        compact = "def init(self, df):\n    return df.with_columns(pl.col('close').rolling_mean(10).alias('sma'))\n"
+        spaced = (
+            "def init(self, df):\n"
+            "    # compute SMA\n"
+            "    return df.with_columns(\n"
+            "        pl.col('close').rolling_mean(10).alias('sma'),\n"
+            "    )\n"
+        )
+        # Both should normalize identically
+        from mktlib.backtest._artifact import _normalize_source
+        assert _normalize_source(compact) == _normalize_source(spaced)
+
 
 class TestArtifactComposition:
     def test_and_or_order_matters(self):
@@ -210,9 +253,9 @@ class TestArtifactComposition:
         h2 = strategy_artifact(TPSLStrategy())
         assert h1 == h2
 
-    def test_tpsl_param_change(self):
-        """Changing tp_pct changes the hash."""
-        assert strategy_artifact(TPSLStrategy(tp_pct=5.0)) != strategy_artifact(TPSLStrategy(tp_pct=10.0))
+    def test_tpsl_param_change_same_hash(self):
+        """Changing tp_pct doesn't change the hash (flat condition tree)."""
+        assert strategy_artifact(TPSLStrategy(tp_pct=5.0)) == strategy_artifact(TPSLStrategy(tp_pct=10.0))
 
 
 class TestArtifactConditionCoverage:
@@ -264,3 +307,37 @@ class TestArtifactConditionCoverage:
         h = _hash_col_expr(pe)
         assert b"Pct" in h
         assert b"EntryRef" in h
+
+
+class TestCombinedStrategyArtifact:
+    def test_returns_16_hex_chars(self):
+        h = combined_strategy_artifact(SimpleLong(), TPSLStrategy())
+        assert len(h) == 16
+        int(h, 16)  # valid hex
+
+    def test_deterministic(self):
+        h1 = combined_strategy_artifact(SimpleLong(), TPSLStrategy())
+        h2 = combined_strategy_artifact(SimpleLong(), TPSLStrategy())
+        assert h1 == h2
+
+    def test_order_matters(self):
+        """Swapping long/short produces a different hash."""
+        h1 = combined_strategy_artifact(SimpleLong(), TPSLStrategy())
+        h2 = combined_strategy_artifact(TPSLStrategy(), SimpleLong())
+        assert h1 != h2
+
+    def test_param_change_does_not_change_hash(self):
+        """Same strategy class with different params produces the same combined hash.
+
+        Condition trees are hashed with flat=True (all Lit values → 0),
+        so the digest is parameter-insensitive — useful for caching during optimization sweeps.
+        """
+        h1 = combined_strategy_artifact(SimpleLong(), TPSLStrategy(tp_pct=5.0))
+        h2 = combined_strategy_artifact(SimpleLong(), TPSLStrategy(tp_pct=10.0))
+        assert h1 == h2
+
+    def test_different_class_changes_hash(self):
+        """Different strategy classes produce different combined hashes."""
+        h1 = combined_strategy_artifact(SimpleLong(), TPSLStrategy())
+        h2 = combined_strategy_artifact(SimpleLong(), SimpleLong())
+        assert h1 != h2
