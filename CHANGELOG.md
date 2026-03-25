@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+### Fixed
+
+- **`_align_tz` cross-timezone comparison** — `filter_market_hours()` and `_build_session_last_mask()` raised `SchemaError` when bar timestamps were UTC and the calendar schedule was in exchange-local time (e.g. `America/New_York`). Polars does not support cross-timezone `>=`/`<=` comparisons. Fixed by adding a `convert_time_zone` branch when both series are tz-aware but differ — converts target to reference timezone, preserving the underlying moment in time.
+
 ## 0.8.0
 
 ### Added

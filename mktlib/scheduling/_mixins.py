@@ -43,6 +43,8 @@ def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
         return target.dt.replace_time_zone(None)
     if ref_tz is not None and tgt_tz is None:
         return target.dt.replace_time_zone(ref_tz)
+    if ref_tz is not None and tgt_tz is not None and ref_tz != tgt_tz:
+        return target.dt.convert_time_zone(ref_tz)
     return target
 
 
