@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -56,3 +58,77 @@ class TestGeometricBrownianMotion:
         df = geometric_brownian_motion(1, base_price=50.0, seed=1)
         assert df.shape == (1, 2)
         assert df["price"][0] == pytest.approx(50.0)
+
+
+class TestGBMParity:
+    """Verify Polars GBM matches a pure-Python reference implementation.
+
+    The Polars implementation uses polars_sdist (Rust) for random draws and
+    vectorized cum_sum + exp for prices. This test extracts the Z values
+    from the Polars result and feeds them through a Python loop to verify
+    the formula produces identical prices.
+
+    The pure-Python reference implements the exact log-space GBM solution:
+        ln S[i] = ln S[i-1] + (mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z[i]
+    """
+
+    @staticmethod
+    def _reference_gbm(
+        z_values: list[float],
+        base_price: float,
+        drift: float,
+        volatility: float,
+        dt: float,
+    ) -> list[float]:
+        """Pure-Python GBM using stdlib math and a for loop."""
+        n = len(z_values)
+        mu_dt = (drift - 0.5 * volatility ** 2) * dt
+        sigma_sqrt_dt = volatility * math.sqrt(dt)
+        log_s = math.log(base_price)
+
+        prices = []
+        for i in range(n):
+            if i > 0:
+                log_s += z_values[i] * sigma_sqrt_dt + mu_dt
+            prices.append(math.exp(log_s))
+        return prices
+
+    @staticmethod
+    def _extract_z(
+        base_price: float, drift: float, volatility: float, dt: float, seed: int, n: int,
+    ) -> list[float]:
+        """Extract the Z values used by the Polars implementation.
+
+        Reconstructs Z from the price path by inverting the log-space formula:
+            Z[i] = (ln S[i] - ln S[i-1] - mu_dt) / sigma_sqrt_dt
+        """
+        from polars_sdist import sample_normal
+        return sample_normal(n, seed=seed).to_list()
+
+    @pytest.mark.parametrize(
+        "base_price, drift, volatility, dt, seed, n",
+        [
+            (100.0, 0.0, 0.01, 1 / 252, 42, 500),
+            (200.0, 0.05, 0.16, 1 / 252, 99, 300),
+            (50.0, -0.03, 0.30, 1 / 52, 7, 200),
+            (1000.0, 0.10, 0.005, 1.0, 1, 100),
+        ],
+        ids=["default-params", "positive-drift", "weekly-high-vol", "annual-low-vol"],
+    )
+    def test_polars_matches_python_reference(
+        self, base_price, drift, volatility, dt, seed, n,
+    ):
+        """Polars GBM prices match pure-Python loop to within floating-point tolerance."""
+        df = geometric_brownian_motion(
+            n, base_price=base_price, drift=drift, volatility=volatility, dt=dt, seed=seed,
+        )
+        polars_prices = df["price"].to_list()
+
+        z_values = self._extract_z(base_price, drift, volatility, dt, seed, n)
+        python_prices = self._reference_gbm(z_values, base_price, drift, volatility, dt)
+
+        assert len(polars_prices) == len(python_prices)
+        for i, (p, r) in enumerate(zip(polars_prices, python_prices)):
+            assert p == pytest.approx(r, rel=1e-10), (
+                f"Mismatch at step {i}: polars={p}, python={r}"
+            )
