@@ -1,5 +1,117 @@
 # Changelog
 
+## 0.8.1
+
+### Fixed
+
+- **`_align_tz` cross-timezone comparison** — `filter_market_hours()` and `_build_session_last_mask()` raised `SchemaError` when bar timestamps were UTC and the calendar schedule was in exchange-local time (e.g. `America/New_York`). Polars does not support cross-timezone `>=`/`<=` comparisons. Fixed by adding a `convert_time_zone` branch when both series are tz-aware but differ — converts target to reference timezone, preserving the underlying moment in time.
+
+## 0.8.0
+
+### Added
+
+- **`ValueGT` / `ValueLT` conditions** — renamed from `PriceIsAbove` / `PriceIsBelow` for clarity. Old names remain as aliases for backward compatibility.
+- **`ValueGTE` / `ValueLTE` conditions** — new `>=` and `<=` comparisons.
+- **`ColExpr` comparison operators** — `Col("a") > 100` now returns `ValueGT(Col("a"), Lit(100.0))`, enabling natural expression syntax. Supports `>`, `>=`, `<`, `<=`.
+- **`ColExpr` base class** — renamed from `PriceExpr`. Old name remains as alias.
+- **`InitStrategy` protocol** — typed protocol for strategies that define `init(df) -> DataFrame`, extending the base `Strategy` protocol.
+- **`strategy_artifact(strategy)`** — deterministic 16-char hex fingerprint for any strategy instance. Evaluates the `entry()`/`exit()` condition trees and hashes them with all `Lit` values flattened to `0`, plus the `init()` source normalized via `ast.unparse` (formatting/comment-insensitive, with same-module reference following). **Parameter-insensitive** — stable across different parameter values for the same strategy class.
+- **`combined_strategy_artifact(long, short)`** — deterministic 16-char hex digest for a long+short strategy pair. Delegates to `strategy_artifact` for each side. **Parameter-insensitive** — stable across different parameter values for the same strategy class. Ideal for caching during optimization sweeps.
+- **`register_alias(cls, name)`** — register user-defined wrapper classes for canonical artifact hashing.
+- **Dual-strategy long/short** — `run(df, long_strategy, short_strategy=short_strategy)` runs independent long and short strategies concurrently via `ThreadPoolExecutor`, merging positions, returns, and trades. Overlap detection raises `ValueError` if both sides try to hold simultaneously. Per-trade `side` column (+1/-1) in trades output, `_side` column in signals.
+- **`_side` column** — signals and trades now include side information. `_side` in signals is `+1` (long), `-1` (short), or `0` (flat). `side` in trades is `+1` or `-1`. The side is determined by the `trade_side` parameter on `run()` or the entry condition's `trade_side` field (condition-level overrides `run()`-level).
+
+## 0.7.2
+
+### Added
+
+- **`EntryRef` PriceExpr** — snapshots a column value at the entry signal bar and forward-fills it through the position lifetime. Enables TP/SL exits anchored to the entry price: `PriceIsAbove("close", Pct(EntryRef("close"), 5.0))` resolves to `close > _entry_close * 1.05`. The engine detects `EntryRef` nodes via a tree walker and creates snapshot columns automatically — no manual `init()` work needed.
+
+### Fixed
+
+- **TP/SL exits referencing current bar instead of entry bar** — `Pct("close", 5.0)` resolves to `close * 1.05`, making `PriceIsAbove("close", Pct("close", 5.0))` always false (`close > close * 1.05`). `EntryRef` provides the correct mechanism for entry-anchored thresholds.
+
+## 0.7.1
+
+### Changed
+
+- **`ticks_to_ohlcv` vectorised** — replaced multi-step `shift(-1)` + `max_horizontal` pipeline with a single `group_by` aggregation using `first`/`max`/`min`/`last`, improving performance and eliminating the N+1 tick requirement.
+- **GBM/OU annualised defaults** — `geometric_brownian_motion` and `ornstein_uhlenbeck` now default to `dt=1/252` (one trading day). Pass `drift` and `volatility` as annualised values directly; the function scales them internally.
+- **Monte Carlo deterministic seeding** — `monte_carlo()` now derives per-simulation child seeds from the master seed via `random.Random`, making results fully reproducible. The `seed` column is included in the output for traceability.
+- **Docs updated** — README, Sphinx quickstart, and advanced guide now use annualised conventions for all data generation examples. Added sub-daily `dt` guidance.
+
+## 0.7.0
+
+### Added
+
+- **`Custom` condition** — wrap any `pl.Expr` as a backtest condition via `Custom(expr)`. `Strategy.entry()` and `exit()` now also accept bare `pl.Expr` returns (auto-wrapped to `Custom`).
+- **`Strategy.init(df)` hook** — optional method on strategies to enrich the DataFrame with indicator columns before signal evaluation. Existing strategies without `init` are unaffected.
+- **`MultiBacktestResult`** — returned by `run()` when `instrument_col` is set. Stores per-symbol `BacktestResult` instances for O(1) access (`result["AAPL"]`). Combined views (`.returns`, `.trades`, `.signals`) are lazy-cached with the instrument column prepended. Supports `len()`, iteration, `in`, and `.items()`.
+- **`instrument_col` parameter on `run()`** — pass a column name to backtest a multi-symbol DataFrame. Each symbol is backtested independently (no indicator bleed), with calendar filtering applied once before partitioning.
+
+### Changed
+
+- `Strategy` protocol now accepts `Condition | pl.Expr` returns from `entry()` and `exit()`.
+- Renamed `symbol_col` parameter to `instrument_col` for consistency with financial data conventions.
+- **`fractional_random_walk`** now uses Davies-Harte circulant embedding + RustFFT (O(n log n)), replacing the previous Cholesky decomposition. Powered by [polars-rfft](https://github.com/mattbuck85/polars-rfft) and [polars-sdist](https://github.com/mattbuck85/polars-sdist).
+
+### Fixed
+
+- `TreasuryRate` enum now includes `ONE_AND_HALF_MONTH` (`BC_1_5MONTH`) to match Treasury.gov schema
+- **`flatten_eod` deferred entry** — crossover signals on the last bar of a session were silently dropped. They now carry forward to the first bar of the next session (e.g. signal at 15:59 → fill at next day's 09:30).
+- **`_build_session_last_mask` for non-1-minute candles** — session-last detection no longer hardcodes `market_close - 1min`; it finds the actual last bar per session from the data, fixing `flatten_eod` and deferred entry for 5min, 15min, and other candle sizes.
+
+## 0.6.3
+
+### Fixed
+
+- Use a separate `README_PYPI.md` for the PyPI project page to avoid broken links.
+
+## 0.6.2
+
+### Added
+
+- `ticks_to_ohlcv(ticks, bar_size)` — aggregate tick-level generator output into OHLCV bars with synthetic lognormal volume. Supports all generators (`column="price"` for GBM/fRW, `column="value"` for OU).
+- `docs/advanced.rst` — end-to-end grid search optimization guide: SMA crossover parameterization, TP/SL exits, two-stage search scored by Sharpe ratio with risk-free rate from `get_risk_free_rate`.
+- `scripts/grid_search_sma.py` — standalone runnable version of the advanced guide.
+
+### Changed
+
+- Benchmark scripts (`bench_backtest.py`, `bench_macd_market.py`, `bench_single_pass.py`) simplified — removed redundant imports and unused variables.
+
+## 0.6.1
+
+### Added
+
+- `ExchangeCalendar.filter_market_hours(df)` — filter a DataFrame to market hours using an efficient schedule join. Recommended over `trading_index()` for filtering existing data.
+
+### Changed
+
+- Backtest engine now uses `filter_market_hours()` internally, removing duplicated schedule-join logic.
+
+## 0.6.0
+
+### Added
+
+- **`mktlib.backtest` subpackage** — vectorized backtesting engine with fill-at-next-open semantics.
+  - `run(df, strategy)` — main entry point. Accepts a DataFrame with OHLC data and a strategy object, returns `BacktestResult` with per-bar returns, trade log, and full signal frame.
+  - `Strategy` protocol — implement `entry()` and `exit()` methods returning `Condition`.
+  - `BacktestResult` dataclass — `returns` (DataFrame), `trades` (DataFrame), `signals` (DataFrame).
+  - `TradeSide` enum — `LONG` / `SHORT`. Settable per-run or per-condition.
+  - **Composable conditions** — `Crossover`, `Crossunder`, `PriceIsAbove`, `PriceIsBelow`, `IsRising`, `IsFalling`, `All`, `Any_`, `Not`. Compose with `&`, `|`, `~` operators.
+  - **Composable price expressions** — `PriceExpr`, `Col`, `Lit`, `Pct` for building dynamic exit levels (e.g. take-profit / stop-loss) with full arithmetic (`+`, `-`, `*`, `/`, `%`).
+  - Exchange calendar integration — optional `calendar` parameter filters data to market hours via schedule join. `flatten_eod=True` force-closes positions at session boundaries.
+- **`mktlib.metrics` subpackage** — standalone financial metric functions on Polars return series.
+  - `calculate_metric(Metric, ret)` — unified dispatcher for all 17 metrics with lazy drawdown computation.
+  - `Metric` enum — `CUMULATIVE_RETURN`, `CAGR`, `ANNUALIZED_VOLATILITY`, `MAX_DRAWDOWN`, `AVG_DRAWDOWN`, `LONGEST_DRAWDOWN_DAYS`, `SHARPE`, `SORTINO`, `CALMAR`, `ROMAD`, `OMEGA`, `VAR`, `CVAR`, `WIN_RATE`, `PAYOFF_RATIO`, `PROFIT_FACTOR`, `KELLY_CRITERION`.
+  - Standalone functions: `sharpe()`, `sortino()`, `calmar()`, `romad()`, `omega()`, `var()`, `cvar()`, `cumulative_return()`, `cagr()`, `annualized_volatility()`, `avg_drawdown()`, `longest_drawdown_days()`, `win_rate()`, `payoff_ratio()`, `profit_factor()`, `kelly_criterion()`, `drawdown_series()`.
+- **`mktlib.reports` subpackage** — Polars-native tearsheet generation behind `[reports]` optional extra (`pip install mktlib[reports]`).
+  - `html(returns, *, benchmark, output, ...)` — 25-metric interactive HTML tearsheet with 8 Plotly charts. Supports `pl.DataFrame`, `pl.Series`, and `pd.Series` inputs.
+  - `metrics(returns, *, benchmark, ...)` — compute all 25 metrics without HTML output, returns `MetricsResult` dataclass.
+  - `rf="auto"` — automatically fetches 3-month T-bill average from `mktlib.rates` for the returns period.
+  - Custom metrics, charts, and Jinja2 templates via `extra_metrics`, `extra_charts`, and `template` parameters.
+- Educational disclaimer in README.
+
 ## 0.5.4
 
 ### Changed

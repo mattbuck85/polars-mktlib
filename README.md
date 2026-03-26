@@ -4,12 +4,25 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Documentation](https://readthedocs.org/projects/polars-mktlib/badge/?version=latest)](https://polars-mktlib.readthedocs.io/en/latest/)
 
-Polars-native financial market toolkit. Zero pandas dependency.
+Financial market toolkit built entirely on Polars.
+
+### 📬 tl;dr
+
+⚡ **Fast enough for real work** — vectorized Polars engine grid-searches thousands of parameter combos on minute-bar data without reaching for Numba or Cython
+
+📦 **Lightweight** — pure Polars throughout, including synthetic data generation via Rust-native plugins. No pandas, no NumPy, no heavy ML stack
+
+🧪 **Well tested** — cross-validated exchange calendars, full backtest parity tests across engines, and pandera schema validation on every DataFrame-returning function to guarantee no silent column/dtype regressions
+
+🧰 **Swiss-army knife** — scheduling, rates, metrics, backtesting, reporting, and data generation in one package. Great for learning, prototyping, or production
+
+📄 **Apache 2.0** — use it anywhere, fork it, vendor it, no strings attached
+
+> **Disclaimer:** Backtesting results and any computed market returns are for **educational and research purposes only**. They do not constitute financial advice, and past performance does not indicate future results.
 
 ## Table of Contents
 
 - [Installation](#installation)
-- [Data](#data--synthetic-generators)
 - [Scheduling](#scheduling)
   - [Supported Exchanges](#supported-exchanges)
   - [Schedule & Trading Days](#schedule--trading-days)
@@ -24,6 +37,17 @@ Polars-native financial market toolkit. Zero pandas dependency.
   - [Available Instruments](#available-instruments)
   - [Caching](#caching)
   - [Rates API](#rates-api)
+- [Metrics](#metrics--standalone-functions)
+  - [Quick Start](#metrics-quick-start)
+  - [Available Metrics](#available-metrics)
+  - [Dispatcher](#dispatcher)
+  - [Drawdown Series](#drawdown-series)
+- [Backtest](#backtest--vectorized-engine)
+  - [Quick Start](#backtest-quick-start)
+  - [Conditions](#conditions)
+  - [Calendar & Flatten EOD](#calendar--flatten-eod)
+  - [Trade Side](#trade-side)
+  - [Backtest API](#backtest-api)
 - [Reports](#reports--tearsheet-generation)
   - [Quick Start](#reports-quick-start)
   - [Input Types](#input-types)
@@ -33,52 +57,17 @@ Polars-native financial market toolkit. Zero pandas dependency.
   - [Custom Metrics, Charts & Templates](#custom-metrics-charts--templates)
   - [Reports API](#reports-api)
   - [Migration from quantstats](#migration-from-quantstats)
+- [Data](#data--synthetic-generators)
 - [Development](#development)
 - [License](#license)
 
 ## Installation
 
 ```bash
-pip install mktlib              # core (scheduling + rates)
-pip install mktlib[data]        # + synthetic data generators (numpy)
+pip install mktlib              # core (scheduling, rates, metrics, backtest)
+pip install mktlib[data]        # + synthetic data generators (polars-sdist, polars-rfft)
 pip install mktlib[reports]     # + tearsheet generation (plotly, jinja2)
 ```
-
-## Data — Synthetic Generators
-
-`mktlib.data` provides stochastic process generators for testing, simulation, and Monte Carlo analysis. All functions return Polars DataFrames with seeded RNG for reproducibility.
-
-```python
-from mktlib.data import (
-    fractional_random_walk,
-    geometric_brownian_motion,
-    monte_carlo,
-    ornstein_uhlenbeck,
-)
-
-# Standard random walk
-walk = fractional_random_walk(1000, seed=42)
-
-# Trending path (Hurst > 0.5)
-trending = fractional_random_walk(1000, hurst=0.8, seed=42)
-
-# GBM price path with 5% drift, 20% annual vol
-gbm = geometric_brownian_motion(252, drift=0.05/252, volatility=0.20/252**0.5, seed=42)
-
-# Mean-reverting process
-ou = ornstein_uhlenbeck(500, theta=0.7, mu=100.0, sigma=1.0, seed=42)
-
-# 1000 Monte Carlo simulations of GBM
-sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42)
-# Returns DataFrame with columns [simulation, step, price]
-```
-
-| Function | Process | Output columns |
-|-|-|-|
-| `fractional_random_walk` | Fractional Brownian motion (Cholesky) | `step`, `price` |
-| `geometric_brownian_motion` | Log-normal GBM: dS = μSdt + σSdW | `step`, `price` |
-| `ornstein_uhlenbeck` | Mean-reverting: dx = θ(μ−x)dt + σdW | `step`, `value` |
-| `monte_carlo` | N simulations of any generator | `simulation`, `step`, ... |
 
 ## Scheduling
 
@@ -159,28 +148,43 @@ idx = cal.trading_index("2024-01-02", "2024-01-02", period="5m")
 idx = cal.trading_index("2024-01-02", "2024-01-05", period="1m", closed="right")
 ```
 
+### Filter Market Hours
+
+Filter an existing DataFrame to market hours — more efficient than
+`trading_index()` when you already have data:
+
+```python
+cal = get_calendar("NYSE")
+
+# Filter intraday bars to market hours only
+filtered = cal.filter_market_hours(df, date_column="date")
+```
+
+Handles early closes, timezone alignment (naive or aware), and lunch
+breaks (JPX, HKEX, SSE) automatically.
+
 ### Custom Calendars
 
 ```python
-from datetime import time
+from datetime import date, time
 from mktlib.scheduling import ExchangeCalendar, register_exchange
 from mktlib.scheduling.rules import HolidayRule, AdhocClosure, EarlyClose
 
 cal = ExchangeCalendar(
-    name="XTKS",
-    timezone="Asia/Tokyo",
-    open_time=time(9, 0),
-    close_time=time(15, 0),
+    name="XICE",
+    timezone="Atlantic/Reykjavik",
+    open_time=time(9, 30),
+    close_time=time(15, 30),
     holidays=[
         HolidayRule("New Year's Day", month=1, day=1),
-        HolidayRule("Coming of Age Day", month=1, weekday=0, week=2),  # 2nd Monday
+        HolidayRule("National Day", month=6, day=17),
+        HolidayRule("Commerce Day", month=8, weekday=0, week=1),  # 1st Monday
     ],
     adhoc_closures=[AdhocClosure("Special", [date(2024, 1, 4)])],
-    early_closes=[EarlyClose("Half Day", close_time=time(11, 30), dates=[date(2024, 12, 31)])],
+    early_closes=[EarlyClose("Half Day", close_time=time(12, 0), dates=[date(2024, 12, 31)])],
 )
 
-# Register for lookup via get_calendar()
-register_exchange("XTKS", lambda: cal, aliases=["TSE", "Tokyo"])
+register_exchange("XICE", lambda: cal, aliases=["Iceland"])
 ```
 
 ### Holiday Rules
@@ -210,6 +214,7 @@ register_exchange("XTKS", lambda: cal, aliases=["TSE", "Tokyo"])
 | `previous_open(dt)` | `datetime` | Previous market open |
 | `previous_close(dt)` | `datetime` | Previous market close |
 | `minute_to_session(dt)` | `date \| None` | Session containing datetime |
+| `filter_market_hours(df, date_column)` | `pl.DataFrame` | Filter rows to market hours |
 | `trading_index(start, end, period, closed)` | `pl.Series` | Intraday timestamp index |
 
 All date parameters accept `date` objects or ISO-format strings (`"2024-01-02"`).
@@ -324,6 +329,246 @@ def get_treasury_spread(
 | `get_mean_treasury_rate` | `float` | Mean rate with configurable method (arithmetic or geometric) |
 | `get_treasury_rates` | `pl.DataFrame` | Daily rates — single (`date`, `rate`), multi/all (wide, one col per instrument) |
 | `get_treasury_spread` | `pl.DataFrame` | Daily spread (`date`, `spread`) between two instruments |
+
+## Metrics — Standalone Functions
+
+`mktlib.metrics` provides standalone financial metric functions operating on Polars return series. No dependencies beyond polars.
+
+### Metrics Quick Start
+
+```python
+from mktlib.metrics import (
+    sharpe, sortino, cumulative_return, cagr,
+    drawdown_series, calculate_metric, Metric,
+)
+
+# Individual functions
+sr = sharpe(returns_series, rf=0.05)
+cr = cumulative_return(returns_series)
+dd = drawdown_series(returns_series)
+
+# Dispatcher — compute any metric by enum
+sr = calculate_metric(Metric.SHARPE, returns_series, rf=0.05)
+```
+
+### Available Metrics
+
+| Function | Signature | Description |
+|-|-|-|
+| `cumulative_return` | `(ret, compounded=True)` | Total cumulative return |
+| `cagr` | `(ret, compounded=True, ppy=252)` | Compound annual growth rate |
+| `annualized_volatility` | `(ret, ppy=252)` | Annualized std deviation |
+| `sharpe` | `(ret, ppy=252, rf=0.0)` | Annualized Sharpe ratio |
+| `sortino` | `(ret, ppy=252, rf=0.0)` | Annualized Sortino ratio (downside deviation) |
+| `omega` | `(ret, ppy=252, rf=0.0)` | Omega ratio (gains / losses above threshold) |
+| `var` | `(ret, alpha=0.05)` | Value at Risk at alpha confidence |
+| `cvar` | `(ret, alpha=0.05)` | Conditional VaR (Expected Shortfall) |
+| `win_rate` | `(ret)` | Fraction of positive-return bars |
+| `payoff_ratio` | `(ret)` | Average win / average loss |
+| `profit_factor` | `(ret)` | Sum of gains / sum of losses |
+| `kelly_criterion` | `(ret)` | Kelly criterion from bar-level returns |
+| `avg_drawdown` | `(dd)` | Average drawdown during episodes |
+| `longest_drawdown_days` | `(dd, dates)` | Longest drawdown in calendar days |
+
+All functions accept `pl.Series` and return `float`. Empty inputs return `0.0`.
+
+### Dispatcher
+
+```python
+from mktlib.metrics import calculate_metric, Metric
+
+result = calculate_metric(
+    Metric.SHARPE,
+    returns_series,
+    ppy=252,
+    rf=0.05,
+    alpha=0.05,       # for VaR/CVaR
+    compounded=True,   # for cumulative return / drawdown
+    dd=dd_series,      # optional pre-computed drawdown
+    dates=date_series, # required for LONGEST_DRAWDOWN_DAYS
+)
+```
+
+Lazily computes drawdown when needed. `CALMAR` (CAGR / max DD), `ROMAD` (cum return / max DD), and `MAX_DRAWDOWN` are computed inline in the dispatcher.
+
+### Drawdown Series
+
+```python
+dd = drawdown_series(returns_series, compounded=True)
+# Returns pl.Series of drawdown values (0 = at peak, negative = below peak)
+```
+
+## Backtest — Vectorized Engine
+
+`mktlib.backtest` provides a signal-driven backtesting engine with fill-at-next-open semantics. Strategies define entry/exit conditions as composable Polars expressions. Supports exchange calendar filtering, session-boundary position management, and long/short sides.
+
+### Backtest Quick Start
+
+```python
+from dataclasses import dataclass
+from mktlib.backtest import run, Crossover, Crossunder, BacktestResult
+
+@dataclass(frozen=True, slots=True)
+class SmaCross:
+    def entry(self) -> Crossover:
+        return Crossover("fast_sma", "slow_sma")
+
+    def exit(self) -> Crossunder:
+        return Crossunder("fast_sma", "slow_sma")
+
+# df must have: date, open, close, fast_sma, slow_sma
+result: BacktestResult = run(df, SmaCross())
+
+result.returns   # DataFrame[date, return] — per-bar strategy returns
+result.trades    # DataFrame[entry_date, exit_date, pnl, bars_held]
+result.signals   # Full frame with _entry, _exit, _position columns
+```
+
+**Fill-at-next-open model**: signal at bar *t* generates a market order that fills at bar *t+1*'s open.
+
+| Bar type | Return formula |
+|-|-|
+| Entry bar (*t+1*) | `(close - open) / open` |
+| Middle bars | `close / prev_close - 1` |
+| Exit bar | `(open - prev_close) / prev_close` |
+
+### Conditions
+
+Conditions resolve to boolean `pl.Expr` and compose with `&`, `|`, `~`:
+
+```python
+from mktlib.backtest import (
+    Crossover, Crossunder, ValueGT, ValueLT,
+    IsRising, IsFalling, All, Any_, Not,
+)
+
+# Column crosses above column or constant
+entry = Crossover("fast", "slow")
+entry = Crossover("rsi", 30.0)
+
+# Compose conditions
+entry = Crossover("fast", "slow") & ValueGT("close", "sma_200")
+exit = Crossunder("fast", "slow") | ValueLT("close", "stop_loss")
+```
+
+| Condition | Description |
+|-|-|
+| `Crossover(a, b)` | `a` crosses above `b` (column or constant) |
+| `Crossunder(a, b)` | `a` crosses below `b` |
+| `ValueGT(a, b)` | `a > b` |
+| `ValueGTE(a, b)` | `a >= b` |
+| `ValueLT(a, b)` | `a < b` |
+| `ValueLTE(a, b)` | `a <= b` |
+| `IsRising(col, period)` | Value > value `period` bars ago |
+| `IsFalling(col, period)` | Value < value `period` bars ago |
+| `All(a, b)` / `a & b` | Both conditions true |
+| `Any_(a, b)` / `a \| b` | Either condition true |
+| `Not(a)` / `~a` | Invert condition |
+| `Custom(expr)` | Any `pl.Expr` evaluating to boolean |
+
+### Column Expressions
+
+Column expressions build composable numeric trees for use with `ValueGT` / `ValueLT` (and their `>=`/`<=` variants). They support arithmetic (`+`, `-`, `*`, `/`), comparison operators (`>`, `>=`, `<`, `<=`), and mix with column names and float literals.
+
+| Expression | Description | Resolves to |
+|-|-|-|
+| `Col("sma")` | Column reference | `pl.col("sma")` |
+| `Lit(100.0)` | Literal constant | `pl.lit(100.0)` |
+| `Pct("close", 5)` | 5% above column | `close * 1.05` |
+| `Pct("close", -3)` | 3% below column | `close * 0.97` |
+| `EntryRef("close")` | Entry-bar snapshot | `pl.col("_entry_close")` |
+
+`EntryRef` captures a column's value at the entry signal bar and forward-fills it. This is essential for TP/SL exits anchored to the entry price rather than the current bar:
+
+```python
+from mktlib.backtest import (
+    Crossover, Crossunder, EntryRef, Pct, ValueGT, ValueLT,
+)
+
+class EmaCrossTP:
+    def entry(self) -> Crossover:
+        return Crossover("ema_fast", "ema_slow")
+
+    def exit(self):
+        return (
+            Crossunder("ema_fast", "ema_slow")
+            | ValueGT("close", Pct(EntryRef("close"), 5.0))   # TP: 5% above entry close
+            | ValueLT("close", Pct(EntryRef("close"), -3.0))  # SL: 3% below entry close
+        )
+```
+
+> **Why not `Pct("close", 5)`?** That resolves to `close > close * 1.05` — always false. The threshold must reference the *entry bar's* close, not the current bar's. `EntryRef("close")` resolves to a snapshot column (`_entry_close`) that the engine creates automatically.
+
+For arbitrary logic, use `Custom` or return a bare `pl.Expr` from `entry()`/`exit()` (auto-wrapped as `Custom`):
+
+```python
+from mktlib.backtest import Custom, TradeSide
+
+# Any polars expression — with explicit short side
+entry = Custom(pl.col("rsi") > 70, trade_side=TradeSide.SHORT)
+exit_ = Custom(pl.col("rsi") < 30)
+
+# Or return a bare pl.Expr — auto-wrapped as Custom with the run() default side
+class RsiStrategy:
+    def entry(self) -> pl.Expr:
+        return pl.col("rsi") < 30
+
+    def exit(self) -> pl.Expr:
+        return pl.col("rsi") > 70
+```
+
+### Calendar & Flatten EOD
+
+```python
+from mktlib.scheduling import get_calendar
+
+cal = get_calendar("NYSE")
+
+# Filter to market hours only
+result = run(df, SmaCross(), calendar=cal)
+
+# Force-close positions at session end (no overnight exposure)
+result = run(df, SmaCross(), calendar=cal, flatten_eod=True)
+```
+
+With `flatten_eod=True`:
+- Positions are forced to 0 at each session's last bar (e.g. 15:59 for NYSE)
+- Entries are suppressed on session-last bars
+- Session-forced exits fill at the session-last bar's open (not next session's open)
+- Overnight gaps are never captured
+
+### Trade Side
+
+```python
+from mktlib.backtest import TradeSide
+
+# Short side — returns are negated
+result = run(df, SmaCross(), trade_side=TradeSide.SHORT)
+
+# Or set trade_side on the entry condition (overrides run() default)
+entry = Crossover("fast", "slow", trade_side=TradeSide.SHORT)
+```
+
+### Backtest API
+
+```python
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    trade_side: TradeSide = TradeSide.LONG,
+    calendar: ExchangeCalendar | None = None,
+    flatten_eod: bool = False,
+) -> BacktestResult: ...
+```
+
+| Parameter | Description |
+|-|-|
+| `df` | Must contain `date`, `open`, `close`, and indicator columns |
+| `strategy` | Object with `entry()` and `exit()` returning `Condition` |
+| `trade_side` | `LONG` (+1) or `SHORT` (-1); overridden by condition's `trade_side` |
+| `calendar` | Exchange calendar for market-hours filtering |
+| `flatten_eod` | Force-close at session end; requires `calendar` |
 
 ## Reports — Tearsheet Generation
 
@@ -448,6 +693,44 @@ html(returns, benchmark=bench, output="report.html", title="My Strategy")
 ```
 
 `pd.Series` inputs continue to work during migration. Switch to `pl.Series` or `pl.DataFrame` to eliminate the pandas dependency entirely.
+
+## Data — Synthetic Generators
+
+`mktlib.data` provides stochastic process generators for testing, simulation, and Monte Carlo analysis. All functions return Polars DataFrames with seeded RNG for reproducibility.
+
+```python
+from mktlib.data import (
+    fractional_random_walk,
+    geometric_brownian_motion,
+    monte_carlo,
+    ornstein_uhlenbeck,
+)
+
+# Standard random walk
+walk = fractional_random_walk(1000, seed=42)
+
+# Trending path (Hurst > 0.5)
+trending = fractional_random_walk(1000, hurst=0.8, seed=42)
+
+# GBM price path — 252 daily steps, 5% annualised drift, 20% annualised vol
+gbm = geometric_brownian_motion(252, drift=0.05, volatility=0.20, seed=42)
+
+# Mean-reverting process
+ou = ornstein_uhlenbeck(500, theta=0.7, mu=100.0, sigma=1.0, seed=42)
+
+# 1000 Monte Carlo simulations of GBM
+sims = monte_carlo(geometric_brownian_motion, n_simulations=1000, n=252, seed=42)
+# Returns DataFrame with columns [simulation, step, price]
+```
+
+| Function | Process | Output columns |
+|-|-|-|
+| `fractional_random_walk` | Fractional Brownian motion (Davies-Harte circulant embedding + RustFFT, O(n log n)) | `step`, `price` |
+| `geometric_brownian_motion` | Log-normal GBM: dS = μSdt + σSdW | `step`, `price` |
+| `ornstein_uhlenbeck` | Mean-reverting: dx = θ(μ−x)dt + σdW | `step`, `value` |
+| `monte_carlo` | N simulations of any generator | `simulation`, `step`, ... |
+
+The `dt` parameter defaults to `1/252` (one trading day in annualised units). Pass `drift` and `volatility` as annualised values directly — the function scales them internally. For sub-daily data generation (e.g. 1-minute OHLCV bars), see the [advanced usage guide](https://polars-mktlib.readthedocs.io/en/latest/advanced.html).
 
 ## Development
 

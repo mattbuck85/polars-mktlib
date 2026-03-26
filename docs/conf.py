@@ -44,6 +44,7 @@ sitemap_url_scheme = "{link}"
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 always_use_bars_union = True
+autodoc_mock_imports = ["polars_sdist", "polars_rfft"]
 
 # -- intersphinx mapping -----------------------------------------------------
 

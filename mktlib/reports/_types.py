@@ -19,7 +19,7 @@ class DrawdownInfo:
 
     max_drawdown: float
     max_drawdown_date: str | None
-    longest_drawdown_days: int
+    longest_drawdown_days: float
     avg_drawdown: float
 
 
@@ -44,7 +44,7 @@ class MetricsResult:
     # Risk
     max_drawdown: float
     max_drawdown_date: str | None
-    longest_drawdown_days: int
+    longest_drawdown_days: float
     avg_drawdown: float
     volatility: float
 

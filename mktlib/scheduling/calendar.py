@@ -9,7 +9,7 @@ import polars as pl
 from mktlib.scheduling._mixins import (
     MinuteQueryMixin,
     SessionNavigationMixin,
-    TradingIndexMixin,
+    TradingHelperMixin,
 )
 from mktlib.scheduling._types import MarketDailySchedule, parse_date
 from mktlib.scheduling.rules import AdhocClosure, EarlyClose, HolidayRule
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class ExchangeCalendar(
-    SessionNavigationMixin, MinuteQueryMixin, TradingIndexMixin
+    SessionNavigationMixin, MinuteQueryMixin, TradingHelperMixin
 ):
     """Polars-native exchange calendar with holiday/early-close support."""
 

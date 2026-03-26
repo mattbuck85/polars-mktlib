@@ -33,6 +33,9 @@ if TYPE_CHECKING:
         def next_session(self, day: date | str) -> date: ...
         def is_open_on_minute(self, dt: datetime) -> bool: ...
         def previous_session(self, day: date | str) -> date: ...
+        def filter_market_hours(
+            self, df: pl.DataFrame, date_column: str = "date"
+        ) -> pl.DataFrame: ...
 
 
 class BreakMixin:
@@ -125,3 +128,21 @@ class BreakMixin:
             .explode("datetime")
             .to_series()
         )
+
+    def filter_market_hours(
+        self: _BreakCalendarProtocol,
+        df: pl.DataFrame,
+        date_column: str = "date",
+    ) -> pl.DataFrame:
+        """Base filter, then exclude lunch break bars."""
+        filtered = cast(
+            "_BreakCalendarProtocol", super()
+        ).filter_market_hours(df, date_column)
+        if filtered.is_empty():
+            return filtered
+
+        in_break = (
+            (pl.col(date_column).dt.time() >= self.break_start)
+            & (pl.col(date_column).dt.time() < self.break_end)
+        )
+        return filtered.filter(~in_break)

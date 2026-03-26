@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 try:
-    import numpy as _np  # noqa: F401
+    import polars_sdist as _sdist  # noqa: F401
 except ModuleNotFoundError as _e:
     raise ModuleNotFoundError(
-        "mktlib.data requires numpy. Install it with: pip install mktlib[data]"
+        "mktlib.data requires polars-sdist. Install it with: pip install mktlib[data]"
     ) from _e
 
 from mktlib.data._gbm import geometric_brownian_motion
-from mktlib.data._monte_carlo import monte_carlo
+from mktlib.data._monte_carlo import Process, monte_carlo
+from mktlib.data._ohlcv import ticks_to_ohlcv
 from mktlib.data._ornstein_uhlenbeck import ornstein_uhlenbeck
 from mktlib.data._random_walk import fractional_random_walk
 
 __all__ = [
+    "Process",
     "fractional_random_walk",
     "geometric_brownian_motion",
     "monte_carlo",
     "ornstein_uhlenbeck",
+    "ticks_to_ohlcv",
 ]

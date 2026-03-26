@@ -5,6 +5,12 @@ from datetime import date
 
 import polars as pl
 
+from mktlib.metrics import (
+    Metric,
+    calculate_metric,
+    drawdown_series,
+)
+
 from ._types import MetricsResult, ReportConfig
 
 
@@ -16,70 +22,71 @@ def compute_metrics(
     """Compute all 25 metrics from a daily returns DataFrame."""
     ret = returns["return"]
     ppy = config.periods_per_year
-    rf_daily = config.rf / ppy
+    dates = returns["date"] if not returns.is_empty() else None
+
+    # Pre-compute drawdown once for reuse
+    dd = drawdown_series(ret, config.compounded)
 
     # --- Returns ---
-    cumulative = _cumulative_return(ret, config.compounded)
-    n_years = len(ret) / ppy
-    cagr = _cagr(cumulative, n_years)
+    cumulative = calculate_metric(Metric.CUMULATIVE_RETURN, ret, compounded=config.compounded)
+    cagr_val = calculate_metric(Metric.CAGR, ret, compounded=config.compounded, ppy=ppy)
     mtd = _period_return(returns, "mtd", config.compounded)
     ytd = _period_return(returns, "ytd", config.compounded)
     one_year = _period_return(returns, "1y", config.compounded)
 
     # --- Risk ---
-    vol = _annualized_volatility(ret, ppy)
-    dd = drawdown_series(ret, config.compounded)
-    max_dd = float(dd.min()) if len(dd) > 0 else 0.0  # type: ignore[arg-type]
+    vol = calculate_metric(Metric.ANNUALIZED_VOLATILITY, ret, ppy=ppy)
+    max_dd = calculate_metric(Metric.MAX_DRAWDOWN, ret, dd=dd, compounded=config.compounded)
     max_dd_idx = dd.arg_min()
-    dates = returns["date"]
     max_dd_date = (
         str(dates[max_dd_idx])
-        if max_dd_idx is not None and max_dd_idx < len(dates)
+        if dates is not None and max_dd_idx is not None and max_dd_idx < len(dates)
         else None
     )
-    longest_dd = _longest_drawdown_days(dd, dates)
-    avg_dd = _avg_drawdown(dd)
+    longest_dd = calculate_metric(
+        Metric.LONGEST_DRAWDOWN_DAYS, ret, dd=dd, dates=dates, compounded=config.compounded,
+    ) if dates is not None else 0.0
+    avg_dd = calculate_metric(Metric.AVG_DRAWDOWN, ret, dd=dd, compounded=config.compounded)
 
     # --- Ratios ---
-    excess = ret - rf_daily
-    sharpe = _sharpe(excess, ppy)
-    sortino = _sortino(excess, ret, rf_daily, ppy)
-    calmar = cagr / abs(max_dd) if max_dd != 0 else 0.0
-    omega = _omega(ret, rf_daily)
-    romad = cumulative / abs(max_dd) if max_dd != 0 else 0.0
+    sharpe_val = calculate_metric(Metric.SHARPE, ret, ppy=ppy, rf=config.rf)
+    sortino_val = calculate_metric(Metric.SORTINO, ret, ppy=ppy, rf=config.rf)
+    calmar_val = calculate_metric(Metric.CALMAR, ret, dd=dd, compounded=config.compounded, ppy=ppy)
+    omega_val = calculate_metric(Metric.OMEGA, ret, ppy=ppy, rf=config.rf)
+    romad_val = calculate_metric(Metric.ROMAD, ret, dd=dd, compounded=config.compounded)
 
     # --- Tail ---
-    var_95 = _var(ret, 0.05)
-    cvar_95 = _cvar(ret, 0.05)
+    var_95 = calculate_metric(Metric.VAR, ret, alpha=0.05)
+    cvar_95 = calculate_metric(Metric.CVAR, ret, alpha=0.05)
 
     # --- Win/Loss ---
-    wr = _win_rate(ret)
-    payoff = _payoff_ratio(ret)
-    pf = _profit_factor(ret)
-    kelly = _kelly_criterion(wr, payoff)
+    wr = calculate_metric(Metric.WIN_RATE, ret)
+    payoff = calculate_metric(Metric.PAYOFF_RATIO, ret)
+    pf = calculate_metric(Metric.PROFIT_FACTOR, ret)
+    kelly = calculate_metric(Metric.KELLY_CRITERION, ret)
 
     # --- Benchmark ---
-    alpha = beta = r_sq = info_ratio = None
+    alpha_val = beta = r_sq = info_ratio = None
     if benchmark is not None and not benchmark.is_empty():
         bench_ret = benchmark["return"]
         min_len = min(len(ret), len(bench_ret))
         r, b = ret.head(min_len), bench_ret.head(min_len)
         beta = _beta(r, b)
-        alpha = _alpha(r, b, beta, config.rf, ppy)
+        alpha_val = _alpha(r, b, beta, config.rf, ppy)
         r_sq = _r_squared(r, b)
         info_ratio = _information_ratio(r, b, ppy)
 
     return MetricsResult(
         cumulative_return=cumulative,
-        cagr=cagr,
+        cagr=cagr_val,
         mtd=mtd,
         ytd=ytd,
         one_year=one_year,
-        sharpe=sharpe,
-        sortino=sortino,
-        calmar=calmar,
-        omega=omega,
-        romad=romad,
+        sharpe=sharpe_val,
+        sortino=sortino_val,
+        calmar=calmar_val,
+        omega=omega_val,
+        romad=romad_val,
         max_drawdown=max_dd,
         max_drawdown_date=max_dd_date,
         longest_drawdown_days=longest_dd,
@@ -91,7 +98,7 @@ def compute_metrics(
         payoff_ratio=payoff,
         profit_factor=pf,
         kelly_criterion=kelly,
-        alpha=alpha,
+        alpha=alpha_val,
         beta=beta,
         r_squared=r_sq,
         information_ratio=info_ratio,
@@ -99,22 +106,8 @@ def compute_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Cumulative / Growth
+# Period returns (need DataFrame with date column — not in core metrics)
 # ---------------------------------------------------------------------------
-
-
-def _cumulative_return(ret: pl.Series, compounded: bool) -> float:
-    if len(ret) == 0:
-        return 0.0
-    if compounded:
-        return float((1 + ret).product()) - 1
-    return float(ret.sum())
-
-
-def _cagr(cumulative: float, n_years: float) -> float:
-    if n_years <= 0 or cumulative <= -1:
-        return 0.0
-    return (1 + cumulative) ** (1 / n_years) - 1
 
 
 def _period_return(
@@ -139,170 +132,13 @@ def _period_return(
             mask = pl.col("date") > cutoff
         case _:
             return 0.0
+    from mktlib.metrics import cumulative_return
     subset = returns.filter(mask)["return"]
-    return _cumulative_return(subset, compounded)
+    return cumulative_return(subset, compounded)
 
 
 # ---------------------------------------------------------------------------
-# Volatility / Drawdown
-# ---------------------------------------------------------------------------
-
-
-def _annualized_volatility(ret: pl.Series, ppy: int) -> float:
-    if len(ret) < 2:
-        return 0.0
-    return float(ret.std()) * math.sqrt(ppy)  # type: ignore[arg-type]
-
-
-def drawdown_series(ret: pl.Series, compounded: bool = True) -> pl.Series:
-    """Compute drawdown series from returns."""
-    if len(ret) == 0:
-        return pl.Series("drawdown", [], dtype=pl.Float64)
-    if compounded:
-        wealth = (1 + ret).cum_prod()
-    else:
-        wealth = 1 + ret.cum_sum()
-    running_max = wealth.cum_max()
-    return (wealth / running_max - 1).alias("drawdown")
-
-
-def _longest_drawdown_days(dd: pl.Series, dates: pl.Series) -> int:
-    """Longest drawdown duration in calendar days (vectorised)."""
-    if len(dd) == 0:
-        return 0
-    df = (
-        pl.DataFrame({"dd": dd, "date": dates})
-        .with_columns(
-            (pl.col("dd") < 0).alias("in_dd"),
-        )
-        .with_columns(
-            (pl.col("in_dd") != pl.col("in_dd").shift(1))
-            .fill_null(True)
-            .cum_sum()
-            .alias("group"),
-        )
-    )
-    dd_groups = (
-        df.filter(pl.col("in_dd"))
-        .group_by("group")
-        .agg(
-            (pl.col("date").max() - pl.col("date").min())
-            .dt.total_days()
-            .alias("days")
-        )
-    )
-    if dd_groups.is_empty():
-        return 0
-    return int(dd_groups["days"].max())  # type: ignore[arg-type]
-
-
-def _avg_drawdown(dd: pl.Series) -> float:
-    """Average of drawdown values during drawdown episodes."""
-    if len(dd) == 0:
-        return 0.0
-    neg = dd.filter(dd < 0)
-    if len(neg) == 0:
-        return 0.0
-    return float(neg.mean())  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# Ratios
-# ---------------------------------------------------------------------------
-
-
-def _sharpe(excess: pl.Series, ppy: int) -> float:
-    if len(excess) < 2:
-        return 0.0
-    std = float(excess.std())  # type: ignore[arg-type]
-    if std == 0:
-        return 0.0
-    return float(excess.mean()) / std * math.sqrt(ppy)  # type: ignore[arg-type]
-
-
-def _sortino(
-    excess: pl.Series, ret: pl.Series, rf_daily: float, ppy: int
-) -> float:
-    if len(ret) < 2:
-        return 0.0
-    diff = ret - rf_daily
-    neg_sq = diff.clip(upper_bound=0.0) ** 2
-    downside_dev = math.sqrt(float(neg_sq.mean()))  # type: ignore[arg-type]
-    if downside_dev == 0:
-        return 0.0
-    return float(excess.mean()) / downside_dev * math.sqrt(ppy)  # type: ignore[arg-type]
-
-
-def _omega(ret: pl.Series, threshold: float) -> float:
-    if len(ret) == 0:
-        return 0.0
-    diff = ret - threshold
-    gains = float(diff.clip(lower_bound=0.0).sum())
-    losses = float((-diff).clip(lower_bound=0.0).sum())
-    if losses == 0:
-        return float("inf") if gains > 0 else 0.0
-    return gains / losses
-
-
-# ---------------------------------------------------------------------------
-# Tail Risk
-# ---------------------------------------------------------------------------
-
-
-def _var(ret: pl.Series, alpha: float) -> float:
-    if len(ret) == 0:
-        return 0.0
-    return float(ret.quantile(alpha, interpolation="linear"))  # type: ignore[arg-type]
-
-
-def _cvar(ret: pl.Series, alpha: float) -> float:
-    if len(ret) == 0:
-        return 0.0
-    threshold = ret.quantile(alpha, interpolation="linear")
-    tail = ret.filter(ret <= threshold)
-    if len(tail) == 0:
-        return float(threshold)  # type: ignore[arg-type]
-    return float(tail.mean())  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# Win / Loss
-# ---------------------------------------------------------------------------
-
-
-def _win_rate(ret: pl.Series) -> float:
-    if len(ret) == 0:
-        return 0.0
-    return float((ret > 0).sum()) / len(ret)
-
-
-def _payoff_ratio(ret: pl.Series) -> float:
-    wins = ret.filter(ret > 0)
-    losses = ret.filter(ret < 0)
-    if len(wins) == 0 or len(losses) == 0:
-        return 0.0
-    avg_loss = abs(float(losses.mean()))  # type: ignore[arg-type]
-    if avg_loss == 0:
-        return 0.0
-    return float(wins.mean()) / avg_loss  # type: ignore[arg-type]
-
-
-def _profit_factor(ret: pl.Series) -> float:
-    gains = float(ret.filter(ret > 0).sum())
-    losses = abs(float(ret.filter(ret < 0).sum()))
-    if losses == 0:
-        return float("inf") if gains > 0 else 0.0
-    return gains / losses
-
-
-def _kelly_criterion(win_rate: float, payoff_ratio: float) -> float:
-    if payoff_ratio == 0:
-        return 0.0
-    return win_rate - (1 - win_rate) / payoff_ratio
-
-
-# ---------------------------------------------------------------------------
-# Benchmark
+# Benchmark (need benchmark series — not in core metrics)
 # ---------------------------------------------------------------------------
 
 

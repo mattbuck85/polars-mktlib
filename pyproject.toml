@@ -6,17 +6,22 @@ build-backend = "setuptools.build_meta"
 name = "mktlib"
 authors = [{name = "Matt Buck", email = "matt@mblance.com"}]
 description = "Polars-native financial market toolkit"
-version = "0.5.4"
+version = "0.8.1"
 requires-python = ">=3.12"
 keywords = ["finance", "markets", "polars", "trading", "indicators"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
 ]
+readme = "README_PYPI.md"
 dependencies = ["polars"]
 
+[project.urls]
+Documentation = "https://polars-mktlib.readthedocs.io"
+Repository = "https://github.com/mattbuck85/polars-mktlib"
+
 [project.optional-dependencies]
-data = ["numpy"]
+data = ["polars-sdist>=0.1.1", "polars-rfft>=0.1.1"]
 reports = [
     "jinja2>=3.1",
     "plotly>=6.0",
@@ -30,8 +35,11 @@ dev = [
     "bump-my-version",
     "exchange-calendars",
     "jinja2>=3.1",
+    "pandera[polars]",
     "plotly>=6.0",
     "plotly-stubs",
+    "polars-sdist>=0.1.1",
+    "polars-rfft>=0.1.1",
     "pyarrow",
     "pandas",
     "numpy",
@@ -56,4 +64,4 @@ line-length = 79
 [tool.setuptools.packages.find]
 
 [tool.bumpversion]
-current_version = "0.5.4"
+current_version = "0.8.1"
