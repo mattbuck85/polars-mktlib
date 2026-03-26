@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          token: ${{ secrets.GH_PAT }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -29,6 +30,7 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
           branch: chore/refresh-treasury-data
+          delete-branch: true
           commit-message: "chore: refresh bundled Treasury yield data"
           title: "chore: refresh bundled Treasury yield data"
           body: "Automated weekly refresh of `mktlib/rates/_data/*.csv` from Treasury.gov."
