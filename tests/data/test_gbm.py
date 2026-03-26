@@ -95,15 +95,18 @@ class TestGBMParity:
 
     @staticmethod
     def _extract_z(
-        base_price: float, drift: float, volatility: float, dt: float, seed: int, n: int,
+        prices: list[float], drift: float, volatility: float, dt: float,
     ) -> list[float]:
-        """Extract the Z values used by the Polars implementation.
+        """Reconstruct Z values from the price path by inverting the log-space formula.
 
-        Reconstructs Z from the price path by inverting the log-space formula:
             Z[i] = (ln S[i] - ln S[i-1] - mu_dt) / sigma_sqrt_dt
         """
-        from polars_sdist import sample_normal
-        return sample_normal(n, seed=seed).to_list()
+        mu_dt = (drift - 0.5 * volatility ** 2) * dt
+        sigma_sqrt_dt = volatility * math.sqrt(dt)
+        z = [0.0]  # Z[0] unused (step 0 is deterministic)
+        for i in range(1, len(prices)):
+            z.append((math.log(prices[i]) - math.log(prices[i - 1]) - mu_dt) / sigma_sqrt_dt)
+        return z
 
     @pytest.mark.parametrize(
         "base_price, drift, volatility, dt, seed, n",
@@ -118,17 +121,45 @@ class TestGBMParity:
     def test_polars_matches_python_reference(
         self, base_price, drift, volatility, dt, seed, n,
     ):
-        """Polars GBM prices match pure-Python loop to within floating-point tolerance."""
+        """Reconstruct Z from Polars prices, feed into Python reference, verify round-trip."""
         df = geometric_brownian_motion(
             n, base_price=base_price, drift=drift, volatility=volatility, dt=dt, seed=seed,
         )
         polars_prices = df["price"].to_list()
 
-        z_values = self._extract_z(base_price, drift, volatility, dt, seed, n)
+        z_values = self._extract_z(polars_prices, drift, volatility, dt)
         python_prices = self._reference_gbm(z_values, base_price, drift, volatility, dt)
 
         assert len(polars_prices) == len(python_prices)
         for i, (p, r) in enumerate(zip(polars_prices, python_prices)):
             assert p == pytest.approx(r, rel=1e-10), (
                 f"Mismatch at step {i}: polars={p}, python={r}"
+            )
+
+    @pytest.mark.parametrize(
+        "base_price, drift, volatility, dt, seed, n",
+        [
+            (100.0, 0.0, 0.01, 1 / 252, 42, 500),
+            (200.0, 0.05, 0.16, 1 / 252, 99, 300),
+            (50.0, -0.03, 0.30, 1 / 52, 7, 200),
+            (1000.0, 0.10, 0.005, 1.0, 1, 100),
+        ],
+        ids=["default-params", "positive-drift", "weekly-high-vol", "annual-low-vol"],
+    )
+    def test_reconstructed_z_matches_rng(
+        self, base_price, drift, volatility, dt, seed, n,
+    ):
+        """Algebraically reconstructed Z matches the original RNG draws."""
+        from polars_sdist import sample_normal
+
+        df = geometric_brownian_motion(
+            n, base_price=base_price, drift=drift, volatility=volatility, dt=dt, seed=seed,
+        )
+        polars_prices = df["price"].to_list()
+        reconstructed_z = self._extract_z(polars_prices, drift, volatility, dt)
+        original_z = sample_normal(n, seed=seed).to_list()
+
+        for i in range(1, n):  # skip Z[0] (unused)
+            assert reconstructed_z[i] == pytest.approx(original_z[i], rel=1e-10), (
+                f"Z mismatch at step {i}: reconstructed={reconstructed_z[i]}, original={original_z[i]}"
             )

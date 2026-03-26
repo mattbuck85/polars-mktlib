@@ -6,6 +6,7 @@ import pytest
 
 from mktlib.data import (
     Process,
+    fractional_random_walk,
     geometric_brownian_motion,
     monte_carlo,
     ornstein_uhlenbeck,
@@ -197,3 +198,60 @@ class TestSeedColumn:
         df = monte_carlo(process, n_simulations=5, n=20, seed=42, **kwargs)
         unique_seeds = df["seed"].unique()
         assert len(unique_seeds) == 5
+
+
+class TestVectorizedMatchesLoop:
+    """Verify vectorized (Process enum) path matches serial (callable) path."""
+
+    def test_gbm_vectorized_matches_loop(self):
+        vec = monte_carlo(
+            Process.GBM, n_simulations=5, n=100, seed=42, drift=0.05, volatility=0.1,
+        )
+        loop = monte_carlo(
+            geometric_brownian_motion, n_simulations=5, n=100, seed=42, drift=0.05, volatility=0.1,
+        )
+        for sim in range(5):
+            v = vec.filter(simulation=sim)["price"].to_list()
+            l = loop.filter(simulation=sim)["price"].to_list()
+            for i, (a, b) in enumerate(zip(v, l)):
+                assert a == pytest.approx(b, rel=1e-10), (
+                    f"GBM sim {sim} step {i}: vec={a}, loop={b}"
+                )
+
+    def test_ou_vectorized_matches_loop(self):
+        vec = monte_carlo(
+            Process.OU, n_simulations=5, n=100, seed=42, theta=0.5, mu=50.0, sigma=2.0,
+        )
+        loop = monte_carlo(
+            ornstein_uhlenbeck, n_simulations=5, n=100, seed=42, theta=0.5, mu=50.0, sigma=2.0,
+        )
+        for sim in range(5):
+            v = vec.filter(simulation=sim)["value"].to_list()
+            l = loop.filter(simulation=sim)["value"].to_list()
+            for i, (a, b) in enumerate(zip(v, l)):
+                assert a == pytest.approx(b, rel=1e-10), (
+                    f"OU sim {sim} step {i}: vec={a}, loop={b}"
+                )
+
+    @pytest.mark.parametrize(
+        "hurst, step_size",
+        [(0.5, 1.0), (0.7, 2.0), (0.3, 0.5)],
+        ids=["h05-standard", "h07-persistent", "h03-antipersistent"],
+    )
+    def test_frw_vectorized_matches_loop(self, hurst, step_size):
+        n_sims, n = 5, 100
+        vec = monte_carlo(
+            Process.FRW, n_simulations=n_sims, n=n, seed=42,
+            hurst=hurst, step_size=step_size, base_price=100.0,
+        )
+        loop = monte_carlo(
+            fractional_random_walk, n_simulations=n_sims, n=n, seed=42,
+            hurst=hurst, step_size=step_size, base_price=100.0,
+        )
+        for sim in range(n_sims):
+            v = vec.filter(simulation=sim)["price"].to_list()
+            l = loop.filter(simulation=sim)["price"].to_list()
+            for i, (a, b) in enumerate(zip(v, l)):
+                assert a == pytest.approx(b, rel=1e-10), (
+                    f"FRW(H={hurst}) sim {sim} step {i}: vec={a}, loop={b}"
+                )
