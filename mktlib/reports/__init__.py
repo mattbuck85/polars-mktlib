@@ -15,18 +15,26 @@ from ..rates._treasury import fetch_average_rate
 
 
 def _infer_ppy(ret_df: pl.DataFrame) -> int:
-    """Infer periods-per-year from the returns DataFrame.
+    """Infer periods-per-year from the returns DataFrame using row count bucketing.
 
-    Computes median bars per trading day × 252.  For daily data this
-    returns 252; for 1-minute data ~98,280 (252 × 390).
+    Buckets:
+      - 0–52 rows    → weekly   (52)
+      - 53–400 rows   → daily    (252)
+      - 401+ rows     → minutely (252 × 390 = 98_280)
+
+    The daily upper bound (400) provides leeway for non-US calendars
+    and datasets that include some non-trading days.
+
+    Only called when the caller passes ``periods_per_year=None``.
     """
-    if ret_df.is_empty() or "date" not in ret_df.columns:
+    if ret_df.is_empty():
         return 252
-    bars_per_day = ret_df.group_by(pl.col("date").dt.date()).len().get_column("len")
-    if bars_per_day.is_empty():
+    n = ret_df.height
+    if n <= 52:
+        return 52
+    if n <= 400:
         return 252
-    median_bpd = int(bars_per_day.median())  # type: ignore[arg-type]
-    return max(1, median_bpd * 252)
+    return 252 * 390
 
 if TYPE_CHECKING:
     import plotly.graph_objects as go
@@ -49,7 +57,7 @@ def html(
     output: str | None = None,
     title: str = "Strategy Tearsheet",
     rf: float | str = 0.0,
-    periods_per_year: int = 252,
+    periods_per_year: int | None = 252,
     compounded: bool = True,
     extra_metrics: dict[str, list[tuple[str, str]]] | None = None,
     extra_charts: dict[str, go.Figure] | None = None,
@@ -72,7 +80,8 @@ def html(
         Risk-free rate (annualised, e.g. ``0.05`` for 5 %).  Pass ``"auto"``
         to fetch the 3-month T-bill average for the returns date range.
     periods_per_year
-        Trading days per year (default 252).
+        Periods per year for annualisation.  Default ``252`` (daily).  Pass
+        ``None`` to auto-detect from row count (weekly/daily/minutely bucketing).
     compounded
         Whether to compute compounded returns (default *True*).
     extra_metrics
@@ -100,8 +109,7 @@ def html(
         end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
-    # Scale PPY by bars-per-day for intraday data (daily → 1x, 1min → ~390x)
-    effective_ppy = _infer_ppy(ret_df)
+    effective_ppy = _infer_ppy(ret_df) if periods_per_year is None else periods_per_year
 
     config = ReportConfig(
         rf=rf_resolved,
@@ -129,10 +137,10 @@ def html(
     monthly = _stats.monthly_returns(ret_df, compounded)
     yearly = _stats.yearly_returns(ret_df, compounded)
     r_sharpe = _stats.rolling_sharpe(
-        ret_series, ppy=periods_per_year
+        ret_series, ppy=effective_ppy
     ).to_list()
     r_vol = _stats.rolling_volatility(
-        ret_series, ppy=periods_per_year
+        ret_series, ppy=effective_ppy
     ).to_list()
 
     charts = {
@@ -192,7 +200,7 @@ def metrics(
     *,
     benchmark: ReturnsInput | None = None,
     rf: float | str = 0.0,
-    periods_per_year: int = 252,
+    periods_per_year: int | None = 252,
     compounded: bool = True,
 ) -> MetricsResult:
     """Compute performance metrics without generating an HTML report.
@@ -202,6 +210,9 @@ def metrics(
     rf
         Risk-free rate (annualised).  Pass ``"auto"`` to fetch the 3-month
         T-bill average for the returns date range.
+    periods_per_year
+        Periods per year for annualisation.  Default ``252`` (daily).  Pass
+        ``None`` to auto-detect from row count.
     """
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
@@ -212,7 +223,7 @@ def metrics(
         end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
-    effective_ppy = _infer_ppy(ret_df)
+    effective_ppy = _infer_ppy(ret_df) if periods_per_year is None else periods_per_year
 
     config = ReportConfig(
         rf=rf_resolved,
