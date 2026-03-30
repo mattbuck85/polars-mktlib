@@ -2,6 +2,10 @@
 
 ## 0.8.2
 
+### Added
+
+- **Non-deterministic branch warning** — `strategy_artifact()` now warns when `entry()` or `exit()` contains `if self.*` branches. These produce different condition trees for different parameter values, making the artifact hash parameter-dependent and causing optimizer cache key collisions. The warning recommends using a no-op threshold (e.g., `float('inf')`) instead of conditional branching.
+
 ### Fixed
 
 - **Reports: auto-scale PPY for intraday data** — `html()` and `metrics()` now detect the data frequency (median bars per day) and scale `periods_per_year` accordingly. Daily data stays at 252; 1-minute data scales to ~98,280 (252 × 390). This fixes incorrect Sharpe, Sortino, CAGR, and annualized volatility for intraday backtests. The `periods_per_year` parameter is retained for backward compatibility but overridden by the inferred value.
