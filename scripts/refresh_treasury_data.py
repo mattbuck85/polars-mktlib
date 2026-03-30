@@ -111,10 +111,19 @@ def _write_schema(
 
 def main() -> None:
     current_year = date.today().year
-    years = range(_START_YEAR, current_year + 1)
+    all_years = range(_START_YEAR, current_year + 1)
+    # Only fetch this year and last year — historical data doesn't change
+    fetch_years = {current_year - 1, current_year}
 
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Refreshing Treasury data for {_START_YEAR}–{current_year}")
+
+    # Verify all prior years have CSVs on disk
+    missing = [y for y in all_years if y not in fetch_years and not (_DATA_DIR / f"{y}.csv").exists()]
+    if missing:
+        print(f"Missing historical CSVs: {missing} — fetching them too")
+        fetch_years.update(missing)
+
+    print(f"Refreshing Treasury data: fetching {sorted(fetch_years)} (verifying {_START_YEAR}–{current_year})")
 
     # Start with known fields from existing schema.csv (preserves order)
     known = _load_known_fields()
@@ -125,7 +134,7 @@ def main() -> None:
     year_data: dict[int, list[dict[str, str]]] = {}
     year_fields: dict[int, list[str]] = {}
 
-    for year in years:
+    for year in sorted(fetch_years):
         try:
             rows = _fetch_and_parse(year)
             if rows:
@@ -143,11 +152,19 @@ def main() -> None:
             print(f"  ERROR for {year}: {exc}")
             errors.append(year)
 
-    # Write per-year CSVs
+    # Write per-year CSVs (only fetched years)
     for year, rows in year_data.items():
         _write_csv(year, rows, all_fields_ordered)
 
-    # Write updated schema.csv
+    # Rebuild schema.csv from all years (existing + freshly fetched)
+    # Load field presence from existing CSVs we didn't re-fetch
+    for year in all_years:
+        if year not in year_fields and (_DATA_DIR / f"{year}.csv").exists():
+            with (_DATA_DIR / f"{year}.csv").open(encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                fields = [c for c in (reader.fieldnames or []) if c.startswith("BC_")]
+                year_fields[year] = fields
+
     _write_schema(year_fields, all_fields_ordered)
     print(f"  Updated schema.csv ({len(all_fields_ordered)} fields, {len(year_fields)} years)")
 
@@ -155,7 +172,7 @@ def main() -> None:
         print(f"\nFailed years: {errors}", file=sys.stderr)
         sys.exit(1)
     else:
-        print(f"\nDone. {len(year_data)} years written to {_DATA_DIR}")
+        print(f"\nDone. {len(year_data)} years fetched, {len(year_fields)} total in schema.")
 
 
 if __name__ == "__main__":
