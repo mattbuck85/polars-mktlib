@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import polars as pl
@@ -341,3 +342,60 @@ class TestCombinedStrategyArtifact:
         h1 = combined_strategy_artifact(SimpleLong(), TPSLStrategy())
         h2 = combined_strategy_artifact(SimpleLong(), SimpleLong())
         assert h1 != h2
+
+
+# ---------------------------------------------------------------------------
+# Non-deterministic branch detection
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _BranchingEntry:
+    flag: bool = False
+
+    def entry(self):
+        cond = Crossover("fast", "slow")
+        if self.flag:
+            cond = cond & PriceIsBelow("kvo", 0)
+        return cond
+
+    def exit(self):
+        return Crossunder("fast", "slow")
+
+
+@dataclass(frozen=True, slots=True)
+class _BranchingExit:
+    use_trailing: bool = True
+
+    def entry(self):
+        return Crossover("fast", "slow")
+
+    def exit(self):
+        if self.use_trailing:
+            return PriceIsAbove("close", 100)
+        return Crossunder("fast", "slow")
+
+
+class TestNondeterministicBranchWarning:
+    def test_warns_on_if_self_in_entry(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            strategy_artifact(_BranchingEntry())
+        assert "if self.flag" in caplog.text
+        assert "entry()" in caplog.text
+
+    def test_warns_on_if_self_in_exit(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            strategy_artifact(_BranchingExit())
+        assert "if self.use_trailing" in caplog.text
+        assert "exit()" in caplog.text
+
+    def test_silent_on_clean_strategy(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            strategy_artifact(SimpleLong())
+        assert caplog.text == ""
+
+    def test_branching_produces_different_artifacts(self):
+        """Demonstrates the problem: same class, different tree structures."""
+        h1 = strategy_artifact(_BranchingEntry(flag=False))
+        h2 = strategy_artifact(_BranchingEntry(flag=True))
+        assert h1 != h2  # different trees → different hashes
