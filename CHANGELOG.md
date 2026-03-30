@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.2
+
+### Fixed
+
+- **Reports: auto-scale PPY for intraday data** — `html()` and `metrics()` now detect the data frequency (median bars per day) and scale `periods_per_year` accordingly. Daily data stays at 252; 1-minute data scales to ~98,280 (252 × 390). This fixes incorrect Sharpe, Sortino, CAGR, and annualized volatility for intraday backtests. The `periods_per_year` parameter is retained for backward compatibility but overridden by the inferred value.
+- **Reports: `trading_days` display** — HTML tearsheet now shows unique trading dates (`n_unique()`) instead of total bar count. Previously displayed the number of bars (e.g. 294,000 for 1-minute data) as "trading days".
+
 ## 0.8.1
 
 ### Fixed

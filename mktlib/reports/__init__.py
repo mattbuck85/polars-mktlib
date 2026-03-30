@@ -6,10 +6,27 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import polars as pl
+
 from . import _compat, _plots, _stats, _template
 from ._compat import PandasConvertible, ReturnsInput
 from ._types import DrawdownInfo, MetricsResult, ReportConfig
 from ..rates._treasury import fetch_average_rate
+
+
+def _infer_ppy(ret_df: pl.DataFrame) -> int:
+    """Infer periods-per-year from the returns DataFrame.
+
+    Computes median bars per trading day × 252.  For daily data this
+    returns 252; for 1-minute data ~98,280 (252 × 390).
+    """
+    if ret_df.is_empty() or "date" not in ret_df.columns:
+        return 252
+    bars_per_day = ret_df.group_by(pl.col("date").dt.date()).len().get_column("len")
+    if bars_per_day.is_empty():
+        return 252
+    median_bpd = int(bars_per_day.median())  # type: ignore[arg-type]
+    return max(1, median_bpd * 252)
 
 if TYPE_CHECKING:
     import plotly.graph_objects as go
@@ -83,9 +100,12 @@ def html(
         end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
+    # Scale PPY by bars-per-day for intraday data (daily → 1x, 1min → ~390x)
+    effective_ppy = _infer_ppy(ret_df)
+
     config = ReportConfig(
         rf=rf_resolved,
-        periods_per_year=periods_per_year,
+        periods_per_year=effective_ppy,
         compounded=compounded,
         title=title,
     )
@@ -147,13 +167,14 @@ def html(
     # Render
     start_date = str(ret_df["date"].min())
     end_date = str(ret_df["date"].max())
+    trading_days = ret_df["date"].dt.date().n_unique()
     html_str = _template.render(
         result,
         charts,
         title,
         start_date,
         end_date,
-        len(ret_df),
+        trading_days,
         extra_metrics=extra_metrics,
         extra_charts=extra_chart_divs,
         template_override=template,
@@ -191,9 +212,11 @@ def metrics(
         end = cast(date, ret_df["date"].max())
         rf_resolved = fetch_average_rate(start, end)
 
+    effective_ppy = _infer_ppy(ret_df)
+
     config = ReportConfig(
         rf=rf_resolved,
-        periods_per_year=periods_per_year,
+        periods_per_year=effective_ppy,
         compounded=compounded,
     )
     return _stats.compute_metrics(ret_df, bench_df, config)
