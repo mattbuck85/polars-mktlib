@@ -651,6 +651,8 @@ print(m.trade_metrics.trade_sharpe)      # risk-adjusted per-trade
 | Streaks | Max consecutive wins, max consecutive losses |
 | Risk-adjusted | Trade Sharpe, trade Sortino, trades per year |
 
+The `trades` DataFrame requires: `entry_date` (Date), `exit_date` (Date), `side` (Int8: +1/-1), `pnl` (Float64), `bars_held` (Int64). This is the schema produced by `run().trades`.
+
 ### Custom Metrics, Charts & Templates
 
 ```python

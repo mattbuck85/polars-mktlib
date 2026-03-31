@@ -65,6 +65,7 @@ def fractional_random_walk(
     base_price: float = 100.0,
     step_size: float = 1.0,
     seed: int | None = None,
+    geometric: bool = False,
 ) -> pl.DataFrame:
     r"""Discrete-time fractional random walk using Davies-Harte circulant embedding.
 
@@ -86,6 +87,11 @@ def fractional_random_walk(
         Scale factor applied to each increment.
     seed
         RNG seed for reproducibility.
+    geometric
+        If ``True``, exponentiate the cumulative sum to produce geometric
+        (lognormal) prices: ``base_price * exp(cumsum(increments))``.
+        Prices are always positive.  Default ``False`` preserves the
+        additive construction.
 
     Returns
     -------
@@ -124,9 +130,11 @@ def fractional_random_walk(
     if hurst == 0.5:
         z = sample_normal(n, seed=seed)
         increments = z * step_size
-        prices = pl.Series("price", [base_price]).append(
-            (increments.cum_sum() + base_price)
-        )[:n]
+        cumulative = increments.cum_sum()
+        if geometric:
+            prices = pl.Series("price", [0.0]).append(cumulative)[:n].exp() * base_price
+        else:
+            prices = pl.Series("price", [base_price]).append(cumulative + base_price)[:n]
         return pl.DataFrame({"step": range(n), "price": prices})
 
     # Davies-Harte / circulant embedding — O(n log n)
@@ -144,9 +152,13 @@ def fractional_random_walk(
         .head(n)
         .with_row_index("step")
         .with_columns(
+            (pl.col("increment") * scale).cum_sum().shift(1).fill_null(0.0).alias("_cumulative")
+        )
+        .with_columns(
             (
-                base_price
-                + (pl.col("increment") * scale).cum_sum().shift(1).fill_null(0.0)
+                base_price * pl.col("_cumulative").exp()
+                if geometric
+                else base_price + pl.col("_cumulative")
             ).alias("price")
         )
         .cast({"step": pl.Int64})

@@ -232,6 +232,32 @@ avg/largest winner and loser, max consecutive wins/losses, trade Sharpe, trade
 Sortino, and trades per year. The HTML tearsheet includes a PnL distribution
 histogram.
 
+The ``trades`` DataFrame must have these columns:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Column
+     - Type
+     - Description
+   * - ``entry_date``
+     - ``Date``
+     - Trade entry date
+   * - ``exit_date``
+     - ``Date``
+     - Trade exit date
+   * - ``side``
+     - ``Int8``
+     - +1 (long) or -1 (short)
+   * - ``pnl``
+     - ``Float64``
+     - Per-trade profit/loss (return, not dollar amount)
+   * - ``bars_held``
+     - ``Int64``
+     - Number of bars the position was held
+
+This is the schema produced by ``run().trades``.
+
 See :doc:`api/reports` for all options.
 
 Synthetic Data Generators

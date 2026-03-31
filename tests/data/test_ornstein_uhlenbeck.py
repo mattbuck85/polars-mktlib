@@ -179,3 +179,28 @@ class TestOUParity:
             assert reconstructed_z[i] == pytest.approx(original_z[i], rel=1e-10), (
                 f"Z mismatch at step {i}: reconstructed={reconstructed_z[i]}, original={original_z[i]}"
             )
+
+
+class TestGeometricOU:
+    def test_geometric_prices_always_positive(self):
+        df = ornstein_uhlenbeck(500, geometric=True, mu=0.0, sigma=0.5, seed=42)
+        assert "price" in df.columns
+        assert (df["price"] > 0).all()
+
+    def test_geometric_equals_exp_of_additive(self):
+        """geometric=True output should be exp() of the additive output."""
+        kwargs = dict(n=200, theta=0.7, mu=0.0, sigma=0.5, x0=0.0, seed=42)
+        additive = ornstein_uhlenbeck(**kwargs, geometric=False)
+        geometric = ornstein_uhlenbeck(**kwargs, geometric=True)
+        expected = np.exp(additive["value"].to_numpy())
+        np.testing.assert_allclose(geometric["price"].to_numpy(), expected, rtol=1e-12)
+
+    def test_geometric_default_false_unchanged(self):
+        df_old = ornstein_uhlenbeck(100, seed=42)
+        df_new = ornstein_uhlenbeck(100, geometric=False, seed=42)
+        assert df_old.equals(df_new)
+
+    def test_geometric_column_name_is_price(self):
+        df = ornstein_uhlenbeck(50, geometric=True, seed=1)
+        assert "price" in df.columns
+        assert "value" not in df.columns

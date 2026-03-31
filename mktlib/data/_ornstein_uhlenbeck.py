@@ -14,6 +14,7 @@ def ornstein_uhlenbeck(
     x0: float | None = None,
     dt: float = 1 / 252,
     seed: int | None = None,
+    geometric: bool = False,
 ) -> pl.DataFrame:
     r"""Discrete Ornstein-Uhlenbeck process via vectorized Euler-Maruyama.
 
@@ -39,11 +40,17 @@ def ornstein_uhlenbeck(
         ``1/(252*6.5*3600)`` for one-second ticks during US equity hours.
     seed
         RNG seed for reproducibility.
+    geometric
+        If ``True``, exponentiate the OU process to produce geometric
+        (lognormal) prices: ``exp(OU)``.  Parameters *mu* and *x0* are
+        interpreted in log-space (standard convention, Schwartz 1997).
+        Output column is ``"price"`` instead of ``"value"``.
 
     Returns
     -------
     pl.DataFrame
-        Columns ``step`` (int) and ``value`` (float).
+        Columns ``step`` (int) and ``value`` (float), or ``"price"``
+        when ``geometric=True``.
 
     Notes
     -----
@@ -79,11 +86,13 @@ def ornstein_uhlenbeck(
     z = sample_normal(n, seed=seed)
     step = pl.arange(0, n, eager=True).alias("step")
 
-    return (
+    df = (
         pl.DataFrame({"step": step, "z": z})
         .with_columns(_ou_value_expr(start, alpha, beta, noise_scale))
-        .select("step", "value")
     )
+    if geometric:
+        return df.with_columns(pl.col("value").exp().alias("price")).select("step", "price")
+    return df.select("step", "value")
 
 
 def _ou_value_expr(

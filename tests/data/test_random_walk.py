@@ -213,3 +213,27 @@ class TestDaviesHarteVsCholesky:
             assert abs(dh_ac - theory_ac) < 0.05, (
                 f"lag {lag}: DH={dh_ac:.4f}, theory={theory_ac:.4f}"
             )
+
+
+class TestGeometricFRW:
+    def test_geometric_prices_always_positive(self):
+        df = fractional_random_walk(500, geometric=True, step_size=0.5, seed=42)
+        assert (df["price"] > 0).all()
+
+    def test_geometric_first_price_is_base_price(self):
+        df = fractional_random_walk(50, geometric=True, base_price=0.97, seed=1)
+        assert df["price"][0] == pytest.approx(0.97)
+
+    def test_geometric_default_false_unchanged(self):
+        df_old = fractional_random_walk(100, seed=42)
+        df_new = fractional_random_walk(100, geometric=False, seed=42)
+        assert df_old.equals(df_new)
+
+    def test_geometric_davies_harte_positive(self):
+        df = fractional_random_walk(500, hurst=0.7, geometric=True, step_size=0.3, seed=99)
+        assert (df["price"] > 0).all()
+
+    def test_geometric_reproducible(self):
+        df1 = fractional_random_walk(100, geometric=True, seed=42)
+        df2 = fractional_random_walk(100, geometric=True, seed=42)
+        assert df1.equals(df2)
