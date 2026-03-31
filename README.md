@@ -626,6 +626,31 @@ Cumulative returns (with optional benchmark overlay), drawdown underwater, month
 
 All charts are interactive Plotly — hover for values, zoom, pan. Plotly JS is loaded via CDN.
 
+### Per-Trade Metrics
+
+When trades data is available (from `run().trades`), pass it to get per-trade analysis:
+
+```python
+result = run(df, strategy)
+
+# HTML tearsheet with trade metrics + PnL distribution chart
+html(result.returns, trades=result.trades, output="tearsheet.html")
+
+# Metrics only
+m = metrics(result.returns, trades=result.trades)
+print(m.trade_metrics.trade_win_rate)    # e.g. 0.55
+print(m.trade_metrics.profit_factor)     # e.g. 1.8
+print(m.trade_metrics.kelly_criterion)   # optimal bet fraction
+print(m.trade_metrics.trade_sharpe)      # risk-adjusted per-trade
+```
+
+| Category | Metrics |
+|-|-|
+| Win/Loss | Win rate, payoff ratio, profit factor, Kelly criterion |
+| Size | Avg/largest winner, avg/largest loser |
+| Streaks | Max consecutive wins, max consecutive losses |
+| Risk-adjusted | Trade Sharpe, trade Sortino, trades per year |
+
 ### Custom Metrics, Charts & Templates
 
 ```python
