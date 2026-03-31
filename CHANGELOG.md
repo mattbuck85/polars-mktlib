@@ -4,9 +4,10 @@
 
 ### Added
 
-- **Per-trade metrics** — `compute_trade_metrics(trades)` computes win rate, payoff ratio, profit factor, Kelly criterion, trade Sharpe/Sortino, consecutive wins/losses, and trades per year from a backtest trades DataFrame. Integrated into `html()` and `metrics()` when trades data is available.
+- **Per-trade metrics** — `compute_trade_metrics(trades)` computes win rate, payoff ratio, profit factor, Kelly criterion, trade Sharpe/Sortino, consecutive wins/losses, and trades per year from a backtest trades DataFrame. Integrated into `html()` and `metrics()` when trades data is available. Required trades schema: `entry_date` (Date), `exit_date` (Date), `side` (Int8), `pnl` (Float64), `bars_held` (Int64).
 - **`TradeMetrics` dataclass** — typed container for all per-trade metrics, returned by `compute_trade_metrics()`.
 - **Trade PnL distribution chart** — histogram in HTML tearsheet showing per-trade PnL distribution (green winners, red losers).
+- **Geometric mode for FRW and OU** — `fractional_random_walk(geometric=True)` and `ornstein_uhlenbeck(geometric=True)` exponentiate the additive process to produce lognormal prices that are always positive. Useful for simulating high-volatility or penny stock price paths. OU parameters (`mu`, `x0`) are interpreted in log-space (Schwartz 1997). Flows through `monte_carlo()` via process kwargs. GBM is exempt (already geometric by construction).
 
 ### Fixed
 
