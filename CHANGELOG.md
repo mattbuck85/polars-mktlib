@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.2
+
+### Added
+
+- **Non-deterministic branch warning** — `strategy_artifact()` now warns when `entry()` or `exit()` contains `if self.*` branches. These produce different condition trees for different parameter values, making the artifact hash parameter-dependent and causing optimizer cache key collisions. The warning recommends using a no-op threshold (e.g., `float('inf')`) instead of conditional branching.
+
+### Fixed
+
+- **Refresh treasury data** - Reduced the fetch range to include most recent data only.
+
 ## 0.8.1
 
 ### Fixed

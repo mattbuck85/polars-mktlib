@@ -6,12 +6,15 @@ import ast
 import dataclasses
 import hashlib
 import inspect
+import logging
 import textwrap
 import types
 from collections.abc import Callable
 from typing import Any
 
 from mktlib.backtest._types import InitStrategy, Strategy
+
+logger = logging.getLogger(__name__)
 
 from mktlib.backtest._conditions import (
     All,
@@ -259,6 +262,50 @@ def combined_strategy_artifact(
     return hashlib.sha256(f"{long_art}|{short_art}".encode()).hexdigest()[:16]
 
 
+def _warn_nondeterministic_branches(strategy_cls: type) -> None:
+    """Warn if ``entry()``/``exit()`` contain ``if self.*`` branches.
+
+    Conditional branches on instance attributes produce different condition
+    trees for different parameter values, making the artifact hash
+    parameter-dependent.  The optimizer cache key uses the artifact, so
+    parameter combos that change the tree structure will collide with
+    those that don't.
+
+    Fix: replace ``if self.flag: cond = cond & X`` with an always-present
+    condition using a no-op threshold (e.g., ``float('inf')``).
+    """
+    for method_name in ("entry", "exit"):
+        method = getattr(strategy_cls, method_name, None)
+        if method is None:
+            continue
+        try:
+            source = textwrap.dedent(inspect.getsource(method))
+            tree = ast.parse(source)
+        except (OSError, TypeError, SyntaxError):
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            for sub in ast.walk(node.test):
+                if (
+                    isinstance(sub, ast.Attribute)
+                    and isinstance(sub.value, ast.Name)
+                    and sub.value.id == "self"
+                ):
+                    logger.warning(
+                        "Strategy %s.%s() contains 'if self.%s' branch. "
+                        "This makes the artifact hash parameter-dependent — "
+                        "different parameter values may produce different condition "
+                        "trees, causing cache key collisions. Use a no-op threshold "
+                        "(e.g., float('inf')) instead of conditional branching.",
+                        strategy_cls.__name__,
+                        method_name,
+                        sub.attr,
+                    )
+                    return  # one warning per strategy is enough
+
+
 def strategy_artifact(strategy: Strategy) -> str:
     """Return a deterministic 16-char hex digest for a strategy instance.
 
@@ -271,6 +318,7 @@ def strategy_artifact(strategy: Strategy) -> str:
     Flattening literals makes the digest **parameter-insensitive** —
     stable across different parameter values for the same strategy class.
     """
+    _warn_nondeterministic_branches(type(strategy))
     entry = strategy.entry()
     exit_ = strategy.exit()
     if not isinstance(entry, Condition):
