@@ -208,7 +208,57 @@ Generate tearsheets with 25 metrics and 8 interactive charts (requires ``pip ins
    result = metrics(returns_df)
    print(result.sharpe, result.max_drawdown, result.cagr)
 
-Accepts ``pl.DataFrame``, ``pl.Series``, or ``pd.Series`` inputs. See :doc:`api/reports` for all options.
+Accepts ``pl.DataFrame``, ``pl.Series``, or ``pd.Series`` inputs.
+
+Per-trade metrics are computed automatically when ``trades`` is provided:
+
+.. code-block:: python
+
+   # From a backtest result with trades
+   result = run(df, SmaCross())
+
+   # HTML tearsheet with per-trade analysis
+   html(result.returns, trades=result.trades, output="tearsheet.html")
+
+   # Metrics only — includes TradeMetrics
+   m = metrics(result.returns, trades=result.trades)
+   print(m.trade_metrics.trade_win_rate)     # e.g. 0.55
+   print(m.trade_metrics.profit_factor)      # e.g. 1.8
+   print(m.trade_metrics.trade_sharpe)       # risk-adjusted per-trade
+   print(m.trade_metrics.kelly_criterion)    # optimal bet fraction
+
+Available trade metrics: win rate, payoff ratio, profit factor, Kelly criterion,
+avg/largest winner and loser, max consecutive wins/losses, trade Sharpe, trade
+Sortino, and trades per year. The HTML tearsheet includes a PnL distribution
+histogram.
+
+The ``trades`` DataFrame must have these columns:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Column
+     - Type
+     - Description
+   * - ``entry_date``
+     - ``Date``
+     - Trade entry date
+   * - ``exit_date``
+     - ``Date``
+     - Trade exit date
+   * - ``side``
+     - ``Int8``
+     - +1 (long) or -1 (short)
+   * - ``pnl``
+     - ``Float64``
+     - Per-trade profit/loss (return, not dollar amount)
+   * - ``bars_held``
+     - ``Int64``
+     - Number of bars the position was held
+
+This is the schema produced by ``run().trades``.
+
+See :doc:`api/reports` for all options.
 
 Synthetic Data Generators
 -------------------------

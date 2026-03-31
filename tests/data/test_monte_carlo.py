@@ -233,6 +233,21 @@ class TestVectorizedMatchesLoop:
                     f"OU sim {sim} step {i}: vec={a}, loop={b}"
                 )
 
+
+class TestGeometricMonteCarlo:
+    def test_frw_geometric_positive(self):
+        df = monte_carlo(Process.FRW, n_simulations=10, n=100, seed=42, geometric=True, step_size=0.3)
+        assert (df["price"] > 0).all()
+
+    def test_ou_geometric_positive(self):
+        df = monte_carlo(Process.OU, n_simulations=10, n=100, seed=42, geometric=True, mu=0.0, sigma=0.5)
+        assert "price" in df.columns
+        assert (df["price"] > 0).all()
+
+    def test_frw_geometric_davies_harte_positive(self):
+        df = monte_carlo(Process.FRW, n_simulations=5, n=100, seed=42, geometric=True, hurst=0.7, step_size=0.2)
+        assert (df["price"] > 0).all()
+
     @pytest.mark.parametrize(
         "hurst, step_size",
         [(0.5, 1.0), (0.7, 2.0), (0.3, 0.5)],

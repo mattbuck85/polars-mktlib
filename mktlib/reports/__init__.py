@@ -6,9 +6,11 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import polars as pl
+
 from . import _compat, _plots, _stats, _template
 from ._compat import PandasConvertible, ReturnsInput
-from ._types import DrawdownInfo, MetricsResult, ReportConfig
+from ._types import DrawdownInfo, MetricsResult, ReportConfig, TradeMetrics
 from ..rates._treasury import fetch_average_rate
 
 if TYPE_CHECKING:
@@ -20,6 +22,7 @@ __all__ = [
     "DrawdownInfo",
     "MetricsResult",
     "ReportConfig",
+    "TradeMetrics",
     "PandasConvertible",
     "ReturnsInput",
 ]
@@ -29,6 +32,7 @@ def html(
     returns: ReturnsInput,
     *,
     benchmark: ReturnsInput | None = None,
+    trades: pl.DataFrame | None = None,
     output: str | None = None,
     title: str = "Strategy Tearsheet",
     rf: float | str = 0.0,
@@ -47,6 +51,13 @@ def html(
         *return* columns), or ``pd.Series`` with a ``DatetimeIndex``.
     benchmark
         Optional benchmark returns (same types as *returns*).
+    trades
+        Optional per-trade DataFrame with columns ``entry_date`` (Date),
+        ``exit_date`` (Date), ``side`` (Int8), ``pnl`` (Float64), and
+        ``bars_held`` (Int64).  When provided, per-trade metrics are computed
+        and the Win/Loss card values are overridden with trade-based figures.
+        Two extra metric cards (Trade Stats, Trade Risk-Adjusted) and two
+        extra charts (PnL distribution, PnL over time) are added.
     output
         File path to write the HTML to.  When *None*, returns the HTML string.
     title
@@ -93,6 +104,14 @@ def html(
     # Compute metrics
     result = _stats.compute_metrics(ret_df, bench_df, config)
 
+    # Per-trade metrics (when trades provided)
+    trade_met: TradeMetrics | None = None
+    if trades is not None and not trades.is_empty():
+        trade_met = _stats.compute_trade_metrics(trades)
+        # Patch trade_metrics into result (frozen dataclass — rebuild)
+        import dataclasses
+        result = dataclasses.replace(result, trade_metrics=trade_met)
+
     # Build charts
     ret_series = ret_df["return"]
     dates_list = ret_df["date"].to_list()
@@ -138,6 +157,36 @@ def html(
         ),
     }
 
+    # Trade charts and extra metric cards (when trades provided)
+    merged_extra_metrics: dict[str, list[tuple[str, str]]] = dict(extra_metrics or {})
+    if trade_met is not None:
+        pnl_list = trades["pnl"].to_list()  # type: ignore[union-attr]
+        trade_dates = trades["entry_date"].to_list()  # type: ignore[union-attr]
+        charts["trade_distribution"] = _plots.trade_pnl_distribution_chart(pnl_list)
+        charts["trade_scatter"] = _plots.trade_pnl_scatter_chart(trade_dates, pnl_list)
+
+        def _pct(v: float) -> str:
+            return f"{v * 100:.2f}%"
+
+        def _ratio(v: float) -> str:
+            if abs(v) == float("inf"):
+                return "∞" if v > 0 else "-∞"
+            return f"{v:.3f}"
+
+        merged_extra_metrics["Trade Stats"] = [
+            ("Avg Winner", _pct(trade_met.avg_winner)),
+            ("Avg Loser", _pct(trade_met.avg_loser)),
+            ("Largest Winner", _pct(trade_met.largest_winner)),
+            ("Largest Loser", _pct(trade_met.largest_loser)),
+            ("Max Consecutive Wins", str(trade_met.max_consecutive_wins)),
+            ("Max Consecutive Losses", str(trade_met.max_consecutive_losses)),
+        ]
+        merged_extra_metrics["Trade Risk-Adjusted"] = [
+            ("Trade Sharpe", _ratio(trade_met.trade_sharpe)),
+            ("Trade Sortino", _ratio(trade_met.trade_sortino)),
+            ("Trades/Year", f"{trade_met.trades_per_year:.1f}"),
+        ]
+
     # Convert extra plotly figures to HTML divs
     extra_chart_divs: dict[str, str] = {}
     if extra_charts:
@@ -154,7 +203,7 @@ def html(
         start_date,
         end_date,
         len(ret_df),
-        extra_metrics=extra_metrics,
+        extra_metrics=merged_extra_metrics or None,
         extra_charts=extra_chart_divs,
         template_override=template,
     )
@@ -170,6 +219,7 @@ def metrics(
     returns: ReturnsInput,
     *,
     benchmark: ReturnsInput | None = None,
+    trades: pl.DataFrame | None = None,
     rf: float | str = 0.0,
     periods_per_year: int = 252,
     compounded: bool = True,
@@ -181,6 +231,9 @@ def metrics(
     rf
         Risk-free rate (annualised).  Pass ``"auto"`` to fetch the 3-month
         T-bill average for the returns date range.
+    trades
+        Optional per-trade DataFrame (same schema as ``html()``).  When
+        provided, ``MetricsResult.trade_metrics`` is populated.
     """
     ret_df = _compat.coerce_returns(returns)
     bench_df = _compat.coerce_benchmark(benchmark)
@@ -196,4 +249,11 @@ def metrics(
         periods_per_year=periods_per_year,
         compounded=compounded,
     )
-    return _stats.compute_metrics(ret_df, bench_df, config)
+    result = _stats.compute_metrics(ret_df, bench_df, config)
+
+    if trades is not None and not trades.is_empty():
+        import dataclasses
+        trade_met = _stats.compute_trade_metrics(trades)
+        result = dataclasses.replace(result, trade_metrics=trade_met)
+
+    return result

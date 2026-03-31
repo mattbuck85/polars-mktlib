@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from importlib.resources import files
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import jinja2  # type: ignore[import-untyped]
 from markupsafe import Markup  # type: ignore[import-untyped]
@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from ._types import MetricsResult
 
 _cached_template: Any = None
+
+type _Formatter = Callable[[float], str]
 
 
 def _get_template() -> Any:
@@ -66,6 +68,31 @@ def render(
         extra_charts=safe_extra,
     )
     return result
+
+
+def _win_loss_items(
+    m: MetricsResult,
+    pct: _Formatter,
+    ratio: _Formatter,
+) -> list[tuple[str, str]]:
+    """Return Win/Loss card items, preferring trade_metrics when available."""
+    tm = m.trade_metrics
+    if tm is not None:
+        return [
+            ("Trade Win Rate", pct(tm.trade_win_rate)),
+            ("Payoff Ratio", ratio(tm.payoff_ratio)),
+            ("Profit Factor", ratio(tm.profit_factor)),
+            ("Kelly Criterion", pct(tm.kelly_criterion)),
+            ("Avg Trade PnL", pct(tm.avg_trade_pnl)),
+            ("Avg Bars Held", f"{tm.avg_bars_held:.1f}"),
+            ("Total Trades", str(tm.total_trades)),
+        ]
+    return [
+        ("Win Rate", pct(m.win_rate)),
+        ("Payoff Ratio", ratio(m.payoff_ratio)),
+        ("Profit Factor", ratio(m.profit_factor)),
+        ("Kelly Criterion", pct(m.kelly_criterion)),
+    ]
 
 
 def _format_metrics(
@@ -127,12 +154,7 @@ def _format_metrics(
         ),
         (
             "Win/Loss",
-            [
-                ("Win Rate", pct(m.win_rate)),
-                ("Payoff Ratio", ratio(m.payoff_ratio)),
-                ("Profit Factor", ratio(m.profit_factor)),
-                ("Kelly Criterion", pct(m.kelly_criterion)),
-            ],
+            _win_loss_items(m, pct, ratio),
         ),
         (
             "Benchmark",

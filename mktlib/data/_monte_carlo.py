@@ -205,6 +205,7 @@ def _vectorized_ou(
     sigma: float = 1.0,
     x0: float | None = None,
     dt: float = 1 / 252,
+    geometric: bool = False,
 ) -> pl.DataFrame:
     if n < 1:
         raise ValueError("n must be >= 1")
@@ -214,13 +215,15 @@ def _vectorized_ou(
     beta = theta * mu * dt
     noise_scale = sigma * math.sqrt(dt)
 
-    return (
+    df = (
         _noise_frame(n_simulations, n, seed=seed)
         .with_columns(
             _ou_value_expr(start, alpha, beta, noise_scale).over("simulation")
         )
-        .select("simulation", "seed", "step", "value")
     )
+    if geometric:
+        return df.with_columns(pl.col("value").exp().alias("price")).select("simulation", "seed", "step", "price")
+    return df.select("simulation", "seed", "step", "value")
 
 
 def _vectorized_frw(
@@ -231,24 +234,27 @@ def _vectorized_frw(
     hurst: float = 0.5,
     base_price: float = 100.0,
     step_size: float = 1.0,
+    geometric: bool = False,
 ) -> pl.DataFrame:
     if n < 1:
         raise ValueError("n must be >= 1")
 
     if hurst == 0.5:
         # Simple cumsum path — no FFT needed
+        cumulative_expr = (
+            (pl.col("z") * step_size)
+            .cum_sum()
+            .shift(1)
+            .fill_null(0.0)
+            .over("simulation")
+        )
+        if geometric:
+            price_expr = (base_price * cumulative_expr.exp()).alias("price")
+        else:
+            price_expr = (base_price + cumulative_expr).alias("price")
         return (
             _noise_frame(n_simulations, n, seed=seed)
-            .with_columns(
-                (
-                    base_price
-                    + (pl.col("z") * step_size)
-                    .cum_sum()
-                    .shift(1)
-                    .fill_null(0.0)
-                    .over("simulation")
-                ).alias("price")
-            )
+            .with_columns(price_expr)
             .select("simulation", "seed", "step", "price")
         )
 
@@ -303,17 +309,19 @@ def _vectorized_frw(
     df = df.filter(pl.col("embed_idx") < n)
 
     # Scale and cumsum → prices
+    cumulative_expr = (
+        (pl.col("increment") * (m**0.5 * step_size))
+        .cum_sum()
+        .shift(1)
+        .fill_null(0.0)
+        .over("simulation")
+    )
+    if geometric:
+        price_expr = (base_price * cumulative_expr.exp()).alias("price")
+    else:
+        price_expr = (base_price + cumulative_expr).alias("price")
     return (
-        df.with_columns(
-            (
-                base_price
-                + (pl.col("increment") * (m**0.5 * step_size))
-                .cum_sum()
-                .shift(1)
-                .fill_null(0.0)
-                .over("simulation")
-            ).alias("price")
-        )
+        df.with_columns(price_expr)
         .rename({"embed_idx": "step"})
         .select("simulation", "seed", "step", "price")
     )
