@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- **Per-trade metrics** — `compute_trade_metrics(trades)` computes win rate, payoff ratio, profit factor, Kelly criterion, trade Sharpe/Sortino, consecutive wins/losses, and trades per year from a backtest trades DataFrame. Integrated into `html()` and `metrics()` when trades data is available.
+- **`TradeMetrics` dataclass** — typed container for all per-trade metrics, returned by `compute_trade_metrics()`.
+- **Trade PnL distribution chart** — histogram in HTML tearsheet showing per-trade PnL distribution (green winners, red losers).
+
+### Fixed
+
+- **Sortino ddof consistency** — trade Sortino now uses `ddof=1` (sample std) matching trade Sharpe. Previously used `ddof=0` (population std), producing inconsistent scaling with few trades.
+- **Null/NaN pnl guard** — `compute_trade_metrics()` now drops null and NaN pnl values before computing, preventing silent miscounts.
+- **Zero-pnl chart classification** — PnL distribution chart now treats zero-pnl trades as neutral (not winners), matching the metrics engine.
+
 ## 0.8.2
 
 ### Added

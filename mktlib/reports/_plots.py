@@ -201,3 +201,59 @@ def returns_distribution_chart(returns: list[float]) -> str:
         bargap=0.05,
     )
     return _to_div(fig)
+
+
+def trade_pnl_distribution_chart(pnl_list: list[float]) -> str:
+    """Histogram of per-trade PnL, green for winners, red for losers."""
+    winners = [v for v in pnl_list if v > 0]
+    losers = [v for v in pnl_list if v < 0]
+    fig = go.Figure()
+    if winners:
+        fig = fig.add_trace(
+            go.Histogram(
+                x=winners,
+                nbinsx=30,
+                marker_color=POSITIVE_COLOR,
+                opacity=0.7,
+                name="Winners",
+            )
+        )
+    if losers:
+        fig = fig.add_trace(
+            go.Histogram(
+                x=losers,
+                nbinsx=30,
+                marker_color=NEGATIVE_COLOR,
+                opacity=0.7,
+                name="Losers",
+            )
+        )
+    fig = fig.update_layout(
+        _base_layout("Trade PnL Distribution", height=350),
+        barmode="overlay",
+        bargap=0.05,
+        xaxis_tickformat=".2%",
+    )
+    return _to_div(fig)
+
+
+def trade_pnl_scatter_chart(
+    dates_list: list[dt.date], pnl_list: list[float]
+) -> str:
+    """Scatter plot of per-trade PnL by entry date, green/red coloring."""
+    colors = [POSITIVE_COLOR if v >= 0 else NEGATIVE_COLOR for v in pnl_list]
+    fig = go.Figure()
+    fig = fig.add_trace(
+        go.Scatter(
+            x=dates_list,
+            y=pnl_list,
+            mode="markers",
+            marker=dict(size=6, color=colors, opacity=0.7),
+            name="Trade PnL",
+        )
+    )
+    fig = fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig = fig.update_layout(
+        _base_layout("Trade PnL Over Time"), yaxis_tickformat=".2%"
+    )
+    return _to_div(fig)

@@ -26,3 +26,13 @@ class YearlyReturnsSchema(pa.DataFrameModel):
 
     year: pl.Int32
     yearly_return: float
+
+
+class TradesInputSchema(pa.DataFrameModel):
+    """Expected schema for the ``trades`` parameter of ``html()`` and ``metrics()``."""
+
+    entry_date: pl.Date
+    exit_date: pl.Date
+    side: pl.Int8
+    pnl: float
+    bars_held: int = pa.Field(ge=0)

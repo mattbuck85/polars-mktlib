@@ -11,7 +11,7 @@ from mktlib.metrics import (
     drawdown_series,
 )
 
-from ._types import MetricsResult, ReportConfig
+from ._types import MetricsResult, ReportConfig, TradeMetrics
 
 
 def compute_metrics(
@@ -103,6 +103,127 @@ def compute_metrics(
         r_squared=r_sq,
         information_ratio=info_ratio,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-trade metrics
+# ---------------------------------------------------------------------------
+
+
+def compute_trade_metrics(trades: pl.DataFrame) -> TradeMetrics:
+    """Compute per-trade metrics from a trades DataFrame.
+
+    Parameters
+    ----------
+    trades
+        DataFrame with columns: ``entry_date`` (Date), ``exit_date`` (Date),
+        ``side`` (Int8), ``pnl`` (Float64), ``bars_held`` (Int64 or Int32).
+    """
+    pnl = trades["pnl"].drop_nulls().drop_nans()
+    n = len(pnl)
+
+    if n == 0:
+        return TradeMetrics(
+            trade_win_rate=0.0,
+            payoff_ratio=0.0,
+            profit_factor=0.0,
+            kelly_criterion=0.0,
+            avg_trade_pnl=0.0,
+            avg_bars_held=0.0,
+            total_trades=0,
+            avg_winner=0.0,
+            avg_loser=0.0,
+            largest_winner=0.0,
+            largest_loser=0.0,
+            max_consecutive_wins=0,
+            max_consecutive_losses=0,
+            trade_sharpe=0.0,
+            trade_sortino=0.0,
+            trades_per_year=0.0,
+        )
+
+    winners = pnl.filter(pnl > 0)
+    losers = pnl.filter(pnl < 0)
+
+    win_count = len(winners)
+    win_rate = win_count / n
+
+    avg_win = float(winners.mean()) if len(winners) > 0 else 0.0  # type: ignore[arg-type]
+    avg_loss = float(losers.mean()) if len(losers) > 0 else 0.0  # type: ignore[arg-type]
+
+    payoff = avg_win / abs(avg_loss) if avg_loss != 0.0 else float("inf")
+    pf_sum_win = float(winners.sum()) if len(winners) > 0 else 0.0  # type: ignore[arg-type]
+    pf_sum_loss = abs(float(losers.sum())) if len(losers) > 0 else 0.0  # type: ignore[arg-type]
+    profit_factor = pf_sum_win / pf_sum_loss if pf_sum_loss != 0.0 else float("inf")
+
+    kelly = win_rate - (1.0 - win_rate) / payoff if payoff != 0.0 and not math.isinf(payoff) else win_rate
+
+    avg_pnl = float(pnl.mean())  # type: ignore[arg-type]
+    avg_bars = float(trades["bars_held"].mean())  # type: ignore[arg-type]
+
+    # Consecutive wins / losses
+    pnl_list = pnl.to_list()
+    max_wins = _max_consecutive(pnl_list, positive=True)
+    max_losses = _max_consecutive(pnl_list, positive=False)
+
+    # Risk-adjusted — trades per year
+    entry_min: date = trades["entry_date"].min()  # type: ignore[assignment]
+    exit_max: date = trades["exit_date"].max()  # type: ignore[assignment]
+    if entry_min is not None and exit_max is not None:
+        span_days = float((exit_max - entry_min).days)  # type: ignore[union-attr]
+        # Calendar days (not trading days) — trade frequency spans weekends/holidays
+        span_years = span_days / 365.25
+        trades_per_year = n / span_years if span_years > 0.0 else float(n)
+    else:
+        trades_per_year = float(n)
+
+    pnl_std = float(pnl.std()) if n > 1 else 0.0  # type: ignore[arg-type]
+    trade_sharpe = (
+        avg_pnl / pnl_std * math.sqrt(trades_per_year)
+        if pnl_std > 0.0
+        else 0.0
+    )
+
+    downside = pnl.filter(pnl < 0)
+    downside_std_raw = downside.std() if len(downside) > 1 else None  # type: ignore[arg-type]
+    downside_std = abs(float(downside_std_raw)) if downside_std_raw is not None else 0.0  # type: ignore[arg-type]
+    trade_sortino = (
+        avg_pnl / downside_std * math.sqrt(trades_per_year)
+        if downside_std != 0.0
+        else 0.0
+    )
+
+    return TradeMetrics(
+        trade_win_rate=win_rate,
+        payoff_ratio=payoff,
+        profit_factor=profit_factor,
+        kelly_criterion=kelly,
+        avg_trade_pnl=avg_pnl,
+        avg_bars_held=avg_bars,
+        total_trades=n,
+        avg_winner=avg_win,
+        avg_loser=avg_loss,
+        largest_winner=float(pnl.max()),  # type: ignore[arg-type]
+        largest_loser=float(pnl.min()),  # type: ignore[arg-type]
+        max_consecutive_wins=max_wins,
+        max_consecutive_losses=max_losses,
+        trade_sharpe=trade_sharpe,
+        trade_sortino=trade_sortino,
+        trades_per_year=trades_per_year,
+    )
+
+
+def _max_consecutive(pnl_list: list[float], *, positive: bool) -> int:
+    """Return the longest consecutive run of wins (positive=True) or losses."""
+    max_run = 0
+    current = 0
+    for v in pnl_list:
+        if (positive and v > 0) or (not positive and v < 0):
+            current += 1
+            max_run = max(max_run, current)
+        else:
+            current = 0
+    return max_run
 
 
 # ---------------------------------------------------------------------------
