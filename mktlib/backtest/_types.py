@@ -74,7 +74,7 @@ class MultiBacktestResult:
     portfolio-weighted ``(date, return)`` time series. The weights DataFrame
     must conform to the canonical portfolio-weights schema
     (``(instrument, weight)``) and is expected to be pre-validated by
-    :func:`mktlib.backtest._weights.to_portfolio_weights_df`.
+    :func:`mktlib.backtest.to_portfolio_weights_df`.
     """
 
     __slots__ = ("_by_instrument", "_instrument_col", "_weights", "__dict__")

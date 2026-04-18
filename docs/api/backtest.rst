@@ -63,6 +63,38 @@ call. Returns a :class:`MultiBacktestResult` with O(1) per-instrument access:
    # Equal-weight portfolio
    portfolio = result.returns.group_by("date").agg(pl.col("return").mean())
 
+Portfolio Weights
+^^^^^^^^^^^^^^^^^
+
+Pass ``instrument_weights`` to collapse per-symbol results into a single
+weighted ``(date, return)`` portfolio series:
+
+.. code-block:: python
+
+   result = run(
+       df_multi, strategy,
+       instrument_weights={"TQQQ": 0.5, "MSFT": 0.1, "AAPL": 0.1, ...},
+   )
+   result.returns   # (date, return) — weighted portfolio series
+
+Weights accept either a ``Mapping[str, float]`` or a ``pl.DataFrame``
+with columns ``(instrument, weight)``. Proportional and normalized
+inputs are equivalent — mktlib renormalizes at aggregation. When a
+symbol is missing on a given date, its weight drops from that date's
+denominator (dynamic renormalization), keeping the portfolio series
+continuous across alignment gaps.
+
+When ``instrument_weights`` is supplied without an explicit
+``instrument_col``, mktlib defaults to ``"instrument"`` (matching the
+canonical portfolio-weights schema). Public schema constants
+(``PORTFOLIO_WEIGHTS_COLUMNS``, ``INSTRUMENT_COLUMN``, ``WEIGHT_COLUMN``)
+live in :mod:`mktlib.backtest._weights`.
+
+.. autoexception:: mktlib.backtest.InvalidPortfolioWeights
+   :members:
+
+.. autofunction:: mktlib.backtest.to_portfolio_weights_df
+
 Types
 -----
 
@@ -141,6 +173,45 @@ Combinators
    :members:
 
 .. autoclass:: mktlib.backtest.Not
+   :members:
+
+Same-Bar Fills: Take-Profit / Stop-Loss
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Wrap an exit condition in :class:`Limit` to fill on the *same* bar the
+condition fires, at the limit price — instead of the default fill-at-
+next-open. Designed for TP/SL strategies where the fill price is known
+in advance.
+
+.. code-block:: python
+
+   from mktlib.backtest import Col, Limit, Lit, ValueGTE, ValueLTE
+
+   # Take-profit: exit when high >= 103, fill at 103
+   tp_exit = Limit(ValueGTE(Col("high"), Lit(103.0)))
+
+   # Stop-loss: exit when low <= 95, fill at 95
+   sl_exit = Limit(ValueLTE(Col("low"), Lit(95.0)))
+
+The fill price defaults to the RHS of the wrapped comparison (TP/SL
+idiom ``high >= TP`` → fill at ``TP``). Pass ``price=`` explicitly for
+trailing stops or decoupled trigger/fill:
+
+.. code-block:: python
+
+   trailing_exit = Limit(
+       ValueLTE(Col("low"), Col("trailing_stop")),
+       price=Col("trailing_stop"),
+   )
+
+.. note::
+
+   v1 scope: only the *top-level* ``Limit`` wrapper is recognized.
+   Nested use inside ``All`` / ``Any_`` / ``Not`` behaves as a plain
+   boolean. ``Any_(TP, SL)`` bracket patterns are planned for a later
+   release.
+
+.. autoclass:: mktlib.backtest.Limit
    :members:
 
 Column Expressions
