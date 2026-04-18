@@ -256,3 +256,26 @@ class TestLimitBackCompat:
         strat = _CrossEntryLimitExit(Limit(ValueGTE(Col("high"), Lit(103.0))))
         result = run(df, strat)
         assert "_limit_price" not in result.signals.columns
+
+
+# ---------------------------------------------------------------------------
+# E) Entry-side Limit is rejected (v1 guardrail)
+# ---------------------------------------------------------------------------
+
+
+class TestLimitEntryRejected:
+    def test_limit_on_entry_raises_not_implemented(self):
+        """Entry-side Limit is explicitly unsupported in v1 — fail fast."""
+        @dataclass(frozen=True, slots=True)
+        class _LimitEntry:
+            def entry(self) -> Limit:
+                return Limit(ValueGTE(Col("high"), Lit(105.0)))
+
+            def exit(self) -> Crossunder:
+                return Crossunder("fast", "slow")
+
+        closes = [100.0, 100.5, 101.0, 102.5, 103.0]
+        df = _base_ohlcv(closes=closes)
+
+        with pytest.raises(NotImplementedError, match="Entry-side limit"):
+            run(df, _LimitEntry())

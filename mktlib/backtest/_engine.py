@@ -163,6 +163,20 @@ def _run_core(
     exit_raw = strategy.exit()
     entry_cond = entry_raw if isinstance(entry_raw, Condition) else Custom(entry_raw)
     exit_cond = exit_raw if isinstance(exit_raw, Condition) else Custom(exit_raw)
+
+    # Entry-side limits are not supported yet (v1 scope: exit-only). The
+    # wrapper would resolve silently to the inner boolean with the
+    # ``price`` kwarg ignored — a footgun. Fail fast with a clear message
+    # so callers don't get subtle incorrect fill semantics.
+    if isinstance(entry_cond, Limit):
+        msg = (
+            "Limit(...) is only supported on exit conditions in this "
+            "release. Entry-side limit fills are planned for a future "
+            "version — for now, use the inner condition directly for "
+            "entry and rely on fill-at-next-open semantics."
+        )
+        raise NotImplementedError(msg)
+
     entry_expr = entry_cond.resolve()
 
     # Limit exit: same-bar fill at a specified price. v1 scope is a
