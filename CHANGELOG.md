@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0
+
+### Added
+
+- **Portfolio-weighted multi-instrument runs** — `run(instrument_weights=...)` accepts a `Mapping[str, float]` or a `pl.DataFrame` with columns `(instrument, weight)`. When supplied, `MultiBacktestResult.returns` produces a single weighted `(date, return)` time series instead of the per-symbol concatenation. Weights are validated against the canonical portfolio-weights schema and renormalized at aggregation time — callers may pass proportional (`{"A": 5, "B": 2}`) or normalized (`{"A": 0.714, "B": 0.286}`) dicts interchangeably. When a symbol is missing on a given date, its weight is excluded from that date's denominator (dynamic renormalization), keeping the portfolio series continuous across alignment gaps.
+- **`mktlib.backtest._weights` module** — public `PORTFOLIO_WEIGHTS_COLUMNS`, `INSTRUMENT_COLUMN`, `WEIGHT_COLUMN` constants, `InvalidPortfolioWeights` exception, and `to_portfolio_weights_df()` helper for callers who want to pre-validate weights input.
+- **Canonical `instrument_col="instrument"` default** — when `instrument_weights` is passed without an explicit `instrument_col`, mktlib now defaults to `"instrument"` (matching the quant-finance convention and the canonical weights schema).
+- **Pandera schemas** — `PortfolioWeightsSchema` and `WeightedReturnsSchema` in `tests/schemas/backtest.py` for cross-release schema stability.
+
+### Changed
+
+- **`MultiBacktestResult` constructor** — now accepts optional `weights: pl.DataFrame | None = None`. When omitted, `.returns` behavior is unchanged (per-symbol concatenation). Existing callers require no code changes.
+
 ## 0.9.0
 
 ### Added

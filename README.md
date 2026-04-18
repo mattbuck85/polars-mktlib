@@ -549,6 +549,33 @@ result = run(df, SmaCross(), trade_side=TradeSide.SHORT)
 entry = Crossover("fast", "slow", trade_side=TradeSide.SHORT)
 ```
 
+### Multi-instrument & portfolio weights
+
+For multi-symbol backtests, pass `instrument_col` (or add an `instrument`
+column — `run()` defaults to it when `instrument_weights` is supplied):
+
+```python
+# Per-symbol results via dict-like access on MultiBacktestResult
+result = run(df_multi, strategy, instrument_col="instrument")
+result["AAPL"].returns          # per-symbol returns
+result.returns                  # (instrument, date, return) concatenated
+
+# Portfolio-weighted aggregation — returns collapse to (date, return)
+result = run(
+    df_multi, strategy,
+    instrument_weights={"TQQQ": 0.5, "MSFT": 0.1, "AAPL": 0.1, ...},
+)
+result.returns                  # (date, return) — weighted portfolio series
+```
+
+Weights accept either a `Mapping[str, float]` or a `pl.DataFrame` with
+columns `(instrument, weight)`. They do not need to sum to 1 — mktlib
+renormalizes at aggregation. When a symbol is missing on a given date,
+its weight drops from that date's denominator (dynamic renormalization),
+keeping the portfolio series continuous across alignment gaps. See the
+`mktlib.backtest._weights` module docstring for the full schema and
+validation rules.
+
 ### Backtest API
 
 ```python
@@ -559,7 +586,9 @@ def run(
     trade_side: TradeSide = TradeSide.LONG,
     calendar: ExchangeCalendar | None = None,
     flatten_eod: bool = False,
-) -> BacktestResult: ...
+    instrument_col: str | None = None,
+    instrument_weights: Mapping[str, float] | pl.DataFrame | None = None,
+) -> BacktestResult | MultiBacktestResult: ...
 ```
 
 | Parameter | Description |
@@ -569,6 +598,8 @@ def run(
 | `trade_side` | `LONG` (+1) or `SHORT` (-1); overridden by condition's `trade_side` |
 | `calendar` | Exchange calendar for market-hours filtering |
 | `flatten_eod` | Force-close at session end; requires `calendar` |
+| `instrument_col` | Symbol column for multi-instrument mode. Defaults to `"instrument"` when `instrument_weights` is supplied |
+| `instrument_weights` | Optional portfolio weights. Dict or `(instrument, weight)` DataFrame. Returns weighted portfolio series when set |
 
 ## Reports — Tearsheet Generation
 

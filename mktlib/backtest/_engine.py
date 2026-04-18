@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import datetime
+import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, overload
 
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 from mktlib.backtest._conditions import (
     All,
@@ -21,6 +25,11 @@ from mktlib.backtest._conditions import (
     _BinOp,
 )
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
+from mktlib.backtest._weights import (
+    INSTRUMENT_COLUMN,
+    InvalidPortfolioWeights,
+    to_portfolio_weights_df,
+)
 
 if TYPE_CHECKING:
     from mktlib.scheduling import ExchangeCalendar
@@ -353,6 +362,7 @@ def _run_multi(
     trade_side: TradeSide,
     calendar: ExchangeCalendar | None,
     flatten_eod: bool,
+    weights: pl.DataFrame | None = None,
 ) -> MultiBacktestResult:
     """Run independent backtests per instrument and combine results."""
     if instrument_col not in df.columns:
@@ -384,7 +394,43 @@ def _run_multi(
                 flatten_eod=flatten_eod,
             )
 
-    return MultiBacktestResult(by_instrument, instrument_col=instrument_col)
+    if weights is not None:
+        _cross_validate_weights(by_instrument, weights)
+
+    return MultiBacktestResult(
+        by_instrument, instrument_col=instrument_col, weights=weights,
+    )
+
+
+def _cross_validate_weights(
+    by_instrument: dict[str, BacktestResult],
+    weights: pl.DataFrame,
+) -> None:
+    """Check that every backtested symbol has a weight; warn on extra weights.
+
+    Symbols in the data but not in *weights* are ambiguous — raise. Symbols
+    in *weights* but not in the data are harmless (master-config pattern) —
+    log a warning and let the downstream inner-join drop them.
+    """
+    data_symbols = set(by_instrument)
+    weight_symbols = set(weights[INSTRUMENT_COLUMN].to_list())
+
+    missing = data_symbols - weight_symbols
+    if missing:
+        msg = (
+            f"symbols backtested but not in instrument_weights: {sorted(missing)}. "
+            "Either add them to the weights dict or filter them out of the input "
+            "DataFrame before calling run()."
+        )
+        raise InvalidPortfolioWeights(msg)
+
+    extras = weight_symbols - data_symbols
+    if extras:
+        logger.warning(
+            "instrument_weights contains symbols not present in the data; "
+            "these will be ignored: %s",
+            sorted(extras),
+        )
 
 
 @overload
@@ -396,6 +442,7 @@ def run(
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
     instrument_col: str,
+    instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
 
 
@@ -420,6 +467,7 @@ def run(
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
     instrument_col: str,
+    instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
 
 
@@ -433,6 +481,19 @@ def run(
     flatten_eod: bool = ...,
     instrument_col: None = ...,
 ) -> BacktestResult: ...
+
+
+@overload
+def run(
+    df: pl.DataFrame,
+    strategy: Strategy,
+    *,
+    trade_side: TradeSide = ...,
+    calendar: ExchangeCalendar | None = ...,
+    flatten_eod: bool = ...,
+    instrument_col: None = ...,
+    instrument_weights: Mapping[str, float] | pl.DataFrame,
+) -> MultiBacktestResult: ...
 
 
 def run(
@@ -444,6 +505,7 @@ def run(
     calendar: ExchangeCalendar | None = None,
     flatten_eod: bool = False,
     instrument_col: str | None = None,
+    instrument_weights: Mapping[str, float] | pl.DataFrame | None = None,
 ) -> BacktestResult | MultiBacktestResult:
     """Run a vectorized backtest with fill-at-next-open semantics.
 
@@ -478,6 +540,15 @@ def run(
         per-symbol results for O(1) access (``result["AAPL"]``).
         Combined DataFrames with the symbol column prepended are
         available via ``.returns``, ``.trades``, ``.signals`` properties.
+    instrument_weights
+        Optional portfolio weights for multi-instrument runs. Accepts
+        either a ``Mapping[str, float]`` (``{"TQQQ": 0.5, "AAPL": 0.1}``)
+        or a ``pl.DataFrame`` with columns ``(instrument, weight)``. When
+        supplied, :attr:`MultiBacktestResult.returns` is the weighted
+        portfolio time series (``(date, return)``) instead of the
+        per-symbol concatenation. Requires *instrument_col*. See
+        :mod:`mktlib.backtest._weights` for schema and renormalization
+        semantics.
 
     Returns
     -------
@@ -499,14 +570,27 @@ def run(
     When *instrument_col* is set, each symbol is backtested independently —
     indicators (e.g. rolling SMA) do not bleed across symbols. Calendar
     filtering is applied once on the full DataFrame before partitioning.
-    Per-symbol aggregation (e.g. equal-weight portfolio returns) is left
-    to the caller::
+
+    If *instrument_weights* is omitted, aggregation stays per-symbol and
+    the caller decides how to combine::
 
         result.returns.group_by("date").agg(pl.col("return").mean())
     """
     if flatten_eod and calendar is None:
         msg = "flatten_eod=True requires a calendar"
         raise ValueError(msg)
+
+    if instrument_weights is not None and instrument_col is None:
+        # Canonical column name for multi-instrument runs. Callers in the
+        # quant-finance convention use ``instrument`` for the ticker column;
+        # default to that when they've signaled multi via weights but not
+        # named the column explicitly.
+        instrument_col = "instrument"
+
+    weights_df: pl.DataFrame | None = None
+    if instrument_weights is not None:
+        # Validate early so input errors surface before expensive compute.
+        weights_df = to_portfolio_weights_df(instrument_weights)
 
     if short_strategy is not None:
         if trade_side is not TradeSide.LONG:
@@ -521,6 +605,7 @@ def run(
                 trade_side=TradeSide.LONG,
                 calendar=calendar,
                 flatten_eod=flatten_eod,
+                weights=weights_df,
             )
         if calendar is not None:
             df = calendar.filter_market_hours(df, "date")
@@ -540,6 +625,7 @@ def run(
             trade_side=trade_side,
             calendar=calendar,
             flatten_eod=flatten_eod,
+            weights=weights_df,
         )
 
     # Single-symbol path: calendar filter → _run_core
