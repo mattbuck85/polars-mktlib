@@ -16,6 +16,7 @@ from mktlib.backtest._conditions import (
     Condition,
     Custom,
     EntryRef,
+    Limit,
     Not,
     Pct,
     ValueGT,
@@ -164,6 +165,14 @@ def _run_core(
     exit_cond = exit_raw if isinstance(exit_raw, Condition) else Custom(exit_raw)
     entry_expr = entry_cond.resolve()
 
+    # Limit exit: same-bar fill at a specified price. v1 scope is a
+    # top-level ``Limit`` wrapper on the exit tree only — nested limit
+    # usage is not recognized and behaves as a plain boolean condition.
+    is_limit_exit = isinstance(exit_cond, Limit)
+    limit_price_expr: pl.Expr | None = (
+        exit_cond.resolve_price() if is_limit_exit else None  # type: ignore[attr-defined]
+    )
+
     effective_side = int(entry_cond.trade_side or trade_side)
 
     # Pass 1: compute _entry
@@ -181,6 +190,14 @@ def _run_core(
     # Pass 2: compute _exit (snapshot columns now exist for EntryRef.resolve())
     exit_expr = exit_cond.resolve()
     signals = signals.with_columns(exit_expr.alias("_exit"))
+
+    # For limit exits, also materialize the fill price. Only consumed on
+    # bars where the exit fires while we're holding; values elsewhere are
+    # harmless.
+    if is_limit_exit:
+        signals = signals.with_columns(
+            limit_price_expr.alias("_limit_price"),  # type: ignore[union-attr]
+        )
 
     # Position tracking: 1 on entry, 0 on exit, forward-fill
     if flatten_eod:
@@ -244,24 +261,48 @@ def _run_core(
         (pl.col("open") - pl.col("_close_prev")) / pl.col("_close_prev")
     ) * effective_side
 
+    # Limit-exit branches: fill at _limit_price on the same bar the
+    # inner condition fires while we were holding. Suppress the normal
+    # next-bar exit-open fill that would otherwise apply.
+    _limit_ret: pl.Expr = pl.lit(0.0)
+    _is_limit_exit_bar: pl.Expr = pl.lit(False)
+    _is_post_limit_bar: pl.Expr = pl.lit(False)
+    if is_limit_exit:
+        _limit_ret = (
+            (pl.col("_limit_price") - pl.col("_close_prev"))
+            / pl.col("_close_prev")
+        ) * effective_side
+        _is_limit_exit_bar = pl.col("_exit") & (pl.col("_pos_d1") == 1)
+        _is_post_limit_bar = _is_limit_exit_bar.shift(1).fill_null(False)
+
     # Compute returns + flatten_eod overrides in minimal with_columns calls
     if flatten_eod:
-        # Base returns + session-last override in one pass
-        signals = signals.with_columns(
-            pl.when(pl.col("_session_last") & _is_entry_bar)
-            .then(0.0)
-            .when(pl.col("_session_last") & (pl.col("_pos_d1") == 1))
-            .then(_exit_ret)
-            .when(_is_entry_bar)
-            .then(_entry_ret)
-            .when(_is_exit_bar)
-            .then(_exit_ret)
-            .when(pl.col("_pos_d1") == 1)
-            .then(_normal_ret)
-            .otherwise(0.0)
-            .fill_null(0.0)
-            .alias("return"),
-        )
+        # Base returns + session-last override in one pass. When limits
+        # are active they win against session-last on the same bar
+        # (intra-bar fill precedes the session-close flatten).
+        if is_limit_exit:
+            ret_expr = (
+                pl.when(_is_limit_exit_bar).then(_limit_ret)
+                .when(_is_post_limit_bar).then(0.0)
+                .when(pl.col("_session_last") & _is_entry_bar).then(0.0)
+                .when(pl.col("_session_last") & (pl.col("_pos_d1") == 1)).then(_exit_ret)
+                .when(_is_entry_bar).then(_entry_ret)
+                .when(_is_exit_bar).then(_exit_ret)
+                .when(pl.col("_pos_d1") == 1).then(_normal_ret)
+                .otherwise(0.0)
+                .fill_null(0.0)
+            )
+        else:
+            ret_expr = (
+                pl.when(pl.col("_session_last") & _is_entry_bar).then(0.0)
+                .when(pl.col("_session_last") & (pl.col("_pos_d1") == 1)).then(_exit_ret)
+                .when(_is_entry_bar).then(_entry_ret)
+                .when(_is_exit_bar).then(_exit_ret)
+                .when(pl.col("_pos_d1") == 1).then(_normal_ret)
+                .otherwise(0.0)
+                .fill_null(0.0)
+            )
+        signals = signals.with_columns(ret_expr.alias("return"))
         # Post-session-last bar zeroing
         signals = signals.with_columns(
             pl.when(
@@ -273,17 +314,25 @@ def _run_core(
             .alias("return"),
         )
     else:
-        signals = signals.with_columns(
-            pl.when(_is_entry_bar)
-            .then(_entry_ret)
-            .when(_is_exit_bar)
-            .then(_exit_ret)
-            .when(pl.col("_pos_d1") == 1)
-            .then(_normal_ret)
-            .otherwise(0.0)
-            .fill_null(0.0)
-            .alias("return"),
-        )
+        if is_limit_exit:
+            ret_expr = (
+                pl.when(_is_limit_exit_bar).then(_limit_ret)
+                .when(_is_post_limit_bar).then(0.0)
+                .when(_is_entry_bar).then(_entry_ret)
+                .when(_is_exit_bar).then(_exit_ret)
+                .when(pl.col("_pos_d1") == 1).then(_normal_ret)
+                .otherwise(0.0)
+                .fill_null(0.0)
+            )
+        else:
+            ret_expr = (
+                pl.when(_is_entry_bar).then(_entry_ret)
+                .when(_is_exit_bar).then(_exit_ret)
+                .when(pl.col("_pos_d1") == 1).then(_normal_ret)
+                .otherwise(0.0)
+                .fill_null(0.0)
+            )
+        signals = signals.with_columns(ret_expr.alias("return"))
 
     returns = signals.select("date", "return")
 
@@ -294,6 +343,8 @@ def _run_core(
     _drop_cols = ["_pos_d1", "_pos_d2", "_close_prev", "_entry_clean", "_exit_clean"]
     if flatten_eod:
         _drop_cols.append("_session_last")
+    if is_limit_exit:
+        _drop_cols.append("_limit_price")
     signals = signals.drop(_drop_cols)
 
     return BacktestResult(returns=returns, trades=trades, signals=signals)
@@ -665,17 +716,29 @@ def _extract_trades(
         pl.int_range(pl.len()).alias("_entry_idx"),
     )
 
-    # Exit fill price: session-forced exits use current bar's open,
-    # normal exits use next bar's open (fill-at-next-open).
+    # Exit fill price priority:
+    #   1. _limit_price when a same-bar limit exit fired on this bar
+    #   2. session-last bar's own open (flatten_eod path)
+    #   3. next bar's open (default fill-at-next-open)
+    has_limit = "_limit_price" in signals.columns
     if flatten_eod:
-        exit_price_expr = (
+        base_expr = (
             pl.when(pl.col("_session_last"))
             .then(pl.col("open"))
             .otherwise(pl.col("_next_open"))
+        )
+    else:
+        base_expr = pl.col("_next_open")
+
+    if has_limit:
+        exit_price_expr = (
+            pl.when(pl.col("_limit_price").is_not_null())
+            .then(pl.col("_limit_price"))
+            .otherwise(base_expr)
             .alias("exit_price")
         )
     else:
-        exit_price_expr = pl.col("_next_open").alias("exit_price")
+        exit_price_expr = base_expr.alias("exit_price")
 
     exits = signals_with_next.filter(pl.col("_exit_clean")).select(
         pl.col("date").alias("exit_date"),

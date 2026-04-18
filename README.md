@@ -549,6 +549,37 @@ result = run(df, SmaCross(), trade_side=TradeSide.SHORT)
 entry = Crossover("fast", "slow", trade_side=TradeSide.SHORT)
 ```
 
+### Take-profit / stop-loss with same-bar fills
+
+Wrap an exit condition in `Limit(...)` to fill on the same bar the condition
+fires — at the limit price — instead of the default next-bar open:
+
+```python
+from mktlib.backtest import Col, Limit, Lit, ValueGTE, ValueLTE, run
+
+# Take-profit: exit when high crosses above 103, fill at 103
+tp_exit = Limit(ValueGTE(Col("high"), Lit(103.0)))
+
+# Stop-loss: exit when low crosses below 95, fill at 95
+sl_exit = Limit(ValueLTE(Col("low"), Lit(95.0)))
+```
+
+The fill price defaults to the RHS of the wrapped comparison (the TP/SL
+idiom `high >= TP` → fill at `TP`). Pass `price=` explicitly for trailing
+stops or decoupled trigger/fill:
+
+```python
+# Trailing stop driven by a per-bar column
+trailing_exit = Limit(
+    ValueLTE(Col("low"), Col("trailing_stop")),
+    price=Col("trailing_stop"),
+)
+```
+
+v1 scope: only the *top-level* `Limit` wrapper is recognized. Nested use
+inside `All`/`Any_`/`Not` behaves as a plain boolean. `Any_(TP, SL)` bracket
+patterns are planned for a later release.
+
 ### Multi-instrument & portfolio weights
 
 For multi-symbol backtests, pass `instrument_col` (or add an `instrument`
