@@ -69,18 +69,26 @@ class MultiBacktestResult:
     ``result["AAPL"]``. Combined DataFrames with the symbol column prepended
     are available via :attr:`returns`, :attr:`trades`, and :attr:`signals`
     properties (lazy-cached on first access).
+
+    When *weights* is supplied, :attr:`returns` instead produces a
+    portfolio-weighted ``(date, return)`` time series. The weights DataFrame
+    must conform to the canonical portfolio-weights schema
+    (``(instrument, weight)``) and is expected to be pre-validated by
+    :func:`mktlib.backtest.to_portfolio_weights_df`.
     """
 
-    __slots__ = ("_by_instrument", "_instrument_col", "__dict__")
+    __slots__ = ("_by_instrument", "_instrument_col", "_weights", "__dict__")
 
     def __init__(
         self,
         by_instrument: dict[str, BacktestResult],
         *,
         instrument_col: str,
+        weights: pl.DataFrame | None = None,
     ) -> None:
         self._by_instrument = by_instrument
         self._instrument_col = instrument_col
+        self._weights = weights
 
     # -- dict-like access --------------------------------------------------
 
@@ -120,8 +128,40 @@ class MultiBacktestResult:
 
     @functools.cached_property
     def returns(self) -> pl.DataFrame:
-        """``(symbol, date, return)`` — all symbols concatenated."""
+        """Portfolio returns.
+
+        Without *weights*: ``(instrument_col, date, return)`` — all symbols
+        concatenated, one row per (symbol, date).
+
+        With *weights*: ``(date, return)`` — weighted-sum portfolio returns
+        with dynamic denominator renormalization. On any given date, only
+        symbols that reported a return contribute; the denominator is the
+        sum of those present symbols' weights.
+        """
+        if self._weights is not None:
+            return self._weighted_returns()
         return self._concat_field("returns")
+
+    def _weighted_returns(self) -> pl.DataFrame:
+        """Aggregate per-symbol returns into a weighted portfolio time series."""
+        weights = cast(pl.DataFrame, self._weights).rename({"instrument": self._instrument_col})
+        frames = [
+            cast(pl.DataFrame, result.returns).with_columns(
+                pl.lit(symbol).alias(self._instrument_col)
+            )
+            for symbol, result in self._by_instrument.items()
+        ]
+        combined = pl.concat(frames)
+        return (
+            combined
+            .join(weights, on=self._instrument_col, how="inner")
+            .with_columns((pl.col("return") * pl.col("weight")).alias("_wr"))
+            .group_by("date")
+            .agg(
+                (pl.col("_wr").sum() / pl.col("weight").sum()).alias("return"),
+            )
+            .sort("date")
+        )
 
     @functools.cached_property
     def trades(self) -> pl.DataFrame:

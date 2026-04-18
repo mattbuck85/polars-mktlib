@@ -96,9 +96,9 @@ When adding a new exchange:
 
 ## Documentation
 
-- **README.md** — basic usage guide (install, quick examples per subpackage).
-- **Sphinx docs** (`docs/`) — includes everything in README plus advanced examples. Deployed to Read the Docs.
-- Keep both in sync: README changes should be reflected in Sphinx, Sphinx can have additional depth.
+- **README.md** — landing page. One-paragraph blurbs per subpackage linking out to Sphinx. New feature docs go to Sphinx first; README only gains a stub.
+- **Sphinx docs** (`docs/`) — primary reference. Deployed to Read the Docs. Contains narrative guides (`quickstart.rst`, `advanced.rst`), API references (`api/*.rst`), and ecosystem notes.
+- The `autofunction::` / `automodule::` directives pull signatures from docstrings — update the docstring, not a handwritten table in the README.
 
 ## Release Process
 

@@ -12,6 +12,7 @@ from mktlib.backtest._conditions import (
     EntryRef,
     IsFalling,
     IsRising,
+    Limit,
     Lit,
     Not,
     Pct,
@@ -26,6 +27,13 @@ from mktlib.backtest._conditions import (
 from mktlib.backtest._artifact import combined_strategy_artifact, register_alias, strategy_artifact
 from mktlib.backtest._engine import run
 from mktlib.backtest._types import BacktestResult, InitStrategy, MultiBacktestResult, Strategy, TradeSide
+from mktlib.backtest._weights import (
+    INSTRUMENT_COLUMN,
+    InvalidPortfolioWeights,
+    PORTFOLIO_WEIGHTS_COLUMNS,
+    WEIGHT_COLUMN,
+    to_portfolio_weights_df,
+)
 
 __all__ = [
     "All",
@@ -39,12 +47,16 @@ __all__ = [
     "Crossunder",
     "Custom",
     "EntryRef",
+    "INSTRUMENT_COLUMN",
     "InitStrategy",
+    "InvalidPortfolioWeights",
     "IsFalling",
     "IsRising",
+    "Limit",
     "Lit",
     "MultiBacktestResult",
     "Not",
+    "PORTFOLIO_WEIGHTS_COLUMNS",
     "Pct",
     "PriceExpr",
     "PriceIsAbove",
@@ -55,7 +67,9 @@ __all__ = [
     "ValueGTE",
     "ValueLT",
     "ValueLTE",
+    "WEIGHT_COLUMN",
     "register_alias",
     "run",
     "strategy_artifact",
+    "to_portfolio_weights_df",
 ]

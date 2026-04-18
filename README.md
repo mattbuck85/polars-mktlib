@@ -549,26 +549,17 @@ result = run(df, SmaCross(), trade_side=TradeSide.SHORT)
 entry = Crossover("fast", "slow", trade_side=TradeSide.SHORT)
 ```
 
+### Take-profit / stop-loss with same-bar fills
+
+Wrap an exit condition in `Limit(...)` to fill on the same bar the condition fires, at the limit price — see the [backtest API docs](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#same-bar-fills-take-profit-stop-loss) for examples and trailing-stop patterns.
+
+### Multi-instrument & portfolio weights
+
+Pass `instrument_col` for per-symbol results, or `instrument_weights` (dict or `(instrument, weight)` DataFrame) to get a single weighted portfolio return series. See [Multi-Symbol Backtesting](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#multi-symbol-backtesting) for schema, renormalization behavior, and examples.
+
 ### Backtest API
 
-```python
-def run(
-    df: pl.DataFrame,
-    strategy: Strategy,
-    *,
-    trade_side: TradeSide = TradeSide.LONG,
-    calendar: ExchangeCalendar | None = None,
-    flatten_eod: bool = False,
-) -> BacktestResult: ...
-```
-
-| Parameter | Description |
-|-|-|
-| `df` | Must contain `date`, `open`, `close`, and indicator columns |
-| `strategy` | Object with `entry()` and `exit()` returning `Condition` |
-| `trade_side` | `LONG` (+1) or `SHORT` (-1); overridden by condition's `trade_side` |
-| `calendar` | Exchange calendar for market-hours filtering |
-| `flatten_eod` | Force-close at session end; requires `calendar` |
+Full signature and parameter reference: [`mktlib.backtest.run`](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#mktlib.backtest.run).
 
 ## Reports — Tearsheet Generation
 
@@ -628,30 +619,7 @@ All charts are interactive Plotly — hover for values, zoom, pan. Plotly JS is 
 
 ### Per-Trade Metrics
 
-When trades data is available (from `run().trades`), pass it to get per-trade analysis:
-
-```python
-result = run(df, strategy)
-
-# HTML tearsheet with trade metrics + PnL distribution chart
-html(result.returns, trades=result.trades, output="tearsheet.html")
-
-# Metrics only
-m = metrics(result.returns, trades=result.trades)
-print(m.trade_metrics.trade_win_rate)    # e.g. 0.55
-print(m.trade_metrics.profit_factor)     # e.g. 1.8
-print(m.trade_metrics.kelly_criterion)   # optimal bet fraction
-print(m.trade_metrics.trade_sharpe)      # risk-adjusted per-trade
-```
-
-| Category | Metrics |
-|-|-|
-| Win/Loss | Win rate, payoff ratio, profit factor, Kelly criterion |
-| Size | Avg/largest winner, avg/largest loser |
-| Streaks | Max consecutive wins, max consecutive losses |
-| Risk-adjusted | Trade Sharpe, trade Sortino, trades per year |
-
-The `trades` DataFrame requires: `entry_date` (Date), `exit_date` (Date), `side` (Int8: +1/-1), `pnl` (Float64), `bars_held` (Int64). This is the schema produced by `run().trades`.
+When `run().trades` is available, pass it to `metrics()` or `html()` to get win rate, profit factor, Kelly criterion, trade Sharpe/Sortino, and more — plus a PnL distribution histogram in the tearsheet. See the [quickstart guide](https://polars-mktlib.readthedocs.io/en/latest/quickstart.html#performance-reports) for the full example and trades schema.
 
 ### Custom Metrics, Charts & Templates
 

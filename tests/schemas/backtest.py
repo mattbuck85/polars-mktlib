@@ -33,3 +33,27 @@ class SignalsSchemaBase(pa.DataFrameModel):
 
     class Config:
         strict = False
+
+
+class PortfolioWeightsSchema(pa.DataFrameModel):
+    """Canonical ``to_portfolio_weights_df()`` output: ``(instrument, weight)``.
+
+    ``instrument`` is ``Utf8`` (ticker-like strings); ``weight`` is a
+    non-negative ``Float64``. The full validator in
+    ``mktlib.backtest._weights`` additionally enforces non-empty,
+    no-nulls, no-NaN, unique instruments, and ``sum(weight) > 0``.
+    """
+
+    instrument: pl.Utf8
+    weight: float = pa.Field(ge=0)
+
+
+class WeightedReturnsSchema(pa.DataFrameModel):
+    """``MultiBacktestResult.returns`` when instrument_weights is set.
+
+    Portfolio-aggregated time series: one row per date, same shape as
+    the single-instrument ``BacktestResult.returns``.
+    """
+
+    date: pl.Date
+    return_: float = pa.Field(alias="return")

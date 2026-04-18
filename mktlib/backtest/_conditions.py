@@ -356,3 +356,45 @@ class Not(Condition):
 
     def resolve(self) -> pl.Expr:
         return ~self.inner.resolve()
+
+
+@dataclass(frozen=True, slots=True)
+class Limit(Condition):
+    """Exit condition with same-bar fill at a limit price.
+
+    Wraps an exit condition (typically ``ValueGT/GTE/LT/LTE``) so that
+    when the inner condition fires on bar ``t``, the position exits on
+    that same bar at *price* — not at the next bar's open (mktlib's
+    default fill-at-next-open semantics). Intended for take-profit /
+    stop-loss strategies where the fill price is known in advance.
+
+    When *price* is omitted, the fill price is auto-extracted from the
+    right-hand side of the wrapped comparison — the typical TP/SL idiom
+    ``high >= TP`` → fill at ``TP``. Pass an explicit *price* expression
+    for trailing stops or decoupled trigger/fill (e.g. ``price=Col(
+    "trailing_stop")`` with the comparison also against that column).
+
+    v1 scope: only honored at the top level of ``exit_cond``. Nested
+    use inside ``All`` / ``Any_`` / ``Not`` is treated as a plain
+    boolean condition with no same-bar semantics. Bracket patterns
+    (``Any_(TP, SL)``) are planned for a later release.
+    """
+
+    inner: Condition
+    price: ColExpr | str | float | int | None = None
+    trade_side: TradeSide | None = None
+
+    def resolve(self) -> pl.Expr:
+        return self.inner.resolve()
+
+    def resolve_price(self) -> pl.Expr:
+        if self.price is not None:
+            return _ref(self.price)
+        if isinstance(self.inner, (ValueGT, ValueGTE, ValueLT, ValueLTE)):
+            return _ref(self.inner.b)
+        msg = (
+            f"Limit auto-extract requires inner to be "
+            f"ValueGT/GTE/LT/LTE; got {type(self.inner).__name__}. "
+            "Pass price= explicitly."
+        )
+        raise ValueError(msg)
