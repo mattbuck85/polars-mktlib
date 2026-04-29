@@ -84,7 +84,8 @@ def _win_loss_items(
             ("Profit Factor", ratio(tm.profit_factor)),
             ("Kelly Criterion", pct(tm.kelly_criterion)),
             ("Avg Trade PnL", pct(tm.avg_trade_pnl)),
-            ("Avg Bars Held", f"{tm.avg_bars_held:.1f}"),
+            ("Avg Trade Duration (days)", f"{tm.avg_bars_held:.1f}"),
+            ("Avg Trade Duration (minutes)", f"{tm.avg_duration_minutes:,.0f}"),
             ("Total Trades", str(tm.total_trades)),
         ]
     return [

@@ -29,10 +29,14 @@ class YearlyReturnsSchema(pa.DataFrameModel):
 
 
 class TradesInputSchema(pa.DataFrameModel):
-    """Expected schema for the ``trades`` parameter of ``html()`` and ``metrics()``."""
+    """Expected schema for the ``trades`` parameter of ``html()`` and ``metrics()``.
+
+    Duration metrics (``avg_bars_held``, ``avg_duration_minutes``) are
+    derived from ``entry_date`` and ``exit_date`` on the fly — callers
+    don't need to supply a precomputed duration column.
+    """
 
     entry_date: pl.Date
     exit_date: pl.Date
     side: pl.Int8
     pnl: float
-    bars_held: int = pa.Field(ge=0)

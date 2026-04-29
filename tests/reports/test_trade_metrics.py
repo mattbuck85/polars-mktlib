@@ -85,6 +85,7 @@ class TestEmptyTrades:
         assert tm.total_trades == 0
         assert tm.trade_win_rate == 0.0
         assert tm.trade_sharpe == 0.0
+        assert tm.avg_duration_minutes == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -158,11 +159,17 @@ class TestAvgMetrics:
         tm = compute_trade_metrics(_make_trades([0.02, -0.01, 0.03, -0.01]))
         assert tm.avg_trade_pnl == pytest.approx(0.0075, rel=1e-4)
 
-    def test_avg_bars_held(self):
-        tm = compute_trade_metrics(
-            _make_trades([0.01, -0.01], bars_held=[4, 8])
-        )
-        assert tm.avg_bars_held == pytest.approx(6.0)
+    def test_avg_bars_held_derived_from_dates(self):
+        """Days-granular duration computed from entry_date/exit_date."""
+        # _make_trades with days_apart=4 sets exit = entry + 3 days.
+        tm = compute_trade_metrics(_make_trades([0.01, -0.01], days_apart=4))
+        assert tm.avg_bars_held == pytest.approx(3.0)
+
+    def test_avg_duration_minutes_derived_from_dates(self):
+        """Minute-granular duration computed from entry_date/exit_date."""
+        # 3-day duration → 3 * 1440 = 4320 min.
+        tm = compute_trade_metrics(_make_trades([0.01, -0.01], days_apart=4))
+        assert tm.avg_duration_minutes == pytest.approx(4320.0)
 
     def test_avg_winner_loser(self):
         tm = compute_trade_metrics(_make_trades([0.02, -0.01, 0.03, -0.01]))
