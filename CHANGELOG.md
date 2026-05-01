@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.1
+
+### Added
+
+- **Avg Trade Duration metrics on the trade-metrics card** — the Win/Loss card now shows two duration rows: "Avg Trade Duration (days)" (formerly mislabeled "Avg Bars Held") and "Avg Trade Duration (minutes)". `TradeMetrics` gains a new `avg_duration_minutes: float` field. Both metrics are derived directly from `entry_date` and `exit_date` via a `Datetime("us")` cast and `dt.total_days()` / `dt.total_minutes()`. For Date-typed inputs the minute value collapses to `days * 1440`; once intraday timestamps are supported it picks up real intraday precision automatically with no further code change.
+
+### Changed
+
+- **`TradesInputSchema` no longer requires `bars_held`** — the `bars_held` column is no longer a required input on `html()` / `metrics()`. Duration metrics (`avg_bars_held`, `avg_duration_minutes`) are now computed from `entry_date` and `exit_date`. `BacktestResult.trades` continues to expose `bars_held` for backward compatibility with downstream consumers.
+
 ## 0.10.0
 
 ### Added

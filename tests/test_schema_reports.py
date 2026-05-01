@@ -79,7 +79,6 @@ def _trades_fixture() -> pl.DataFrame:
             "exit_date": [date(2024, 1, 5), date(2024, 1, 15), date(2024, 1, 25)],
             "side": pl.Series([1, -1, 1], dtype=pl.Int8),
             "pnl": [0.02, -0.01, 0.015],
-            "bars_held": [3, 5, 5],
         }
     )
 
@@ -93,12 +92,7 @@ class TestTradesInputSchema:
         df = _trades_fixture()
         assert (df["exit_date"] >= df["entry_date"]).all()
 
-    def test_bars_held_non_negative(self):
-        df = _trades_fixture()
-        assert (df["bars_held"] >= 0).all()
-
-    def test_invalid_negative_bars_held_fails(self):
-        import pandera.errors as pa_errors
-        bad = _trades_fixture().with_columns(pl.Series("bars_held", [-1, 5, 5]))
-        with pytest.raises(pa_errors.SchemaError):
-            TradesInputSchema.validate(bad)
+    def test_invalid_negative_pnl_passes(self):
+        # PnL has no sign constraint — losses are valid.
+        df = _trades_fixture().with_columns(pl.Series("pnl", [-0.01, -0.02, -0.03]))
+        TradesInputSchema.validate(df)

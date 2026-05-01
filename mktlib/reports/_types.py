@@ -79,6 +79,7 @@ class TradeMetrics:
     kelly_criterion: float
     avg_trade_pnl: float
     avg_bars_held: float
+    avg_duration_minutes: float
     total_trades: int
 
     # Trade Stats card

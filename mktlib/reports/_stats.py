@@ -117,7 +117,10 @@ def compute_trade_metrics(trades: pl.DataFrame) -> TradeMetrics:
     ----------
     trades
         DataFrame with columns: ``entry_date`` (Date), ``exit_date`` (Date),
-        ``side`` (Int8), ``pnl`` (Float64), ``bars_held`` (Int64 or Int32).
+        ``side`` (Int8), ``pnl`` (Float64). ``avg_bars_held`` and
+        ``avg_duration_minutes`` are derived directly from ``entry_date``
+        and ``exit_date`` (Datetime cast → ``total_days`` /
+        ``total_minutes``).
     """
     pnl = trades["pnl"].drop_nulls().drop_nans()
     n = len(pnl)
@@ -130,6 +133,7 @@ def compute_trade_metrics(trades: pl.DataFrame) -> TradeMetrics:
             kelly_criterion=0.0,
             avg_trade_pnl=0.0,
             avg_bars_held=0.0,
+            avg_duration_minutes=0.0,
             total_trades=0,
             avg_winner=0.0,
             avg_loser=0.0,
@@ -159,7 +163,16 @@ def compute_trade_metrics(trades: pl.DataFrame) -> TradeMetrics:
     kelly = win_rate - (1.0 - win_rate) / payoff if payoff != 0.0 and not math.isinf(payoff) else win_rate
 
     avg_pnl = float(pnl.mean())  # type: ignore[arg-type]
-    avg_bars = float(trades["bars_held"].mean())  # type: ignore[arg-type]
+    duration = (
+        pl.col("exit_date").cast(pl.Datetime("us"))
+        - pl.col("entry_date").cast(pl.Datetime("us"))
+    )
+    avg_bars = float(
+        trades.select(duration.dt.total_days().mean()).item()
+    )
+    avg_duration_minutes = float(
+        trades.select(duration.dt.total_minutes().mean()).item()
+    )
 
     # Consecutive wins / losses
     pnl_list = pnl.to_list()
@@ -200,6 +213,7 @@ def compute_trade_metrics(trades: pl.DataFrame) -> TradeMetrics:
         kelly_criterion=kelly,
         avg_trade_pnl=avg_pnl,
         avg_bars_held=avg_bars,
+        avg_duration_minutes=avg_duration_minutes,
         total_trades=n,
         avg_winner=avg_win,
         avg_loser=avg_loss,
