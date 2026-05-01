@@ -454,6 +454,12 @@ def _monte_carlo_horizon_returns(
         innovations=inn,
         df=df,
         residuals=residuals,
+        # Single-batch sampling is statistically identical (i.i.d. by
+        # construction) and 5–200× faster.  The metrics layer never
+        # introspects per-simulation seeds, so the only cosmetic
+        # property lost (the seed column reporting one shared parent
+        # seed) doesn't affect any downstream metric.
+        independent_streams=False,
     )
     horizon_returns = (
         sims.group_by("simulation")

@@ -448,3 +448,265 @@ class TestInnovations:
             volatility=0.1, innovations=innovations, **kwargs,
         )
         assert (df["price"] > 0).all()
+
+
+class TestIndependentStreams:
+    """Single-batch fast path (independent_streams=False) for GBM."""
+
+    def test_default_is_independent_streams(self):
+        """Default behavior (no flag) matches independent_streams=True byte-for-byte."""
+        df_default = monte_carlo(
+            Process.GBM, n_simulations=8, n=20, seed=42, volatility=0.2,
+        )
+        df_explicit = monte_carlo(
+            Process.GBM, n_simulations=8, n=20, seed=42, volatility=0.2,
+            independent_streams=True,
+        )
+        assert df_default.equals(df_explicit)
+
+    def test_single_batch_reproducible(self):
+        df1 = monte_carlo(
+            Process.GBM, n_simulations=10, n=50, seed=99, volatility=0.2,
+            independent_streams=False,
+        )
+        df2 = monte_carlo(
+            Process.GBM, n_simulations=10, n=50, seed=99, volatility=0.2,
+            independent_streams=False,
+        )
+        assert df1.equals(df2)
+
+    def test_single_batch_seed_column_uniform(self):
+        """All simulations share one parent-derived seed in single-batch mode."""
+        df = monte_carlo(
+            Process.GBM, n_simulations=10, n=20, seed=42,
+            independent_streams=False,
+        )
+        assert df["seed"].n_unique() == 1
+
+    def test_single_batch_differs_from_streams(self):
+        """The two modes produce structurally different frames."""
+        streams = monte_carlo(
+            Process.GBM, n_simulations=5, n=20, seed=42,
+            independent_streams=True,
+        )
+        single = monte_carlo(
+            Process.GBM, n_simulations=5, n=20, seed=42,
+            independent_streams=False,
+        )
+        assert not streams.equals(single)
+
+    @pytest.mark.parametrize(
+        "innovations, kwargs",
+        [
+            pytest.param(Innovations.GAUSSIAN, {}, id="gaussian"),
+            pytest.param(Innovations.STUDENT_T, {"df": 5.0}, id="students_t"),
+            pytest.param(
+                Innovations.BOOTSTRAP,
+                {"residuals": pl.Series("r", [-1.0, 0.0, 1.0, 0.5, -0.5])},
+                id="bootstrap",
+            ),
+        ],
+    )
+    def test_single_batch_prices_positive(self, innovations, kwargs):
+        df = monte_carlo(
+            Process.GBM, n_simulations=20, n=50, seed=42, volatility=0.1,
+            innovations=innovations, independent_streams=False, **kwargs,
+        )
+        assert (df["price"] > 0).all()
+
+    @pytest.mark.parametrize(
+        "innovations, kwargs",
+        [
+            pytest.param(Innovations.GAUSSIAN, {}, id="gaussian"),
+            pytest.param(Innovations.STUDENT_T, {"df": 5.0}, id="students_t"),
+        ],
+    )
+    def test_single_batch_distribution_matches(self, innovations, kwargs):
+        """Empirical mean/std of single-batch ≈ multi-stream at large n_sims."""
+        n_sims, n = 5000, 50
+        streams = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=42,
+            volatility=0.2, innovations=innovations,
+            independent_streams=True, **kwargs,
+        )
+        single = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=42,
+            volatility=0.2, innovations=innovations,
+            independent_streams=False, **kwargs,
+        )
+        s_mean = float(streams["price"].mean())  # type: ignore[arg-type]
+        b_mean = float(single["price"].mean())  # type: ignore[arg-type]
+        s_std = float(streams["price"].std())  # type: ignore[arg-type]
+        b_std = float(single["price"].std())  # type: ignore[arg-type]
+        # Loose: same population, sample-size-dependent SE
+        assert b_mean == pytest.approx(s_mean, rel=0.05)
+        assert b_std == pytest.approx(s_std, rel=0.10)
+
+    def test_ou_supports_single_batch(self):
+        df = monte_carlo(
+            Process.OU, n_simulations=10, n=50, seed=42,
+            independent_streams=False,
+        )
+        assert df.shape == (500, 4)
+        assert df["seed"].n_unique() == 1
+
+    @pytest.mark.parametrize("hurst", [0.3, 0.5, 0.7])
+    def test_frw_supports_single_batch(self, hurst):
+        df = monte_carlo(
+            Process.FRW, n_simulations=10, n=50, seed=42, hurst=hurst,
+            independent_streams=False,
+        )
+        assert df.shape == (500, 4)
+        assert df["seed"].n_unique() == 1
+
+    def test_ou_single_batch_reproducible(self):
+        df1 = monte_carlo(
+            Process.OU, n_simulations=5, n=50, seed=99,
+            independent_streams=False,
+        )
+        df2 = monte_carlo(
+            Process.OU, n_simulations=5, n=50, seed=99,
+            independent_streams=False,
+        )
+        assert df1.equals(df2)
+
+    @pytest.mark.parametrize("hurst", [0.5, 0.7])
+    def test_frw_single_batch_reproducible(self, hurst):
+        df1 = monte_carlo(
+            Process.FRW, n_simulations=5, n=50, seed=99, hurst=hurst,
+            independent_streams=False,
+        )
+        df2 = monte_carlo(
+            Process.FRW, n_simulations=5, n=50, seed=99, hurst=hurst,
+            independent_streams=False,
+        )
+        assert df1.equals(df2)
+
+    def test_callable_process_rejects_single_batch(self):
+        from mktlib.data import geometric_brownian_motion
+
+        with pytest.raises(NotImplementedError, match="callable processes"):
+            monte_carlo(
+                geometric_brownian_motion, n_simulations=2, n=5, seed=1,
+                independent_streams=False,
+            )
+
+
+class TestStreamModeStatisticalEquivalence:
+    """Two-sample Kolmogorov–Smirnov tests confirming the two stream modes
+    draw from the same population at large *n_simulations*.
+
+    These are the *integration* checks that back the math: any future
+    refactor that breaks the i.i.d. property of the single-batch path
+    will trip these long before subtle convergence bugs reach reports.
+    """
+
+    @staticmethod
+    def _ks_pvalue(a, b) -> float:
+        from scipy.stats import ks_2samp  # type: ignore[import-untyped]
+        return float(ks_2samp(a, b).pvalue)  # pyright: ignore[reportAttributeAccessIssue]
+
+    def test_gbm_gaussian_horizon_returns_match(self):
+        n_sims, n = 20_000, 22
+        streams = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=42,
+            volatility=0.2, drift=0.05, independent_streams=True,
+        )
+        single = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=43,  # different seed
+            volatility=0.2, drift=0.05, independent_streams=False,
+        )
+        # Compare the cross-simulation distribution of horizon-end prices
+        s_end = streams.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        b_end = single.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        p = self._ks_pvalue(s_end, b_end)
+        assert p > 0.001, f"GBM Gaussian KS p-value too low: {p:.4f}"
+
+    def test_gbm_students_t_horizon_returns_match(self):
+        n_sims, n = 20_000, 22
+        streams = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=42,
+            volatility=0.2, drift=0.05,
+            innovations=Innovations.STUDENT_T, df=5,
+            independent_streams=True,
+        )
+        single = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=43,
+            volatility=0.2, drift=0.05,
+            innovations=Innovations.STUDENT_T, df=5,
+            independent_streams=False,
+        )
+        s_end = streams.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        b_end = single.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        p = self._ks_pvalue(s_end, b_end)
+        assert p > 0.001, f"GBM Student-t KS p-value too low: {p:.4f}"
+
+    def test_ou_horizon_values_match(self):
+        n_sims, n = 10_000, 50
+        streams = monte_carlo(
+            Process.OU, n_simulations=n_sims, n=n, seed=42,
+            theta=0.5, mu=0.0, sigma=1.0,
+            independent_streams=True,
+        )
+        single = monte_carlo(
+            Process.OU, n_simulations=n_sims, n=n, seed=43,
+            theta=0.5, mu=0.0, sigma=1.0,
+            independent_streams=False,
+        )
+        s_end = streams.filter(pl.col("step") == n - 1)["value"].to_numpy()
+        b_end = single.filter(pl.col("step") == n - 1)["value"].to_numpy()
+        p = self._ks_pvalue(s_end, b_end)
+        assert p > 0.001, f"OU KS p-value too low: {p:.4f}"
+
+    def test_frw_h05_horizon_prices_match(self):
+        n_sims, n = 10_000, 50
+        streams = monte_carlo(
+            Process.FRW, n_simulations=n_sims, n=n, seed=42, hurst=0.5,
+            independent_streams=True,
+        )
+        single = monte_carlo(
+            Process.FRW, n_simulations=n_sims, n=n, seed=43, hurst=0.5,
+            independent_streams=False,
+        )
+        s_end = streams.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        b_end = single.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        p = self._ks_pvalue(s_end, b_end)
+        assert p > 0.001, f"FRW H=0.5 KS p-value too low: {p:.4f}"
+
+    def test_frw_h07_horizon_prices_match(self):
+        n_sims, n = 10_000, 50
+        streams = monte_carlo(
+            Process.FRW, n_simulations=n_sims, n=n, seed=42, hurst=0.7,
+            step_size=0.5, independent_streams=True,
+        )
+        single = monte_carlo(
+            Process.FRW, n_simulations=n_sims, n=n, seed=43, hurst=0.7,
+            step_size=0.5, independent_streams=False,
+        )
+        s_end = streams.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        b_end = single.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        p = self._ks_pvalue(s_end, b_end)
+        assert p > 0.001, f"FRW H=0.7 KS p-value too low: {p:.4f}"
+
+    def test_gbm_bootstrap_horizon_returns_match(self):
+        n_sims, n = 20_000, 22
+        residuals = pl.Series(
+            "r",
+            [-2.0, -1.5, -0.5, 0.0, 0.0, 0.5, 1.0, 1.5, 2.0],
+        )
+        # Standardize to unit variance (BOOTSTRAP contract)
+        residuals = (residuals - residuals.mean()) / residuals.std()  # type: ignore[operator]
+        streams = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=42,
+            volatility=0.2, innovations=Innovations.BOOTSTRAP,
+            residuals=residuals, independent_streams=True,
+        )
+        single = monte_carlo(
+            Process.GBM, n_simulations=n_sims, n=n, seed=43,
+            volatility=0.2, innovations=Innovations.BOOTSTRAP,
+            residuals=residuals, independent_streams=False,
+        )
+        s_end = streams.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        b_end = single.filter(pl.col("step") == n - 1)["price"].to_numpy()
+        p = self._ks_pvalue(s_end, b_end)
+        assert p > 0.001, f"GBM Bootstrap KS p-value too low: {p:.4f}"
