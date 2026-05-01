@@ -43,6 +43,7 @@ dev = [
     "pyarrow",
     "pandas",
     "numpy",
+    "scipy",
 ]
 
 [tool.pytest.ini_options]

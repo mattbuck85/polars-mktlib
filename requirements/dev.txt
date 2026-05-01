@@ -57,6 +57,7 @@ PyYAML==6.0.3
 questionary==2.1.1
 rich==15.0.0
 rich-click==1.9.7
+scipy==1.17.1
 six==1.17.0
 tomlkit==0.14.0
 toolz==1.1.0
