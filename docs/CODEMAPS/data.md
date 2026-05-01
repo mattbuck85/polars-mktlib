@@ -6,10 +6,12 @@ Stochastic process generators for testing, simulation, and Monte Carlo analysis.
 
 | Export | Source | Returns |
 |-|-|-|
+| `Innovations` (enum: GAUSSIAN / STUDENT_T / BOOTSTRAP) | `_monte_carlo.py:18` | — |
+| `Process` (enum: GBM / OU / FRW) | `_monte_carlo.py:119` | — |
 | `fractional_random_walk(n, hurst, base_price, step_size, seed)` | `_random_walk.py:62` | `DataFrame[step, price]` |
 | `geometric_brownian_motion(n, base_price, drift, volatility, dt, seed)` | `_gbm.py:7` | `DataFrame[step, price]` |
 | `ornstein_uhlenbeck(n, theta, mu, sigma, x0, dt, seed)` | `_ornstein_uhlenbeck.py:7` | `DataFrame[step, value]` |
-| `monte_carlo(process, n_simulations, seed, **kwargs)` | `_monte_carlo.py:8` | `DataFrame[simulation, step, ...]` |
+| `monte_carlo(process, n_simulations, seed, *, innovations, df, residuals, independent_streams, **kwargs)` | `_monte_carlo.py:159` | `DataFrame[simulation, seed, step, ...]` |
 | `ticks_to_ohlcv(ticks, bar_size, *, column, volume, seed)` | `_ohlcv.py:8` | `DataFrame[bar, open, high, low, close, volume?]` |
 
 ## Fractional Random Walk (`_random_walk.py`)
@@ -47,11 +49,29 @@ Generic runner with vectorized paths for all three built-in processes:
 
 | Process | Vectorized | Method |
 |-|-|-|
-| `Process.GBM` | Yes | `_vectorized_gbm` — single `sample_normal` + `.over("simulation")` |
-| `Process.OU` | Yes | `_vectorized_ou` — single `sample_normal` + `.over("simulation")` |
+| `Process.GBM` | Yes | `_vectorized_gbm` — `_noise_frame` + `.over("simulation")` for the price expression |
+| `Process.OU` | Yes | `_vectorized_ou` — `_noise_frame` + `.over("simulation")` |
 | `Process.FRW` | Yes | `_vectorized_frw` — precompute sqrt_eig once, tile noise, `_frw_increments_expr().over("simulation")` |
 
 For callable process arguments, falls back to `_loop()` which calls the function per simulation with deterministic child seeds.
+
+### Innovations (`_monte_carlo.py:18`)
+
+Pluggable noise distributions for `Process.GBM` only (OU/FRW reject non-Gaussian innovations with `NotImplementedError`):
+
+| Variant | Sampler | Notes |
+|-|-|-|
+| `Innovations.GAUSSIAN` | `polars_sdist.sample_normal` | Default; already unit-variance |
+| `Innovations.STUDENT_T` | `polars_sdist.sample_students_t` ÷ √(df/(df-2)) | Requires `df > 2` for finite variance |
+| `Innovations.BOOTSTRAP` | `pl.Series.sample(with_replacement=True)` | Caller supplies pre-standardized `residuals: pl.Series` |
+
+Plus a callable escape hatch `Callable[[int, int | None], pl.Series]` for arbitrary unit-variance samplers. The unit-variance contract is load-bearing: switching innovations changes tail shape only, never the `volatility` controlling scale.
+
+### `independent_streams: bool = True` (perf flag)
+
+When `False`, `_noise_frame` draws all `n_simulations × n` unit-variance samples in one batched sampler call instead of `n_simulations` per-stream calls. Statistically identical (i.i.d. by construction; backed by KS integration tests at `tests/data/test_monte_carlo.py::TestStreamModeStatisticalEquivalence`); 5–7× faster for Gaussian/Student-t and ~60× faster for Bootstrap. The `seed` column reports a single parent-derived seed under the fast path. Supported for all three Process variants; callable processes own their own noise source and reject the flag.
+
+The metrics-layer MC (`mktlib.metrics.var/cvar(method="monte_carlo")`, `simulate_metric`, `monte_carlo_paths`) defaults to `independent_streams=False` internally.
 
 ## Ticks to OHLCV (`_ohlcv.py`)
 
