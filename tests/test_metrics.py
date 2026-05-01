@@ -368,6 +368,78 @@ class TestBootstrapResiduals:
         assert math.isfinite(v)
 
 
+class TestMonteCarloPathsHelper:
+    """`monte_carlo_paths()` returns the full sims frame and pre-populates the cache."""
+
+    def test_returns_full_sims_frame(self) -> None:
+        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+
+        _mc_cache_clear()
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
+        sims = monte_carlo_paths(ret, horizon=21, n_simulations=500, seed=42)
+        assert sims.shape == (500 * 22, 4)
+        assert sims.columns == ["simulation", "seed", "step", "price"]
+        assert (sims["price"] > 0).all()
+
+    def test_populates_cache_for_var_cvar(self) -> None:
+        """Running monte_carlo_paths means the next var/cvar with matching args is a cache hit."""
+        from mktlib.metrics import _mc_cache, _mc_cache_clear, monte_carlo_paths
+
+        _mc_cache_clear()
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
+        monte_carlo_paths(ret, horizon=21, n_simulations=500, seed=42)
+        assert len(_mc_cache) == 1
+        # var with matching args must NOT grow the cache
+        var(
+            ret, method="monte_carlo", horizon=21, n_simulations=500,
+            seed=42, cache=True,
+        )
+        cvar(
+            ret, method="monte_carlo", horizon=21, n_simulations=500,
+            seed=42, cache=True,
+        )
+        assert len(_mc_cache) == 1
+
+    def test_cache_hit_across_distinct_series_objects(self) -> None:
+        """Content-based fingerprint: distinct Series wrappers over same data hit the cache."""
+        from mktlib.metrics import _mc_cache, _mc_cache_clear, monte_carlo_paths
+
+        _mc_cache_clear()
+        data = [0.001 * (i % 7 - 3) for i in range(100)]
+        ret_a = pl.Series("r", data)
+        ret_b = pl.Series("r", data)  # distinct wrapper, same content
+        assert id(ret_a) != id(ret_b)
+        monte_carlo_paths(ret_a, horizon=21, n_simulations=500, seed=42)
+        var(
+            ret_b, method="monte_carlo", horizon=21, n_simulations=500,
+            seed=42, cache=True,
+        )
+        assert len(_mc_cache) == 1
+
+    def test_bootstrap_parity_driver_vs_metric(self) -> None:
+        """Bootstrap residuals derived in monte_carlo_paths == those used by var()."""
+        from mktlib.data import Innovations
+        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+
+        _mc_cache_clear()
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
+        monte_carlo_paths(
+            ret, horizon=21, n_simulations=500, seed=42,
+            innovations=Innovations.BOOTSTRAP,
+        )
+        cached_var = var(
+            ret, method="monte_carlo", horizon=21, n_simulations=500,
+            seed=42, innovations=Innovations.BOOTSTRAP, cache=True,
+        )
+        # Direct call without cache pre-populate
+        _mc_cache_clear()
+        direct_var = var(
+            ret, method="monte_carlo", horizon=21, n_simulations=500,
+            seed=42, innovations=Innovations.BOOTSTRAP, cache=True,
+        )
+        assert cached_var == pytest.approx(direct_var, rel=1e-12)
+
+
 class TestWinRate:
     def test_basic(self) -> None:
         ret = pl.Series("r", [0.01, -0.01, 0.02, -0.02])

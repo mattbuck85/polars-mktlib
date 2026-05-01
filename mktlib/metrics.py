@@ -395,6 +395,41 @@ def _standardized_residuals(ret: pl.Series) -> pl.Series:
     return ((log_r - mean) / std).alias("residuals")
 
 
+def _make_mc_cache_key(
+    ret: pl.Series,
+    *,
+    mu: float,
+    sigma: float,
+    horizon: int,
+    n_simulations: int,
+    dt: float,
+    innovations: "Innovations",
+    df: float | None,
+    seed: int | None,
+) -> tuple:
+    """Build the canonical cache key for an MC GBM batch.
+
+    Content-based fingerprint of *ret* (length, sum, head, tail) — robust
+    to wrapper-object identity, so two distinct ``pl.Series`` objects
+    over the same data hit the same cache entry.  Both
+    ``_monte_carlo_horizon_returns`` and ``monte_carlo_paths`` call
+    this so the keys can never drift apart.
+    """
+    if len(ret) > 0:
+        fingerprint = (
+            len(ret),
+            float(ret.sum()),  # type: ignore[arg-type]
+            float(ret.head(1).item()),
+            float(ret.tail(1).item()),
+        )
+    else:
+        fingerprint = (0, 0.0, 0.0, 0.0)
+    return (
+        fingerprint, mu, sigma, horizon, n_simulations, dt,
+        innovations.value, df, seed,
+    )
+
+
 def _monte_carlo_horizon_returns(
     ret: pl.Series,
     *,
@@ -429,14 +464,13 @@ def _monte_carlo_horizon_returns(
 
     cache_key: tuple | None = None
     if cache:
-        fingerprint = (
-            id(ret), len(ret), float(ret.sum()) if len(ret) > 0 else 0.0,
+        key = _make_mc_cache_key(
+            ret, mu=mu, sigma=sigma, horizon=horizon,
+            n_simulations=n_simulations, dt=dt,
+            innovations=inn, df=df, seed=seed,
         )
-        cache_key = (
-            fingerprint, mu, sigma, horizon, n_simulations, dt,
-            inn.value, df, seed,
-        )
-        cached = _mc_cache.get(cache_key)
+        cache_key = key
+        cached = _mc_cache.get(key)
         if cached is not None:
             return cached
 
@@ -489,6 +523,100 @@ def _mc_cache_insert(key: tuple, value: pl.Series) -> None:
 def _mc_cache_clear() -> None:
     _mc_cache.clear()
     _mc_cache_order.clear()
+
+
+def monte_carlo_paths(
+    ret: pl.Series,
+    *,
+    horizon: int,
+    n_simulations: int = 10_000,
+    dt: float = 1 / 252,
+    innovations: "Innovations | None" = None,
+    df: float | None = None,
+    seed: int | None = None,
+) -> pl.DataFrame:
+    """Run one MC GBM batch fitted to *ret*; return the full simulation frame.
+
+    Companion entry point for callers — typically reporting code — that need
+    both the per-simulation horizon-end returns (for VaR / CVaR) and the
+    full price paths (for charting).  This function:
+
+    1. Fits ``mu_hat, sigma_hat`` from the log-returns of *ret*.
+    2. Derives standardized residuals when ``innovations=Innovations.BOOTSTRAP``.
+    3. Runs ``monte_carlo(Process.GBM, ..., independent_streams=False)``
+       — the perf path; statistically i.i.d. by construction.
+    4. Computes the per-simulation horizon return and **inserts it into
+       the module-level MC cache** under the canonical key
+       (``_make_mc_cache_key``).  Subsequent calls to
+       :func:`var` / :func:`cvar` / :func:`simulate_metric` with
+       ``method="monte_carlo"``, ``cache=True``, and matching kwargs
+       hit that cache and skip a second simulation.
+
+    Parameters
+    ----------
+    ret
+        Historical bar-level return series used to fit the GBM model.
+    horizon
+        Forecast horizon in bars (number of SDE steps; the returned
+        frame has ``horizon + 1`` price points per simulation including
+        the base value at step 0).
+    n_simulations, dt, innovations, df, seed
+        Forwarded to :func:`mktlib.data.monte_carlo`.  See
+        :class:`mktlib.data.Innovations` for the innovation contract.
+
+    Returns
+    -------
+    pl.DataFrame
+        Long-form frame with columns ``simulation``, ``seed``, ``step``,
+        ``price`` (base = 1.0; multiply by initial portfolio equity for
+        absolute units).
+
+    Notes
+    -----
+    The cache key uses a content-based fingerprint of *ret* so two
+    distinct ``pl.Series`` wrappers over the same data hit the same
+    entry — important for callers that re-bind ``df["return"]`` between
+    this call and a downstream :func:`var` call.
+    """
+    from mktlib.data import Innovations as _Innovations
+    from mktlib.data import Process, monte_carlo
+
+    inn = innovations if innovations is not None else _Innovations.GAUSSIAN
+    mu, sigma = (
+        _gbm_log_return_moments(ret, dt) if len(ret) > 0 else (0.0, 0.0)
+    )
+
+    residuals: pl.Series | None = None
+    if inn is _Innovations.BOOTSTRAP:
+        residuals = _standardized_residuals(ret)
+
+    sims = monte_carlo(
+        Process.GBM,
+        n_simulations=n_simulations,
+        n=horizon + 1,
+        base_price=1.0,
+        drift=mu,
+        volatility=sigma,
+        dt=dt,
+        seed=seed,
+        innovations=inn,
+        df=df,
+        residuals=residuals,
+        independent_streams=False,
+    )
+
+    horizon_returns = (
+        sims.group_by("simulation")
+        .agg((pl.col("price").last() - 1.0).alias("R"))
+        .get_column("R")
+    )
+    cache_key = _make_mc_cache_key(
+        ret, mu=mu, sigma=sigma, horizon=horizon,
+        n_simulations=n_simulations, dt=dt,
+        innovations=inn, df=df, seed=seed,
+    )
+    _mc_cache_insert(cache_key, horizon_returns)
+    return sims
 
 
 def var(

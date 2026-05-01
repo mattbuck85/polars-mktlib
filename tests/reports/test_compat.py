@@ -5,7 +5,11 @@ import datetime as dt
 import polars as pl
 import pytest
 
-from mktlib.reports._compat import coerce_benchmark, coerce_returns
+from mktlib.reports._compat import (
+    _ensure_daily,
+    coerce_benchmark,
+    coerce_returns,
+)
 
 
 class TestCoerceReturns:
@@ -96,3 +100,65 @@ class TestCoerceBenchmark:
         s = pl.Series("bench", [0.005, -0.01])
         result = coerce_benchmark(s)
         assert result is not None
+
+
+class TestEnsureDaily:
+    """Sub-daily aggregation: collapses multi-row-per-date to compounded daily."""
+
+    def test_idempotent_byte_for_byte_on_unique_dates(self):
+        """Already-daily input must pass through unchanged — no FP drift."""
+        df = pl.DataFrame({
+            "date": [
+                dt.date(2024, 1, 2), dt.date(2024, 1, 3), dt.date(2024, 1, 4),
+            ],
+            "return": [0.01, -0.02, 0.03],
+        })
+        out = _ensure_daily(df)
+        assert out.equals(df)
+
+    def test_collapses_intraday_to_compounded_daily(self):
+        df = pl.DataFrame({
+            "date": [
+                dt.date(2024, 1, 2), dt.date(2024, 1, 2), dt.date(2024, 1, 3),
+            ],
+            "return": [0.01, 0.02, -0.01],
+        })
+        out = _ensure_daily(df)
+        assert out.height == 2
+        # 2024-01-02 → (1.01)(1.02) - 1 = 0.0302
+        row1 = out.filter(pl.col("date") == dt.date(2024, 1, 2)).row(0, named=True)
+        assert row1["return"] == pytest.approx(0.0302, abs=1e-12)
+        row2 = out.filter(pl.col("date") == dt.date(2024, 1, 3)).row(0, named=True)
+        assert row2["return"] == pytest.approx(-0.01, abs=1e-12)
+
+    def test_idempotent_under_double_call(self):
+        df = pl.DataFrame({
+            "date": [
+                dt.date(2024, 1, 2), dt.date(2024, 1, 2), dt.date(2024, 1, 3),
+            ],
+            "return": [0.01, 0.02, -0.01],
+        })
+        once = _ensure_daily(df)
+        twice = _ensure_daily(once)
+        assert twice.equals(once)
+
+    def test_sorts_unsorted_input(self):
+        df = pl.DataFrame({
+            "date": [dt.date(2024, 1, 5), dt.date(2024, 1, 3), dt.date(2024, 1, 4)],
+            "return": [0.03, -0.01, 0.02],
+        })
+        out = _ensure_daily(df)
+        assert out["date"].to_list() == [
+            dt.date(2024, 1, 3), dt.date(2024, 1, 4), dt.date(2024, 1, 5),
+        ]
+
+    def test_coerce_returns_collapses_intraday(self):
+        """`coerce_returns` invokes `_ensure_daily` as the final step."""
+        df = pl.DataFrame({
+            "date": [
+                dt.date(2024, 1, 2), dt.date(2024, 1, 2), dt.date(2024, 1, 3),
+            ],
+            "return": [0.01, 0.02, -0.01],
+        })
+        out = coerce_returns(df)
+        assert out["date"].n_unique() == out.height

@@ -232,6 +232,10 @@ class TestMetricsWithDrawdowns:
         assert result.var_95 < 0
         # CVaR should be <= VaR (further into the tail)
         assert result.cvar_95 <= result.var_95
+        # MC fields default to None — populated only by the html()/metrics()
+        # MC opt-in path, never by compute_metrics() itself.
+        assert result.mc_var is None
+        assert result.mc_cvar is None
 
     def test_profit_factor(self):
         values = [0.02, -0.01, 0.03, -0.01]

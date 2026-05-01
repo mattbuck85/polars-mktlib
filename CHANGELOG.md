@@ -14,6 +14,17 @@
 - **`independent_streams: bool = True` flag on `monte_carlo()`** — when set to `False`, all unit-variance noise is drawn in one batched sampler call instead of per-simulation seeded child RNGs. Statistically identical (i.i.d. samples by construction; backed by Kolmogorov–Smirnov integration tests across all process / innovation combinations) but **5–7× faster for Gaussian / Student-t and ~60× faster for Bootstrap** at typical (10k sims) scales. Trade-off: the `seed` column reports a single parent-derived seed shared across simulations rather than one per stream. Supported for `Process.GBM`, `Process.OU`, and `Process.FRW` (both Hurst=0.5 and Davies–Harte paths); callable processes own their own noise source and reject the flag.
 - **Metrics-layer MC defaults to `independent_streams=False`** — `var(method="monte_carlo")`, `cvar(method="monte_carlo")`, and `simulate_metric(...)` now use the single-batch path internally. The metrics layer never introspects per-simulation seeds, so the only property lost is cosmetic. Reduces the inline MC tax per `var` + `cvar` pair from ~100 ms to ~15 ms at the report-default workload (10k sims × horizon=21).
 
+### Reports — Monte Carlo integration
+
+- **`mktlib.reports.MonteCarloConfig`** — new opt-in dataclass on `html(mc_config=)` and `metrics(mc_config=)`. When `enabled=True`, populates two new `Optional[float]` fields on `MetricsResult` (`mc_var`, `mc_cvar`) with simulation-based forward-looking risk numbers and renders a Monte Carlo simulation-paths chart on the HTML tearsheet (spaghetti subset + α/2 / 1−α/2 percentile band + median path, anchored at the last historical equity value over forward business days from `mktlib.scheduling`). Default disabled — existing reports unchanged.
+- **`mktlib.metrics.monte_carlo_paths(ret, ...)`** — new public helper returning the full sims frame and pre-populating the metrics-layer MC cache. Used by `mktlib.reports` to share one simulation batch across the chart, the VaR number, and the CVaR number — running MC exactly once per report regardless of how many tail-risk numbers are extracted.
+- **`mktlib.reports._compat._ensure_daily`** — sub-daily input is collapsed via `(1+r).product()-1` group-by-date as the final coercion step. Idempotent (fast-path skip when dates are already unique, preserving byte-for-byte equivalence on existing daily inputs).
+- **`MetricsResult` gains `mc_var`, `mc_cvar`** — both `Optional[float] = None`, populated only by the MC opt-in path. Existing constructors and `compute_metrics()` callers unchanged.
+
+### Changed
+
+- **MC cache fingerprint is now content-based** (`len`, `sum`, `head`, `tail`) rather than `id(ret)`. Two distinct `pl.Series` wrappers over the same data now hit the same cache entry — important for callers that re-bind `df["return"]` between an MC-paths call and a downstream `var`/`cvar` call. Cache key construction is centralized in `_make_mc_cache_key()` so `_monte_carlo_horizon_returns` and `monte_carlo_paths` cannot drift apart.
+
 ### Notes
 
 - **MC under Gaussian innovations at `horizon=1` is computational theatre.** It returns the closed-form Gaussian VaR plus sampling noise — use `method="gaussian"` instead unless you actually need non-Gaussian innovations or path-dependent extensions.

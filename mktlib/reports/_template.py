@@ -115,7 +115,7 @@ def _format_metrics(
     def opt_ratio(v: float | None) -> str:
         return ratio(v) if v is not None else "—"
 
-    return [
+    groups: list[tuple[str, list[tuple[str, str]]]] = [
         (
             "Returns",
             [
@@ -167,3 +167,23 @@ def _format_metrics(
             ],
         ),
     ]
+
+    # Forward-Looking Risk card — appended only when MC was run.  Inserted
+    # right after "Tail Risk" so the historical and forward-looking risk
+    # numbers sit next to each other in the rendered grid.
+    if m.mc_var is not None and m.mc_cvar is not None:
+        tail_risk_idx = next(
+            i for i, (name, _) in enumerate(groups) if name == "Tail Risk"
+        )
+        groups.insert(
+            tail_risk_idx + 1,
+            (
+                "Forward-Looking Risk",
+                [
+                    ("MC VaR", pct(m.mc_var)),
+                    ("MC CVaR", pct(m.mc_cvar)),
+                ],
+            ),
+        )
+
+    return groups

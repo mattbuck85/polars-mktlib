@@ -201,3 +201,125 @@ class TestPandasIntegration:
         result = html(s, title="Pandas Test")
         assert result is not None
         assert "Pandas Test" in result
+
+
+class TestMonteCarloIntegration:
+    """`mc_config=` opt-in: Forward-Looking Risk card + simulation paths chart."""
+
+    def test_disabled_default_unchanged(self):
+        """No mc_config → output identical to pre-feature behavior."""
+        from mktlib.metrics import _mc_cache_clear
+
+        _mc_cache_clear()
+        df = _make_returns(n=80)
+        baseline = html(df, title="No MC")
+        assert baseline is not None
+        # Forward-Looking card and MC chart absent
+        assert "Forward-Looking Risk" not in baseline
+        assert "MC VaR" not in baseline
+
+    def test_disabled_explicit_no_mc_artifacts(self):
+        """mc_config=MonteCarloConfig(enabled=False) introduces no MC card or chart.
+
+        (Byte-identity is unattainable because Plotly embeds random div IDs;
+        the contract is that the MC code path is fully gated.)
+        """
+        from mktlib.reports import MonteCarloConfig
+        from mktlib.metrics import _mc_cache_clear
+
+        _mc_cache_clear()
+        df = _make_returns(n=80)
+        out = html(df, mc_config=MonteCarloConfig(enabled=False))
+        assert out is not None
+        assert "Forward-Looking Risk" not in out
+        assert "Monte Carlo Forward Paths" not in out
+        assert "MC VaR" not in out
+
+    def test_enabled_renders_card_and_chart(self):
+        from mktlib.reports import MonteCarloConfig
+        from mktlib.metrics import _mc_cache_clear
+
+        _mc_cache_clear()
+        df = _make_returns(n=120)
+        out = html(
+            df, title="With MC",
+            mc_config=MonteCarloConfig(
+                enabled=True, seed=42, n_simulations=1_000, horizon=21,
+            ),
+        )
+        assert out is not None
+        assert "Forward-Looking Risk" in out
+        assert "MC VaR" in out and "MC CVaR" in out
+        # Chart heading from monte_carlo_paths_chart
+        assert "Monte Carlo Forward Paths" in out
+
+    def test_metrics_function_populates_mc_fields(self):
+        from mktlib.reports import MonteCarloConfig
+        from mktlib.metrics import _mc_cache_clear
+
+        _mc_cache_clear()
+        df = _make_returns(n=120)
+        result = metrics(
+            df,
+            mc_config=MonteCarloConfig(
+                enabled=True, seed=42, n_simulations=1_000, horizon=21,
+            ),
+        )
+        assert result.mc_var is not None
+        assert result.mc_cvar is not None
+        assert result.mc_cvar <= result.mc_var
+
+    def test_metrics_default_mc_fields_none(self):
+        df = _make_returns(n=80)
+        result = metrics(df)
+        assert result.mc_var is None
+        assert result.mc_cvar is None
+
+    def test_one_batch_shared_across_var_cvar(self):
+        """Cache pre-populate: one MC batch services VaR + CVaR + chart."""
+        from mktlib.reports import MonteCarloConfig
+        from mktlib.metrics import _mc_cache, _mc_cache_clear
+
+        _mc_cache_clear()
+        df = _make_returns(n=80)
+        html(
+            df,
+            mc_config=MonteCarloConfig(
+                enabled=True, seed=42, n_simulations=1_000, horizon=21,
+            ),
+        )
+        assert len(_mc_cache) == 1
+
+    def test_students_t_innovations_round_trip(self):
+        from mktlib.data import Innovations
+        from mktlib.reports import MonteCarloConfig
+        from mktlib.metrics import _mc_cache_clear
+
+        _mc_cache_clear()
+        df = _make_returns(n=120)
+        result = metrics(
+            df,
+            mc_config=MonteCarloConfig(
+                enabled=True, seed=42, n_simulations=1_000, horizon=21,
+                innovations=Innovations.STUDENT_T, df=5,
+            ),
+        )
+        assert result.mc_var is not None
+        assert result.mc_cvar is not None
+
+    def test_bootstrap_innovations_round_trip(self):
+        from mktlib.data import Innovations
+        from mktlib.reports import MonteCarloConfig
+        from mktlib.metrics import _mc_cache_clear
+
+        _mc_cache_clear()
+        df = _make_returns(n=120)
+        result = metrics(
+            df,
+            mc_config=MonteCarloConfig(
+                enabled=True, seed=42, n_simulations=1_000, horizon=21,
+                innovations=Innovations.BOOTSTRAP,
+            ),
+        )
+        assert result.mc_var is not None
+        assert result.mc_cvar is not None
