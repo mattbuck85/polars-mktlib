@@ -327,10 +327,23 @@ def monte_carlo_paths_chart(
         )
     )
 
-    # 2. Spaghetti subset
+    # 2. Spaghetti subset — uniform random sample without replacement.
+    # Selecting the prefix `[0, cap)` would lean on the underlying RNG's
+    # i.i.d. property over consecutive samples (mostly fine for modern
+    # PRNGs but a known MC-literature footgun re: RNG warm-up bias).
+    # Drawing a uniform subset is unambiguously representative; we seed
+    # the subset selection from the MC run's own parent seed so the
+    # displayed paths are deterministic given identical sims input.
+    import random as _random
+
     cap = min(n_paths_displayed, n_sims, _MC_PATHS_DOM_CAP)
-    spaghetti = sims.filter(pl.col("simulation") < cap)
-    for sim_idx in range(cap):
+    parent_seed = int(sims["seed"][0])
+    selected = _random.Random(parent_seed ^ 0xCC0FFEE).sample(
+        range(n_sims), cap,
+    )
+    selected_set = pl.Series("simulation", selected)
+    spaghetti = sims.filter(pl.col("simulation").is_in(selected_set))
+    for sim_idx in selected:
         path = spaghetti.filter(pl.col("simulation") == sim_idx)
         prices = path["price"].to_numpy() * last_value
         fig = fig.add_trace(

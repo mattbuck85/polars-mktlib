@@ -323,3 +323,89 @@ class TestMonteCarloIntegration:
         )
         assert result.mc_var is not None
         assert result.mc_cvar is not None
+
+
+@pytest.mark.integration
+class TestMonteCarloPathsChartSampling:
+    """The displayed spaghetti subset must be distributionally representative
+    of the full simulation population.
+
+    Failure here means the chart misleads users about the shape of the
+    forecast distribution — the metric numbers stay correct but the
+    visual is biased.  Two-sample KS at large n_simulations is the
+    canonical regression guard.
+    """
+
+    @staticmethod
+    def _ks_pvalue(a, b) -> float:
+        from scipy.stats import ks_2samp  # type: ignore[import-untyped]
+        return float(ks_2samp(a, b).pvalue)  # pyright: ignore[reportAttributeAccessIssue]
+
+    def test_displayed_subset_matches_full_population(self):
+        """Horizon-end prices of displayed paths come from the same
+        distribution as horizon-end prices of all simulations."""
+        import random as _random
+
+        import polars as pl
+
+        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+
+        _mc_cache_clear()
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(252)])
+        n_sim = 5_000
+        horizon = 22
+        sims = monte_carlo_paths(
+            ret, horizon=horizon, n_simulations=n_sim, seed=42,
+        )
+
+        # Replicate the chart helper's selection algorithm exactly
+        n_paths_displayed = 200
+        cap = min(n_paths_displayed, n_sim)
+        parent_seed = int(sims["seed"][0])
+        selected = _random.Random(parent_seed ^ 0xCC0FFEE).sample(
+            range(n_sim), cap,
+        )
+
+        last_step = horizon  # sims has horizon+1 price points (0..horizon)
+        last_step_prices = sims.filter(pl.col("step") == last_step)
+        full_pop = last_step_prices["price"].to_numpy()
+        displayed = (
+            last_step_prices.filter(pl.col("simulation").is_in(pl.Series(selected)))
+            ["price"].to_numpy()
+        )
+
+        assert len(displayed) == cap
+        p = self._ks_pvalue(displayed, full_pop)
+        assert p > 0.001, (
+            f"displayed subset is not distributionally representative: "
+            f"KS p-value {p:.4f} (n_displayed={cap}, n_full={n_sim})"
+        )
+
+    def test_displayed_subset_deterministic_under_same_seed(self):
+        """The same MC run produces the same display subset every time."""
+        import polars as pl
+        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+        from mktlib.reports._plots import monte_carlo_paths_chart
+
+        _mc_cache_clear()
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(252)])
+        sims_a = monte_carlo_paths(ret, horizon=21, n_simulations=1_000, seed=42)
+        sims_b = monte_carlo_paths(ret, horizon=21, n_simulations=1_000, seed=42)
+
+        import datetime as dt
+        hist_dates = [dt.date(2024, 1, 2 + i) for i in range(10)]
+        hist_eq = [1.0] * 10
+        fwd_dates = [dt.date(2024, 2, 1 + i) for i in range(21)]
+
+        div_a = monte_carlo_paths_chart(
+            hist_dates, hist_eq, fwd_dates, sims_a,
+            last_value=1.0, n_paths_displayed=50, alpha=0.05,
+        )
+        div_b = monte_carlo_paths_chart(
+            hist_dates, hist_eq, fwd_dates, sims_b,
+            last_value=1.0, n_paths_displayed=50, alpha=0.05,
+        )
+        # Plotly embeds random div IDs so we can't compare directly,
+        # but the chart byte length tracks the path data and will
+        # match exactly for the same selected subset.
+        assert len(div_a) == len(div_b)

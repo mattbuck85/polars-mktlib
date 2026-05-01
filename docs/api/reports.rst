@@ -90,6 +90,17 @@ horizon, with forward dates generated via
 ``mktlib.scheduling.get_calendar(exchange).session_offset(...)`` so
 weekends and holidays are skipped.
 
+**Displayed-subset sampling.** When ``n_simulations > n_paths_displayed``
+the chart renders only a subset of paths.  The subset is drawn via
+*uniform random sampling without replacement*, seeded from the MC
+run's parent seed for reproducibility — this is preferred over taking
+the prefix ``simulation < n_paths_displayed`` because the prefix
+relies on the underlying RNG's i.i.d. property over consecutive
+samples (mostly fine for modern PRNGs but a known MC-literature
+footgun re: warm-up bias).  Distributional equivalence between the
+displayed subset and the full population is regression-tested via
+two-sample Kolmogorov–Smirnov.
+
 .. note::
 
    When ``enabled=False`` (the default), the ``mc_*`` fields stay

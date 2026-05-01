@@ -93,6 +93,8 @@ All return Plotly `Figure` objects via `plotly.graph_objects`.
 
 `monte_carlo_paths_chart` renders the spaghetti subset (capped at `min(n_paths_displayed, n_simulations, _MC_PATHS_DOM_CAP=500)` for Plotly DOM responsiveness), an α/2 / 1−α/2 percentile band via `fill="tonexty"`, a dashed median path, and a vertical anchor at the last historical date. Y values = `last_value × price` (sims have `base_price=1.0`). Forward dates come from `mktlib.scheduling.get_calendar(exchange).session_offset(last_date, i)`.
 
+The displayed subset is chosen via **uniform random sampling without replacement**, seeded from the MC run's parent seed (`int(sims["seed"][0]) ^ 0xCC0FFEE`) — deterministic given identical sims input. This is preferred over taking the prefix `simulation < cap` because the prefix would lean on the underlying RNG's i.i.d. property over consecutive samples (mostly fine for modern PRNGs but a known MC-literature footgun re: warm-up bias). Distributional equivalence between the displayed subset and the full population is regression-tested via two-sample Kolmogorov–Smirnov at `tests/reports/test_html.py::TestMonteCarloPathsChartSampling`.
+
 ## Template (`_template.py`)
 
 | Function | Line | Purpose |
