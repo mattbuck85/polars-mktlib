@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 from mktlib.data import (
+    Innovations,
     Process,
     fractional_random_walk,
     geometric_brownian_motion,
@@ -270,3 +271,180 @@ class TestGeometricMonteCarlo:
                 assert a == pytest.approx(b, rel=1e-10), (
                     f"FRW(H={hurst}) sim {sim} step {i}: vec={a}, loop={b}"
                 )
+
+
+class TestInnovations:
+    """Pluggable innovation distributions for Process.GBM."""
+
+    def test_gaussian_default_matches_explicit(self):
+        """Default == Innovations.GAUSSIAN — locks the default."""
+        df_default = monte_carlo(Process.GBM, n_simulations=5, n=20, seed=42)
+        df_explicit = monte_carlo(
+            Process.GBM, n_simulations=5, n=20, seed=42,
+            innovations=Innovations.GAUSSIAN,
+        )
+        assert df_default.equals(df_explicit)
+
+    def test_students_t_unit_variance(self):
+        """Student-t innovations realize ~unit-variance log-returns at fixed sigma."""
+        # Gaussian baseline log-return std under volatility=0.2, dt=1/252
+        gauss = monte_carlo(
+            Process.GBM, n_simulations=2000, n=200, seed=42,
+            volatility=0.2, dt=1 / 252,
+            innovations=Innovations.GAUSSIAN,
+        )
+        t_df = monte_carlo(
+            Process.GBM, n_simulations=2000, n=200, seed=42,
+            volatility=0.2, dt=1 / 252,
+            innovations=Innovations.STUDENT_T, df=5,
+        )
+        # Per-bar log-return std should match within ~5% (sample SE of std ~ 1/sqrt(2N))
+        gauss_std = (
+            gauss.with_columns(
+                pl.col("price").log().diff().over("simulation").alias("logret")
+            )
+            .drop_nulls("logret")["logret"]
+            .std()
+        )
+        t_std = (
+            t_df.with_columns(
+                pl.col("price").log().diff().over("simulation").alias("logret")
+            )
+            .drop_nulls("logret")["logret"]
+            .std()
+        )
+        assert t_std == pytest.approx(gauss_std, rel=0.10)
+
+    def test_students_t_kurtosis_higher(self):
+        """Student-t increments must have heavier tails than Gaussian."""
+        gauss = monte_carlo(
+            Process.GBM, n_simulations=200, n=500, seed=42,
+            volatility=0.2, innovations=Innovations.GAUSSIAN,
+        )
+        t_df = monte_carlo(
+            Process.GBM, n_simulations=200, n=500, seed=42,
+            volatility=0.2, innovations=Innovations.STUDENT_T, df=4,
+        )
+        gauss_logret = (
+            gauss.with_columns(
+                pl.col("price").log().diff().over("simulation").alias("logret")
+            )["logret"].drop_nulls().to_numpy()
+        )
+        t_logret = (
+            t_df.with_columns(
+                pl.col("price").log().diff().over("simulation").alias("logret")
+            )["logret"].drop_nulls().to_numpy()
+        )
+        # Excess kurtosis of t with df=4 = 6/(df-4) → infinite; in finite samples
+        # at least clearly above Gaussian (~0).  Use a generous margin.
+        from scipy.stats import kurtosis  # type: ignore[import-untyped]
+        assert kurtosis(t_logret) > kurtosis(gauss_logret) + 1.0
+
+    def test_students_t_requires_df(self):
+        with pytest.raises(ValueError, match="df="):
+            monte_carlo(
+                Process.GBM, n_simulations=2, n=5, seed=1,
+                innovations=Innovations.STUDENT_T,
+            )
+
+    def test_students_t_rejects_df_le_2(self):
+        with pytest.raises(ValueError, match="df must be > 2"):
+            monte_carlo(
+                Process.GBM, n_simulations=2, n=5, seed=1,
+                innovations=Innovations.STUDENT_T, df=2.0,
+            )
+
+    def test_bootstrap_uses_residuals(self):
+        """Bootstrap path consumes the supplied residual series."""
+        # Two-valued residuals → only two possible log-increments per step
+        residuals = pl.Series("r", [-1.0, 1.0])
+        out = monte_carlo(
+            Process.GBM, n_simulations=10, n=10, seed=42,
+            volatility=0.05, drift=0.0, dt=1.0,
+            innovations=Innovations.BOOTSTRAP, residuals=residuals,
+        )
+        # Per-bar log-increment must be ±0.05 + small drift correction
+        log_increments = (
+            out.with_columns(
+                pl.col("price").log().diff().over("simulation").alias("logret")
+            )["logret"].drop_nulls().to_list()
+        )
+        # mu_dt = -0.5*0.05^2*1 = -0.00125; sigma*sqrt(dt) = 0.05
+        # so logret ∈ {-0.00125 - 0.05, -0.00125 + 0.05}
+        for v in log_increments:
+            assert v == pytest.approx(-0.05125, abs=1e-9) or v == pytest.approx(
+                0.04875, abs=1e-9
+            )
+
+    def test_bootstrap_requires_residuals(self):
+        with pytest.raises(ValueError, match="residuals="):
+            monte_carlo(
+                Process.GBM, n_simulations=2, n=5, seed=1,
+                innovations=Innovations.BOOTSTRAP,
+            )
+
+    def test_callable_innovations(self):
+        """Callable noise source — same result as GAUSSIAN when wrapping sample_normal."""
+        from polars_sdist import sample_normal
+
+        def gauss_callable(n: int, seed: int | None) -> pl.Series:
+            return sample_normal(n, seed=seed)
+
+        df_callable = monte_carlo(
+            Process.GBM, n_simulations=3, n=20, seed=42,
+            innovations=gauss_callable,
+        )
+        df_enum = monte_carlo(
+            Process.GBM, n_simulations=3, n=20, seed=42,
+            innovations=Innovations.GAUSSIAN,
+        )
+        assert df_callable.equals(df_enum)
+
+    def test_innovations_only_supported_for_gbm(self):
+        with pytest.raises(NotImplementedError, match="Process.GBM"):
+            monte_carlo(
+                Process.OU, n_simulations=2, n=5, seed=1,
+                innovations=Innovations.STUDENT_T, df=5,
+            )
+        with pytest.raises(NotImplementedError, match="Process.GBM"):
+            monte_carlo(
+                Process.FRW, n_simulations=2, n=5, seed=1,
+                innovations=Innovations.STUDENT_T, df=5,
+            )
+
+    def test_loop_callable_rejects_innovations(self):
+        with pytest.raises(NotImplementedError, match="callable processes"):
+            monte_carlo(
+                geometric_brownian_motion, n_simulations=2, n=5, seed=1,
+                innovations=Innovations.STUDENT_T, df=5,
+            )
+
+    def test_innovations_reproducibility(self):
+        df1 = monte_carlo(
+            Process.GBM, n_simulations=5, n=50, seed=99,
+            innovations=Innovations.STUDENT_T, df=5,
+        )
+        df2 = monte_carlo(
+            Process.GBM, n_simulations=5, n=50, seed=99,
+            innovations=Innovations.STUDENT_T, df=5,
+        )
+        assert df1.equals(df2)
+
+    @pytest.mark.parametrize(
+        "innovations, kwargs",
+        [
+            pytest.param(Innovations.GAUSSIAN, {}, id="gaussian"),
+            pytest.param(Innovations.STUDENT_T, {"df": 5.0}, id="students_t"),
+            pytest.param(
+                Innovations.BOOTSTRAP,
+                {"residuals": pl.Series("r", [-1.0, 0.0, 1.0])},
+                id="bootstrap",
+            ),
+        ],
+    )
+    def test_prices_positive(self, innovations, kwargs):
+        df = monte_carlo(
+            Process.GBM, n_simulations=10, n=100, seed=42,
+            volatility=0.1, innovations=innovations, **kwargs,
+        )
+        assert (df["price"] > 0).all()

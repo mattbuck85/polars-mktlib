@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- **Pluggable innovation distributions for `monte_carlo(Process.GBM, ...)`** — new `mktlib.data.Innovations` enum with three variants: `GAUSSIAN` (default; preserves existing behavior), `STUDENT_T` (heavier tails; requires `df=` > 2 and is rescaled to unit variance), and `BOOTSTRAP` (resamples a caller-supplied unit-variance `residuals: pl.Series` with replacement). All variants emit unit-variance i.i.d. noise — the host process's `volatility` parameter remains the controlling scale. The `monte_carlo()` API also accepts a callable `innovations: Callable[[int, int | None], pl.Series]` as an escape hatch for arbitrary samplers (skew-normal, mixture-of-normals, etc.). Innovations are GBM-only in this release; passing a non-Gaussian member with `Process.OU`, `Process.FRW`, or a callable process raises `NotImplementedError`.
+- **Forward-looking VaR / CVaR via `method=` and `horizon=` on `var()` / `cvar()`** — three estimators now share the same surface: `"historical"` (default, unchanged from 0.10.x — empirical quantile), `"gaussian"` (closed-form parametric VaR/CVaR under fitted GBM, with √(H·dt) volatility scaling), and `"monte_carlo"` (simulation-based; required for non-Gaussian innovations). New keyword-only kwargs: `method`, `horizon`, `n_simulations`, `dt`, `innovations`, `df`, `seed`. Defaults are chosen so existing positional calls (`var(ret, 0.05)`) return the exact same number as before.
+- **Opt-in MC batch caching across `var` + `cvar`** — new `cache: bool = False` kwarg on `var()`, `cvar()`, and `simulate_metric()`. When `cache=True`, repeated calls with identical input fingerprint and parameter tuple share one underlying simulation batch via a FIFO cache (`_MC_CACHE_MAX = 8`, evicts oldest). Default off so single-shot ad-hoc calls don't pay the bookkeeping; reporting code (e.g. `mktlib.reports.html`) opts in for tearsheet generation where both VaR and CVaR are computed with identical args.
+- **`simulate_metric(metric, ret, ...)` — new dispatcher for forward-looking parametric VaR / CVaR.** Companion to `calculate_metric`; accepts `method` (`"gaussian"` or `"monte_carlo"`), `horizon`, `n_simulations`, `dt`, `innovations`, `df`, `seed`. Restricted to `Metric.VAR` / `Metric.CVAR` — other members raise `ValueError`. `method="historical"` is rejected (use `calculate_metric` instead). Splitting the simulation surface out of `calculate_metric` keeps that dispatcher free of MC kwargs and preserves its existing call signature unchanged.
+
+### Notes
+
+- **MC under Gaussian innovations at `horizon=1` is computational theatre.** It returns the closed-form Gaussian VaR plus sampling noise — use `method="gaussian"` instead unless you actually need non-Gaussian innovations or path-dependent extensions.
+- **Tail-size rule of thumb:** at small `alpha` (e.g. 0.01), use `n_simulations >= 200/alpha` to keep the CVaR tail well-populated.
+- **OU and FRW innovations support is deferred.** FRW's Davies–Harte construction is only meaningful under Gaussian noise; OU's direct-σ parameterization tangles with the unit-variance contract. A future release may revisit.
+
 ## 0.10.1
 
 ### Added

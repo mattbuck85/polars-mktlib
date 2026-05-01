@@ -6,7 +6,7 @@ import random
 from typing import Any, Callable, overload
 
 import polars as pl
-from polars_sdist import sample_normal
+from polars_sdist import sample_normal, sample_students_t
 
 from mktlib.data._gbm import _gbm_price_expr
 from mktlib.data._ornstein_uhlenbeck import _ou_value_expr
@@ -14,9 +14,68 @@ from mktlib.data._ornstein_uhlenbeck import _ou_value_expr
 from polars_sdist import SdistNamespace as sdist
 
 
+class Innovations(enum.Enum):
+    """Noise distribution for stochastic-process simulations.
+
+    All variants produce **unit-variance** i.i.d. samples — the
+    ``volatility`` (or analogous) parameter of the host process remains
+    the controlling scale.  Switching innovations changes only the
+    *shape* of the tails, not the second moment of bar-level
+    log-returns.
+
+    Currently honoured by :class:`Process.GBM`; using a non-Gaussian
+    member with :class:`Process.OU` or :class:`Process.FRW` raises
+    :class:`NotImplementedError` (FRW's Davies–Harte construction is
+    only meaningful under Gaussian noise; OU's direct-``sigma``
+    parameterisation tangles with the unit-variance contract).
+    """
+
+    GAUSSIAN = "gaussian"
+    """Standard normal :math:`Z \\sim N(0, 1)` via ``polars_sdist.sample_normal``."""
+    STUDENT_T = "students_t"
+    """Student-t with degrees-of-freedom *df* (>2), rescaled to unit variance."""
+    BOOTSTRAP = "bootstrap"
+    """Resample with replacement from a caller-supplied unit-variance residual series."""
+
+
 def _child_seeds(n_simulations: int, seed: int | None) -> list[int]:
     rng = random.Random(seed)
     return [rng.randrange(2**63) for _ in range(n_simulations)]
+
+
+def _draw_unit_variance(
+    n: int,
+    seed: int | None,
+    *,
+    innovations: Innovations | Callable[[int, int | None], pl.Series],
+    df: float | None,
+    residuals: pl.Series | None,
+) -> pl.Series:
+    """Single-simulation unit-variance noise draw.
+
+    Dispatches on *innovations*; called once per child seed and
+    concatenated upstream.  All return paths produce a Series of length
+    *n* with (asymptotic) unit variance.
+    """
+    if callable(innovations):
+        return innovations(n, seed)
+    match innovations:
+        case Innovations.GAUSSIAN:
+            return sample_normal(n, seed=seed)
+        case Innovations.STUDENT_T:
+            if df is None:
+                msg = "innovations=STUDENT_T requires df= (degrees of freedom)"
+                raise ValueError(msg)
+            if df <= 2:
+                msg = f"Student-t df must be > 2 for finite variance (got {df})"
+                raise ValueError(msg)
+            scale = math.sqrt(df / (df - 2.0))
+            return sample_students_t(n, df=df, seed=seed) / scale
+        case Innovations.BOOTSTRAP:
+            if residuals is None:
+                msg = "innovations=BOOTSTRAP requires residuals= (unit-variance series)"
+                raise ValueError(msg)
+            return residuals.sample(n=n, with_replacement=True, seed=seed)
 
 
 def _noise_frame(
@@ -24,11 +83,24 @@ def _noise_frame(
     n: int,
     *,
     seed: int | None = None,
+    innovations: Innovations | Callable[[int, int | None], pl.Series] = Innovations.GAUSSIAN,
+    df: float | None = None,
+    residuals: pl.Series | None = None,
 ) -> pl.DataFrame:
-    """Build ``simulation | seed | step | z`` frame with per-sim normal draws."""
+    """Build ``simulation | seed | step | z`` frame with per-sim noise draws.
+
+    The *z* column is unit-variance regardless of *innovations* — the
+    distributional choice only changes tail shape.  See
+    :class:`Innovations` for the contract.
+    """
     child_seeds = _child_seeds(n_simulations, seed)
     z = pl.concat(
-        [sample_normal(n, seed=s) for s in child_seeds],
+        [
+            _draw_unit_variance(
+                n, s, innovations=innovations, df=df, residuals=residuals,
+            )
+            for s in child_seeds
+        ],
         rechunk=True,
     )
     total = n_simulations * n
@@ -70,6 +142,9 @@ def monte_carlo(
     n_simulations: int = 1000,
     *,
     seed: int | None = None,
+    innovations: Innovations | Callable[[int, int | None], pl.Series] = Innovations.GAUSSIAN,
+    df: float | None = None,
+    residuals: pl.Series | None = None,
     **process_kwargs: Any,
 ) -> pl.DataFrame: ...
 
@@ -80,6 +155,9 @@ def monte_carlo(
     n_simulations: int = 1000,
     *,
     seed: int | None = None,
+    innovations: Innovations | Callable[[int, int | None], pl.Series] = Innovations.GAUSSIAN,
+    df: float | None = None,
+    residuals: pl.Series | None = None,
     **process_kwargs: Any,
 ) -> pl.DataFrame: ...
 
@@ -89,6 +167,9 @@ def monte_carlo(
     n_simulations: int = 1000,
     *,
     seed: int | None = None,
+    innovations: Innovations | Callable[[int, int | None], pl.Series] = Innovations.GAUSSIAN,
+    df: float | None = None,
+    residuals: pl.Series | None = None,
     **process_kwargs: Any,
 ) -> pl.DataFrame:
     r"""Run multiple simulations of a stochastic process.
@@ -109,6 +190,20 @@ def monte_carlo(
     seed
         Parent RNG seed.  Deterministic child seeds are derived so that each
         simulation is reproducible and independent.
+    innovations
+        Noise distribution feeding the SDE.  Currently honoured by
+        :class:`Process.GBM`; passing a non-Gaussian member with
+        :class:`Process.OU`, :class:`Process.FRW`, or a callable *process*
+        raises :class:`NotImplementedError`.  All variants emit
+        unit-variance i.i.d. samples — the host process's ``volatility``
+        parameter remains the controlling scale.  See :class:`Innovations`.
+    df
+        Required when ``innovations=Innovations.STUDENT_T``; degrees of
+        freedom (must be > 2 for finite variance).
+    residuals
+        Required when ``innovations=Innovations.BOOTSTRAP``; a
+        unit-variance ``pl.Series`` of empirical residuals to resample
+        with replacement.
     **process_kwargs
         Forwarded to the underlying generator.  For :class:`Process` members
         these match the single-path function signatures (e.g. ``n``, ``drift``,
@@ -158,14 +253,37 @@ def monte_carlo(
     if n_simulations < 1:
         raise ValueError("n_simulations must be >= 1")
 
+    non_gaussian = (
+        callable(innovations) or innovations is not Innovations.GAUSSIAN
+    )
+
     if isinstance(process, Process):
         if process is Process.GBM:
-            return _vectorized_gbm(n_simulations, seed=seed, **process_kwargs)
+            return _vectorized_gbm(
+                n_simulations,
+                seed=seed,
+                innovations=innovations,
+                df=df,
+                residuals=residuals,
+                **process_kwargs,
+            )
+        if non_gaussian:
+            msg = (
+                f"innovations={innovations!r} is only supported for "
+                "Process.GBM in v0.11.0; OU and FRW require Gaussian noise"
+            )
+            raise NotImplementedError(msg)
         if process is Process.OU:
             return _vectorized_ou(n_simulations, seed=seed, **process_kwargs)
         if process is Process.FRW:
             return _vectorized_frw(n_simulations, seed=seed, **process_kwargs)
 
+    if non_gaussian:
+        msg = (
+            "custom innovations are not supported for callable processes; "
+            "the user-supplied generator owns its own noise source"
+        )
+        raise NotImplementedError(msg)
     return _loop(process, n_simulations, seed=seed, **process_kwargs)
 
 
@@ -178,6 +296,9 @@ def _vectorized_gbm(
     drift: float = 0.0,
     volatility: float = 1.0,
     dt: float = 1 / 252,
+    innovations: Innovations | Callable[[int, int | None], pl.Series] = Innovations.GAUSSIAN,
+    df: float | None = None,
+    residuals: pl.Series | None = None,
 ) -> pl.DataFrame:
     if n < 1:
         raise ValueError("n must be >= 1")
@@ -187,7 +308,14 @@ def _vectorized_gbm(
     sigma_sqrt_dt = volatility * math.sqrt(dt)
 
     return (
-        _noise_frame(n_simulations, n, seed=seed)
+        _noise_frame(
+            n_simulations,
+            n,
+            seed=seed,
+            innovations=innovations,
+            df=df,
+            residuals=residuals,
+        )
         .with_columns(
             _gbm_price_expr(log_base, mu_dt, sigma_sqrt_dt).over("simulation")
         )

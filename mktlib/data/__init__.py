@@ -8,12 +8,13 @@ except ModuleNotFoundError as _e:
     ) from _e
 
 from mktlib.data._gbm import geometric_brownian_motion
-from mktlib.data._monte_carlo import Process, monte_carlo
+from mktlib.data._monte_carlo import Innovations, Process, monte_carlo
 from mktlib.data._ohlcv import ticks_to_ohlcv
 from mktlib.data._ornstein_uhlenbeck import ornstein_uhlenbeck
 from mktlib.data._random_walk import fractional_random_walk
 
 __all__ = [
+    "Innovations",
     "Process",
     "fractional_random_walk",
     "geometric_brownian_motion",
