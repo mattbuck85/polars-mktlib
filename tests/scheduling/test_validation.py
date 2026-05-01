@@ -10,8 +10,16 @@ from mktlib.scheduling import get_calendar
 ec = pytest.importorskip("exchange_calendars")
 
 
+@pytest.mark.integration
 class ExchangeValidationBase:
-    """Base cross-validation against exchange_calendars."""
+    """Base cross-validation against exchange_calendars.
+
+    Marked ``integration`` — these cross-validate every supported
+    exchange against the third-party ``exchange_calendars`` library
+    over 20 years of holiday data per calendar.  Run with
+    ``pytest -m integration`` (or the unfiltered default).  The
+    fast-iteration suite (``pytest -m "not integration"``) skips them.
+    """
 
     MKTLIB_NAME: str
     EC_NAME: str

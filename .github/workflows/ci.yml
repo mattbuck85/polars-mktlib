@@ -58,7 +58,10 @@ jobs:
         fi
     - run: flake8 mktlib --count --select=E9,F63,F7,F82 --show-source --statistics
     - run: pyright mktlib
-    - run: pytest
+    - name: Unit tests (fast)
+      run: pytest -m "not integration"
+    - name: Integration tests (cross-library validation + KS equivalence)
+      run: pytest -m integration --no-cov
 
   lock-deps:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
