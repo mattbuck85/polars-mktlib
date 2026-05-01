@@ -592,6 +592,7 @@ class TestIndependentStreams:
             )
 
 
+@pytest.mark.integration
 class TestStreamModeStatisticalEquivalence:
     """Two-sample Kolmogorov–Smirnov tests confirming the two stream modes
     draw from the same population at large *n_simulations*.
@@ -599,6 +600,8 @@ class TestStreamModeStatisticalEquivalence:
     These are the *integration* checks that back the math: any future
     refactor that breaks the i.i.d. property of the single-batch path
     will trip these long before subtle convergence bugs reach reports.
+
+    Marked ``integration`` — opt in with ``pytest -m integration``.
     """
 
     @staticmethod

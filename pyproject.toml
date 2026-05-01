@@ -48,6 +48,9 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-ra --cov=mktlib --cov-report=term-missing"
 testpaths = ["tests"]
+markers = [
+    "integration: slow / large-sample statistical integration tests (run via -m integration)",
+]
 
 [tool.pyright]
 typeCheckingMode = "strict"
