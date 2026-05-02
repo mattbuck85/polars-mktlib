@@ -132,9 +132,8 @@ quantity is theatre. MC pays off when:
   :math:`\alpha` fraction of paths) is well-populated.
 - Identical *seed* values across :func:`var` and :func:`cvar` calls
   produce identical sample paths under the perf path
-  (``independent_streams=False``).  Use the same seed in both calls
-  if you want their tail numbers to come from the same simulation —
-  no shared cache needed; the deterministic RNG does the work.
+  (``independent_streams=False``).  Pass the same seed to both calls
+  when you want their tail numbers to come from the same simulation.
 
 .. autofunction:: mktlib.metrics.var
 
@@ -149,15 +148,14 @@ Forward-Looking Estimators
 
 The :func:`monte_carlo_paths` helper is the entry point used by
 :doc:`reports` to render the Monte Carlo simulation-paths chart. It
-runs MC once and returns the *full* sims frame (long-form
+runs MC and returns the *full* sims frame (long-form
 ``simulation, seed, step, price`` — base price 1.0, scale by initial
-equity for absolute units).  No caching: at the perf-path defaults
-(10 k × 22 ≈ 10–15 ms per batch) re-running on every call is cheaper
-than maintaining a content-fingerprint cache.  Callers who want the
-chart paths and the VaR / CVaR numbers to come from the *same*
-simulation should pass an identical *seed* to every call —
-deterministic seeding gives byte-for-byte identical samples without
-any explicit batching.
+equity for absolute units).  Callers who want the chart paths and a
+downstream VaR / CVaR to come from the same simulation pass an
+identical *seed* to every call: deterministic seeding produces
+byte-for-byte identical samples.  At the perf-path defaults
+(~10–15 ms per 10 k × 22 batch) re-running MC for each metric is
+cheap, so there is no shared-batch machinery to thread through.
 
 Win/Loss
 --------

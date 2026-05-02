@@ -112,11 +112,12 @@ class MonteCarloConfig:
     via the ``mc_config=`` kwarg.  Default ``enabled=False`` preserves
     backwards-compatible report output exactly.
 
-    When ``enabled=True``, one MC GBM batch is run (per report) using
-    :func:`mktlib.metrics.monte_carlo_paths`.  Its horizon-end returns
-    pre-populate the module-level MC cache so the subsequent VaR / CVaR
-    calls reuse the same simulation.  The full simulation frame is also
-    consumed by the Monte Carlo paths chart in :func:`mktlib.reports.html`.
+    When ``enabled=True``, the report runs three MC GBM batches under
+    a single shared seed (one for the chart's full simulation frame,
+    two for the VaR / CVaR estimators).  Identical seeds produce
+    identical sample paths, so all three artefacts are mutually
+    consistent.  When ``seed`` is ``None`` the driver mints one
+    OS-derived seed up front and threads it through all three calls.
 
     The dataclass intentionally has *no* "method" knob (closed-form
     Gaussian vs simulation): when MC is enabled we always run paths

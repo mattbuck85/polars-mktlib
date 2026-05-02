@@ -61,11 +61,9 @@ the chart frame plus two :func:`mktlib.metrics.simulate_metric` calls
 (VaR + CVaR), all threaded through one fixed seed so they produce
 identical sample paths.  When ``mc_config.seed`` is ``None`` the
 driver mints one OS-derived seed up front and reuses it across all
-three calls; otherwise the user-supplied seed is honoured.  This
-keeps the chart and the displayed numbers mutually consistent without
-the complexity of a content-fingerprint cache — at the perf-path
-defaults (~10–15 ms per MC batch) the triplet adds 30–45 ms total,
-invisible inside the typical tearsheet render.
+three calls; otherwise the user-supplied seed is honoured.  At the
+perf-path defaults (~10–15 ms per MC batch) the triplet adds 30–45 ms
+total — invisible inside the typical tearsheet render.
 
 .. code-block:: python
 

@@ -410,13 +410,12 @@ def _monte_carlo_horizon_returns(
     Bootstrap residuals are derived from ``ret`` directly when
     ``innovations=Innovations.BOOTSTRAP``.
 
-    No caching — at the perf-path defaults a 10k × 22 batch runs in
-    ~10–15 ms, so re-running on every call is cheaper than maintaining
-    a content-fingerprint cache.  Callers who want the chart and the
-    VaR / CVaR numbers to come from the *same* simulation paths
-    should pass a fixed *seed* to every call — identical seeds produce
-    identical sample paths, so consistency is achieved without any
-    explicit batching.
+    Callers who need consistent paths across multiple metrics (e.g.
+    matching VaR + CVaR + a chart frame) pass an identical *seed* to
+    every call — deterministic seeding under
+    ``independent_streams=False`` produces byte-for-byte identical
+    samples.  At the perf-path defaults a 10k × 22 batch runs in
+    ~10–15 ms.
     """
     from mktlib.data import Innovations as _Innovations
     from mktlib.data import Process, monte_carlo
@@ -498,14 +497,14 @@ def monte_carlo_paths(
 
     Notes
     -----
-    No caching.  At the perf-path defaults (10k × 22 ≈ 10–15 ms)
-    re-running MC on every call is cheaper than maintaining a
-    content-fingerprint cache.  Callers who want the chart and the
-    VaR / CVaR numbers to come from the *same* simulation paths should
-    pass a fixed ``seed`` to this call and to the subsequent
-    :func:`var` / :func:`cvar` calls — identical seeds produce
-    identical paths, so all three artefacts are mutually consistent
-    without explicit batching.
+    Callers who want the chart and the VaR / CVaR numbers to come from
+    the *same* simulation paths should pass a fixed ``seed`` to this
+    call and to the subsequent :func:`var` / :func:`cvar` calls —
+    identical seeds produce identical paths under
+    ``independent_streams=False``, so all three artefacts are mutually
+    consistent.  At the perf-path defaults (10k × 22 ≈ 10–15 ms per
+    batch) running MC three times per report is invisible inside the
+    typical tearsheet render.
     """
     from mktlib.data import Innovations as _Innovations
     from mktlib.data import Process, monte_carlo

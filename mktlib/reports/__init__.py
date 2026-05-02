@@ -52,11 +52,9 @@ def _run_monte_carlo_block(
     they would draw three independent samples and disagree by ~1–5 bps
     of sampling noise).
 
-    The cost is real but small: at the report-default workload
-    (10 k × 22) each MC batch runs in 10–15 ms under the perf path,
-    so the full triplet adds 30–45 ms to the tearsheet — invisible
-    inside the typical 250 ms render and not worth a content-
-    fingerprint cache to optimise away.
+    At the report-default workload (10 k × 22) each MC batch runs in
+    10–15 ms under the perf path, so the full triplet adds 30–45 ms
+    to the tearsheet — invisible inside the typical 250 ms render.
     """
     import random
 
@@ -184,14 +182,13 @@ def html(
         result = dataclasses.replace(result, trade_metrics=trade_met)
 
     # Build charts
-    ret_series = ret_df["return"]   # bind once; thread the same object
-                                    # through monte_carlo_paths + simulate_metric
-                                    # so the content-fingerprint cache hits.
+    ret_series = ret_df["return"]
     dates_list = ret_df["date"].to_list()
 
-    # Monte Carlo block (opt-in).  Runs ONCE; populates the metrics-layer
-    # cache so VaR + CVaR reuse the same simulation batch.  The full sims
-    # frame feeds the path chart further down.
+    # Monte Carlo block (opt-in).  Runs three MC batches under one
+    # shared seed so the chart frame and the VaR / CVaR numbers all
+    # come from the same sample paths.  The full sims frame feeds the
+    # path chart further down.
     mc_sims: pl.DataFrame | None = None
     if mc_config is not None and mc_config.enabled:
         import dataclasses

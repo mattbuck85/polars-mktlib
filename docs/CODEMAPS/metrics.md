@@ -57,8 +57,8 @@ Pure-Polars metric functions operating on return series. No external dependencie
 
 `monte_carlo_paths(ret, *, horizon, n_simulations, dt, innovations, df, seed) -> pl.DataFrame` — runs MC GBM once and returns the full sims frame.
 
-### Cross-call consistency via shared seed (no cache)
-
-There is no module-level MC cache.  At the perf path's defaults a 10k×22 batch runs in 10–15 ms, so re-running on every call is cheaper than maintaining a content-fingerprint cache.
+### Cross-call consistency via shared seed
 
 Callers who need the same simulation paths across multiple metrics (e.g. the reports driver wants the chart, the VaR, and the CVaR to come from the same paths) pass an **identical seed** to every call — deterministic seeding gives byte-for-byte identical samples.  When the user does not supply a seed, the reports driver (`mktlib/reports/__init__.py:_run_monte_carlo_block`) mints one OS-derived seed up front and threads it through all three calls.
+
+At the perf path's defaults a 10k×22 MC GBM batch runs in 10–15 ms, so re-running per metric is cheap enough that no batching layer exists.
