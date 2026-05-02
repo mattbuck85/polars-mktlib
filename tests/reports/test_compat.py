@@ -162,3 +162,16 @@ class TestEnsureDaily:
         })
         out = coerce_returns(df)
         assert out["date"].n_unique() == out.height
+
+    def test_rejects_null_returns(self):
+        """Null returns surface as ValueError rather than silently dropping
+        through the (1+r).product() aggregate (polars skips nulls by default,
+        which would produce a misleading daily figure)."""
+        df = pl.DataFrame({
+            "date": [
+                dt.date(2024, 1, 2), dt.date(2024, 1, 2), dt.date(2024, 1, 3),
+            ],
+            "return": [0.01, None, -0.01],
+        })
+        with pytest.raises(ValueError, match="null"):
+            _ensure_daily(df)

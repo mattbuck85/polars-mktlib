@@ -60,6 +60,11 @@ jobs:
     - run: pyright mktlib
     - name: Unit tests (fast)
       run: pytest -m "not integration"
+    # NOTE: --no-cov on integration so we don't double-collect coverage
+    # over the unit run. Side effect: any code path exercised *only* by
+    # integration tests reads as uncovered. If this repo ever sets a
+    # coverage threshold (--cov-fail-under), merge the two reports via
+    # `coverage combine` first or the threshold will trip falsely.
     - name: Integration tests (cross-library validation + KS equivalence)
       run: pytest -m integration --no-cov
 

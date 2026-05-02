@@ -11,8 +11,6 @@ from polars_sdist import sample_normal, sample_students_t
 from mktlib.data._gbm import _gbm_price_expr
 from mktlib.data._ornstein_uhlenbeck import _ou_value_expr
 
-from polars_sdist import SdistNamespace as sdist
-
 
 class Innovations(enum.Enum):
     """Noise distribution for stochastic-process simulations.
@@ -110,6 +108,16 @@ def _noise_frame(
         the wall-clock at typical (10k sims) scales.  The *seed* column
         is filled with one parent-derived seed shared by every row —
         callers that introspect per-simulation seeds must opt out.
+
+    Notes
+    -----
+    The ``seed`` column is **never null**, even when ``seed=None`` is
+    passed.  Under ``seed=None`` we materialize a fresh OS-time-derived
+    integer per call and write it to every row, so the column always
+    holds a concrete value.  Reproducibility-via-seed-column
+    introspection is therefore unsafe — use the *parent* seed argument
+    you passed in to detect deterministic vs. non-deterministic runs,
+    not the column.
     """
     total = n_simulations * n
 

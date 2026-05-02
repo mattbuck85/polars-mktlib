@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import random
+import warnings
 from typing import Any
 
 import plotly.graph_objects as go
@@ -334,11 +336,16 @@ def monte_carlo_paths_chart(
     # Drawing a uniform subset is unambiguously representative; we seed
     # the subset selection from the MC run's own parent seed so the
     # displayed paths are deterministic given identical sims input.
-    import random as _random
-
     cap = min(n_paths_displayed, n_sims, _MC_PATHS_DOM_CAP)
+    if n_paths_displayed > _MC_PATHS_DOM_CAP:
+        warnings.warn(
+            f"n_paths_displayed={n_paths_displayed} exceeds the Plotly DOM "
+            f"responsiveness cap (_MC_PATHS_DOM_CAP={_MC_PATHS_DOM_CAP}); "
+            f"clipping to {cap} paths in the displayed subset.",
+            stacklevel=2,
+        )
     parent_seed = int(sims["seed"][0])
-    selected = _random.Random(parent_seed ^ 0xCC0FFEE).sample(
+    selected = random.Random(parent_seed ^ 0xCC0FFEE).sample(
         range(n_sims), cap,
     )
     selected_set = pl.Series("simulation", selected)

@@ -117,7 +117,20 @@ def _ensure_daily(df: pl.DataFrame) -> pl.DataFrame:
     equivalence with the pre-aggregation behaviour — without it the
     ``(1+r).product()-1`` round-trip introduces ~1e-17 floating-point
     drift on otherwise pristine inputs.
+
+    Null returns are rejected with :class:`ValueError`.  The geometric
+    aggregate ``(1+r).product()`` would silently skip nulls under
+    polars' default semantics, producing a daily figure that ignores
+    the gap — almost always a data-quality bug worth surfacing rather
+    than masking.
     """
+    if df["return"].null_count() > 0:
+        msg = (
+            "returns contain null values; sub-daily aggregation would "
+            "silently drop them.  Clean or interpolate the input before "
+            "passing to coerce_returns."
+        )
+        raise ValueError(msg)
     if df["date"].n_unique() == len(df):
         return df.sort("date") if not df["date"].is_sorted() else df
     return (

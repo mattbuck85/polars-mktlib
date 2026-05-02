@@ -602,6 +602,16 @@ class TestStreamModeStatisticalEquivalence:
     will trip these long before subtle convergence bugs reach reports.
 
     Marked ``integration`` — opt in with ``pytest -m integration``.
+
+    NOTE on seeds: each test pairs streams=True with seed=42 and
+    streams=False with seed=43 — *intentionally different*.  Using the
+    same seed across the two modes would draw correlated samples
+    (single-batch is the first n_sim*horizon samples of one RNG
+    stream; multi-stream is n_sim partitions of an isomorphic
+    seed-derived stream), which short-circuits the KS test and gives
+    a misleadingly small KS statistic — the test would still "pass"
+    but for the wrong reason.  Distinct seeds force a fair
+    distributional comparison.
     """
 
     @staticmethod

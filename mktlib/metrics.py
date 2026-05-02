@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import enum
 import math
 import statistics
@@ -409,21 +410,39 @@ def _make_mc_cache_key(
 ) -> tuple:
     """Build the canonical cache key for an MC GBM batch.
 
-    Content-based fingerprint of *ret* (length, sum, head, tail) — robust
-    to wrapper-object identity, so two distinct ``pl.Series`` objects
-    over the same data hit the same cache entry.  Both
-    ``_monte_carlo_horizon_returns`` and ``monte_carlo_paths`` call
-    this so the keys can never drift apart.
+    Content-based fingerprint of *ret* — robust to wrapper-object
+    identity, so two distinct ``pl.Series`` objects over the same data
+    hit the same cache entry.  Both ``_monte_carlo_horizon_returns``
+    and ``monte_carlo_paths`` call this so the keys can never drift apart.
+
+    The fingerprint includes ``(len, sum)`` plus four positional
+    samples — head, 25th, 50th, 75th, tail — so any pair of series with
+    different middle data produce different keys (collision probability
+    ~zero for any realistic financial series).  Each ``.item()`` is
+    O(1) on a polars Series, so the seven-field fingerprint adds
+    microseconds vs. the 10–100ms it gates.
     """
-    if len(ret) > 0:
+    n = len(ret)
+    if n == 0:
+        fingerprint = (0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    elif n < 4:
+        # Series too short for distinct mid-samples — use head/tail only.
+        head = float(ret.head(1).item())
+        tail = float(ret.tail(1).item())
         fingerprint = (
-            len(ret),
-            float(ret.sum()),  # type: ignore[arg-type]
-            float(ret.head(1).item()),
-            float(ret.tail(1).item()),
+            n, float(ret.sum()),  # type: ignore[arg-type]
+            head, head, head, head, tail,
         )
     else:
-        fingerprint = (0, 0.0, 0.0, 0.0)
+        fingerprint = (
+            n,
+            float(ret.sum()),  # type: ignore[arg-type]
+            float(ret.head(1).item()),
+            float(ret[n // 4]),
+            float(ret[n // 2]),
+            float(ret[3 * n // 4]),
+            float(ret.tail(1).item()),
+        )
     return (
         fingerprint, mu, sigma, horizon, n_simulations, dt,
         innovations.value, df, seed,
@@ -507,17 +526,18 @@ def _monte_carlo_horizon_returns(
 
 _MC_CACHE_MAX = 8
 _mc_cache: dict[tuple, pl.Series] = {}
-_mc_cache_order: list[tuple] = []
+_mc_cache_order: collections.deque[tuple] = collections.deque(maxlen=_MC_CACHE_MAX)
 
 
 def _mc_cache_insert(key: tuple, value: pl.Series) -> None:
     if key in _mc_cache:
         return
-    _mc_cache[key] = value
+    if len(_mc_cache_order) == _MC_CACHE_MAX:
+        # deque is full — appending would silently discard the oldest;
+        # mirror that on the dict side before extending.
+        _mc_cache.pop(_mc_cache_order[0], None)
     _mc_cache_order.append(key)
-    while len(_mc_cache_order) > _MC_CACHE_MAX:
-        evict = _mc_cache_order.pop(0)
-        _mc_cache.pop(evict, None)
+    _mc_cache[key] = value
 
 
 def _mc_cache_clear() -> None:
