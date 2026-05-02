@@ -267,9 +267,6 @@ class TestMonteCarloVaRConvergence:
 
     def test_gaussian_mc_matches_closed_form(self) -> None:
         ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
-        from mktlib.metrics import _mc_cache_clear
-
-        _mc_cache_clear()
         n_sims = 50_000
         v_closed = var(ret, method="gaussian", horizon=1)
         v_mc = var(
@@ -281,55 +278,31 @@ class TestMonteCarloVaRConvergence:
 
     def test_gaussian_mc_cvar_matches_closed_form(self) -> None:
         ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
-        from mktlib.metrics import _mc_cache_clear
-
-        _mc_cache_clear()
         c_closed = cvar(ret, method="gaussian", horizon=1)
         c_mc = cvar(
             ret, method="monte_carlo", horizon=1, n_simulations=50_000, seed=42
         )
         assert c_mc == pytest.approx(c_closed, abs=3e-3)
 
-    def test_cache_disabled_by_default(self) -> None:
-        """Default cache=False — back-to-back MC calls leave the cache empty."""
-        from mktlib.metrics import _mc_cache, _mc_cache_clear
-
-        _mc_cache_clear()
+    def test_var_match_under_same_seed(self) -> None:
+        """Identical seeds produce identical sample paths.  VaR uses a
+        deterministic quantile reducer so two calls match bit-for-bit;
+        CVaR uses a parallel mean which can drift by ~1e-15 — the
+        broader reproducibility test below allows that tolerance."""
         ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
-        var(ret, method="monte_carlo", n_simulations=2_000, seed=7)
-        cvar(ret, method="monte_carlo", n_simulations=2_000, seed=7)
-        assert len(_mc_cache) == 0, (
-            f"cache should stay empty when cache=False, found {len(_mc_cache)}"
-        )
+        a = var(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        b = var(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        assert a == b
 
-    def test_var_cvar_share_cache_when_opted_in(self) -> None:
-        """One MC batch feeds both var() and cvar() when cache=True."""
-        from mktlib.metrics import _mc_cache, _mc_cache_clear
-
-        _mc_cache_clear()
+    def test_cvar_match_under_same_seed(self) -> None:
         ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
-        var(ret, method="monte_carlo", n_simulations=5_000, seed=7, cache=True)
-        cvar(ret, method="monte_carlo", n_simulations=5_000, seed=7, cache=True)
-        assert len(_mc_cache) == 1, (
-            f"expected one cached batch, found {len(_mc_cache)}"
-        )
-
-    def test_cache_evicts_beyond_max(self) -> None:
-        from mktlib.metrics import _MC_CACHE_MAX, _mc_cache, _mc_cache_clear
-
-        _mc_cache_clear()
-        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
-        for s in range(_MC_CACHE_MAX + 3):
-            var(ret, method="monte_carlo", n_simulations=1_000, seed=s, cache=True)
-        assert len(_mc_cache) == _MC_CACHE_MAX
+        a = cvar(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        b = cvar(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        assert a == pytest.approx(b, abs=1e-12)
 
     def test_mc_reproducibility(self) -> None:
-        from mktlib.metrics import _mc_cache_clear
-
-        _mc_cache_clear()
         ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
         v1 = var(ret, method="monte_carlo", seed=42, n_simulations=1_000)
-        _mc_cache_clear()
         v2 = var(ret, method="monte_carlo", seed=42, n_simulations=1_000)
         assert v1 == v2
 
@@ -354,9 +327,7 @@ class TestBootstrapResiduals:
 
     def test_bootstrap_var_runs(self) -> None:
         from mktlib.data import Innovations
-        from mktlib.metrics import _mc_cache_clear
 
-        _mc_cache_clear()
         ret = pl.Series(
             "r", [-0.05, -0.03, 0.01, 0.02, 0.015, -0.04, 0.005, -0.02, 0.01, -0.01] * 25
         )
@@ -369,75 +340,56 @@ class TestBootstrapResiduals:
 
 
 class TestMonteCarloPathsHelper:
-    """`monte_carlo_paths()` returns the full sims frame and pre-populates the cache."""
+    """`monte_carlo_paths()` returns the full sims frame.
+
+    No caching: identical seeds across calls produce identical paths,
+    so callers achieve consistency between the chart frame and any
+    downstream :func:`var` / :func:`cvar` calls by passing the same
+    *seed* (rather than via a fingerprint cache).
+    """
 
     def test_returns_full_sims_frame(self) -> None:
-        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+        from mktlib.metrics import monte_carlo_paths
 
-        _mc_cache_clear()
         ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
         sims = monte_carlo_paths(ret, horizon=21, n_simulations=500, seed=42)
         assert sims.shape == (500 * 22, 4)
         assert sims.columns == ["simulation", "seed", "step", "price"]
         assert (sims["price"] > 0).all()
 
-    def test_populates_cache_for_var_cvar(self) -> None:
-        """Running monte_carlo_paths means the next var/cvar with matching args is a cache hit."""
-        from mktlib.metrics import _mc_cache, _mc_cache_clear, monte_carlo_paths
+    def test_same_seed_produces_same_horizon_returns_as_var(self) -> None:
+        """The chart's MC sims and a downstream var() call agree exactly
+        on the per-simulation horizon-end returns when seeds match."""
+        from mktlib.metrics import monte_carlo_paths
 
-        _mc_cache_clear()
         ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
-        monte_carlo_paths(ret, horizon=21, n_simulations=500, seed=42)
-        assert len(_mc_cache) == 1
-        # var with matching args must NOT grow the cache
-        var(
-            ret, method="monte_carlo", horizon=21, n_simulations=500,
-            seed=42, cache=True,
+        sims = monte_carlo_paths(ret, horizon=21, n_simulations=500, seed=42)
+        # Manually derive horizon returns from the sims frame
+        horizon_returns_from_sims = (
+            sims.group_by("simulation")
+            .agg((pl.col("price").last() - 1.0).alias("R"))
+            .get_column("R")
+            .sort()
         )
-        cvar(
-            ret, method="monte_carlo", horizon=21, n_simulations=500,
-            seed=42, cache=True,
+        chart_var = float(
+            horizon_returns_from_sims.quantile(0.05, interpolation="linear")  # type: ignore[arg-type]
         )
-        assert len(_mc_cache) == 1
-
-    def test_cache_hit_across_distinct_series_objects(self) -> None:
-        """Content-based fingerprint: distinct Series wrappers over same data hit the cache."""
-        from mktlib.metrics import _mc_cache, _mc_cache_clear, monte_carlo_paths
-
-        _mc_cache_clear()
-        data = [0.001 * (i % 7 - 3) for i in range(100)]
-        ret_a = pl.Series("r", data)
-        ret_b = pl.Series("r", data)  # distinct wrapper, same content
-        assert id(ret_a) != id(ret_b)
-        monte_carlo_paths(ret_a, horizon=21, n_simulations=500, seed=42)
-        var(
-            ret_b, method="monte_carlo", horizon=21, n_simulations=500,
-            seed=42, cache=True,
+        # var() with the same seed runs MC again; identical paths → identical VaR
+        rerun_var = var(
+            ret, method="monte_carlo", horizon=21, n_simulations=500, seed=42,
         )
-        assert len(_mc_cache) == 1
+        assert chart_var == pytest.approx(rerun_var, rel=1e-12)
 
-    def test_bootstrap_parity_driver_vs_metric(self) -> None:
-        """Bootstrap residuals derived in monte_carlo_paths == those used by var()."""
+    def test_bootstrap_runs(self) -> None:
         from mktlib.data import Innovations
-        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+        from mktlib.metrics import monte_carlo_paths
 
-        _mc_cache_clear()
         ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
-        monte_carlo_paths(
+        sims = monte_carlo_paths(
             ret, horizon=21, n_simulations=500, seed=42,
             innovations=Innovations.BOOTSTRAP,
         )
-        cached_var = var(
-            ret, method="monte_carlo", horizon=21, n_simulations=500,
-            seed=42, innovations=Innovations.BOOTSTRAP, cache=True,
-        )
-        # Direct call without cache pre-populate
-        _mc_cache_clear()
-        direct_var = var(
-            ret, method="monte_carlo", horizon=21, n_simulations=500,
-            seed=42, innovations=Innovations.BOOTSTRAP, cache=True,
-        )
-        assert cached_var == pytest.approx(direct_var, rel=1e-12)
+        assert (sims["price"] > 0).all()
 
 
 class TestWinRate:
@@ -536,62 +488,37 @@ class TestSimulateMetric:
     """Forward-looking dispatcher for VaR / CVaR."""
 
     def test_var_gaussian_matches_var_function(self, daily_ret: pl.Series) -> None:
-        from mktlib.metrics import _mc_cache_clear
-
-        _mc_cache_clear()
         a = simulate_metric(Metric.VAR, daily_ret, method="gaussian")
         b = var(daily_ret, method="gaussian")
         assert a == pytest.approx(b, rel=1e-12)
 
     def test_cvar_gaussian_matches_cvar_function(self, daily_ret: pl.Series) -> None:
-        from mktlib.metrics import _mc_cache_clear
-
-        _mc_cache_clear()
         a = simulate_metric(Metric.CVAR, daily_ret, method="gaussian")
         b = cvar(daily_ret, method="gaussian")
         assert a == pytest.approx(b, rel=1e-12)
 
     def test_var_mc_matches_var_function(self, daily_ret: pl.Series) -> None:
-        from mktlib.metrics import _mc_cache_clear
-
-        _mc_cache_clear()
         a = simulate_metric(
             Metric.VAR, daily_ret, method="monte_carlo",
             n_simulations=2_000, seed=42,
         )
-        _mc_cache_clear()
         b = var(daily_ret, method="monte_carlo", n_simulations=2_000, seed=42)
         assert a == pytest.approx(b, rel=1e-12)
 
-    def test_cache_disabled_by_default(self, daily_ret: pl.Series) -> None:
-        """simulate_metric default cache=False keeps the cache empty."""
-        from mktlib.metrics import _mc_cache, _mc_cache_clear
-
-        _mc_cache_clear()
-        simulate_metric(
+    def test_var_cvar_consistent_under_same_seed(
+        self, daily_ret: pl.Series
+    ) -> None:
+        """Identical seeds → identical sample paths → CVaR ≤ VaR holds
+        precisely (not just statistically) on the shared sample."""
+        v = simulate_metric(
             Metric.VAR, daily_ret, method="monte_carlo",
-            n_simulations=2_000, seed=42,
+            n_simulations=5_000, seed=42,
         )
-        simulate_metric(
+        c = simulate_metric(
             Metric.CVAR, daily_ret, method="monte_carlo",
-            n_simulations=2_000, seed=42,
+            n_simulations=5_000, seed=42,
         )
-        assert len(_mc_cache) == 0
-
-    def test_var_cvar_share_cache_when_opted_in(self, daily_ret: pl.Series) -> None:
-        """VaR + CVaR via simulate_metric reuse a single MC batch when cache=True."""
-        from mktlib.metrics import _mc_cache, _mc_cache_clear
-
-        _mc_cache_clear()
-        simulate_metric(
-            Metric.VAR, daily_ret, method="monte_carlo",
-            n_simulations=2_000, seed=42, cache=True,
-        )
-        simulate_metric(
-            Metric.CVAR, daily_ret, method="monte_carlo",
-            n_simulations=2_000, seed=42, cache=True,
-        )
-        assert len(_mc_cache) == 1
+        assert c <= v
 
     def test_rejects_non_simulatable_metric(self, daily_ret: pl.Series) -> None:
         with pytest.raises(ValueError, match="VAR, CVAR|simulate_metric supports"):
@@ -603,9 +530,7 @@ class TestSimulateMetric:
 
     def test_innovations_passthrough(self, daily_ret: pl.Series) -> None:
         from mktlib.data import Innovations
-        from mktlib.metrics import _mc_cache_clear
 
-        _mc_cache_clear()
         v = simulate_metric(
             Metric.VAR, daily_ret, method="monte_carlo",
             innovations=Innovations.STUDENT_T, df=5,

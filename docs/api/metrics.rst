@@ -130,9 +130,11 @@ quantity is theatre. MC pays off when:
 - Tail-size rule of thumb: at small :math:`\alpha` (e.g. ``0.01``) use
   ``n_simulations >= 200/alpha`` so the CVaR tail (the worst
   :math:`\alpha` fraction of paths) is well-populated.
-- Setting ``cache=True`` on both :func:`var` and :func:`cvar` shares
-  one MC batch between them — opt in from reporting code that always
-  computes both.
+- Identical *seed* values across :func:`var` and :func:`cvar` calls
+  produce identical sample paths under the perf path
+  (``independent_streams=False``).  Use the same seed in both calls
+  if you want their tail numbers to come from the same simulation —
+  no shared cache needed; the deterministic RNG does the work.
 
 .. autofunction:: mktlib.metrics.var
 
@@ -149,12 +151,13 @@ The :func:`monte_carlo_paths` helper is the entry point used by
 :doc:`reports` to render the Monte Carlo simulation-paths chart. It
 runs MC once and returns the *full* sims frame (long-form
 ``simulation, seed, step, price`` — base price 1.0, scale by initial
-equity for absolute units) **and** populates the module-level MC cache
-so downstream :func:`simulate_metric` / :func:`var` / :func:`cvar`
-calls with matching arguments hit the cache and skip a second
-simulation. The cache fingerprint is content-based (length, sum, head,
-tail of *ret*) so distinct ``pl.Series`` wrappers over the same data
-share cache entries.
+equity for absolute units).  No caching: at the perf-path defaults
+(10 k × 22 ≈ 10–15 ms per batch) re-running on every call is cheaper
+than maintaining a content-fingerprint cache.  Callers who want the
+chart paths and the VaR / CVaR numbers to come from the *same*
+simulation should pass an identical *seed* to every call —
+deterministic seeding gives byte-for-byte identical samples without
+any explicit batching.
 
 Win/Loss
 --------

@@ -214,14 +214,10 @@ class TestMonteCarloIntegration:
     """`mc_config=` opt-in: Forward-Looking Risk card + simulation paths chart."""
 
     def test_disabled_default_unchanged(self):
-        """No mc_config → output identical to pre-feature behavior."""
-        from mktlib.metrics import _mc_cache_clear
-
-        _mc_cache_clear()
+        """No mc_config → output has no MC artifacts."""
         df = _make_returns(n=80)
         baseline = html(df, title="No MC")
         assert baseline is not None
-        # Forward-Looking card and MC chart absent
         assert "Forward-Looking Risk" not in baseline
         assert "MC VaR" not in baseline
 
@@ -232,9 +228,7 @@ class TestMonteCarloIntegration:
         the contract is that the MC code path is fully gated.)
         """
         from mktlib.reports import MonteCarloConfig
-        from mktlib.metrics import _mc_cache_clear
 
-        _mc_cache_clear()
         df = _make_returns(n=80)
         out = html(df, mc_config=MonteCarloConfig(enabled=False))
         assert out is not None
@@ -244,9 +238,7 @@ class TestMonteCarloIntegration:
 
     def test_enabled_renders_card_and_chart(self):
         from mktlib.reports import MonteCarloConfig
-        from mktlib.metrics import _mc_cache_clear
 
-        _mc_cache_clear()
         df = _make_returns(n=120)
         out = html(
             df, title="With MC",
@@ -262,9 +254,7 @@ class TestMonteCarloIntegration:
 
     def test_metrics_function_populates_mc_fields(self):
         from mktlib.reports import MonteCarloConfig
-        from mktlib.metrics import _mc_cache_clear
 
-        _mc_cache_clear()
         df = _make_returns(n=120)
         result = metrics(
             df,
@@ -282,27 +272,30 @@ class TestMonteCarloIntegration:
         assert result.mc_var is None
         assert result.mc_cvar is None
 
-    def test_one_batch_shared_across_var_cvar(self):
-        """Cache pre-populate: one MC batch services VaR + CVaR + chart."""
-        from mktlib.reports import MonteCarloConfig
-        from mktlib.metrics import _mc_cache, _mc_cache_clear
+    def test_chart_and_numbers_share_seed(self):
+        """When seed is fixed, three MC runs (chart + var + cvar) all use
+        the same paths because identical seeds produce identical samples.
 
-        _mc_cache_clear()
+        Bit-exact equality on `mc_var` (quantile is deterministic);
+        `mc_cvar` is approximate to absorb sub-1e-15 polars
+        parallel-mean drift on the tail aggregate.
+        """
+        from mktlib.reports import MonteCarloConfig
+
         df = _make_returns(n=80)
-        html(
-            df,
-            mc_config=MonteCarloConfig(
-                enabled=True, seed=42, n_simulations=1_000, horizon=21,
-            ),
-        )
-        assert len(_mc_cache) == 1
+        a = metrics(df, mc_config=MonteCarloConfig(
+            enabled=True, seed=42, n_simulations=1_000, horizon=21,
+        ))
+        b = metrics(df, mc_config=MonteCarloConfig(
+            enabled=True, seed=42, n_simulations=1_000, horizon=21,
+        ))
+        assert a.mc_var == b.mc_var
+        assert a.mc_cvar == pytest.approx(b.mc_cvar, abs=1e-12)
 
     def test_students_t_innovations_round_trip(self):
         from mktlib.data import Innovations
         from mktlib.reports import MonteCarloConfig
-        from mktlib.metrics import _mc_cache_clear
 
-        _mc_cache_clear()
         df = _make_returns(n=120)
         result = metrics(
             df,
@@ -317,9 +310,7 @@ class TestMonteCarloIntegration:
     def test_bootstrap_innovations_round_trip(self):
         from mktlib.data import Innovations
         from mktlib.reports import MonteCarloConfig
-        from mktlib.metrics import _mc_cache_clear
 
-        _mc_cache_clear()
         df = _make_returns(n=120)
         result = metrics(
             df,
@@ -355,9 +346,8 @@ class TestMonteCarloPathsChartSampling:
 
         import polars as pl
 
-        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+        from mktlib.metrics import monte_carlo_paths
 
-        _mc_cache_clear()
         ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(252)])
         n_sim = 5_000
         horizon = 22
@@ -391,10 +381,9 @@ class TestMonteCarloPathsChartSampling:
     def test_displayed_subset_deterministic_under_same_seed(self):
         """The same MC run produces the same display subset every time."""
         import polars as pl
-        from mktlib.metrics import _mc_cache_clear, monte_carlo_paths
+        from mktlib.metrics import monte_carlo_paths
         from mktlib.reports._plots import monte_carlo_paths_chart
 
-        _mc_cache_clear()
         ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(252)])
         sims_a = monte_carlo_paths(ret, horizon=21, n_simulations=1_000, seed=42)
         sims_b = monte_carlo_paths(ret, horizon=21, n_simulations=1_000, seed=42)

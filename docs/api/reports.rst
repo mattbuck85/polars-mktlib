@@ -55,12 +55,17 @@ historical equity value over forward business days.
    :members:
    :undoc-members:
 
-**One simulation per report.** Internally :func:`html` and
-:func:`metrics` use :func:`mktlib.metrics.monte_carlo_paths` to run the
-batch once; the cache contract from :doc:`metrics` ensures that the
-subsequent VaR and CVaR computations reuse the same paths. There is no
-second simulation regardless of how many tail-risk numbers are
-extracted.
+**Three MC runs per report, one shared seed.**  Internally :func:`html`
+and :func:`metrics` run :func:`mktlib.metrics.monte_carlo_paths` for
+the chart frame plus two :func:`mktlib.metrics.simulate_metric` calls
+(VaR + CVaR), all threaded through one fixed seed so they produce
+identical sample paths.  When ``mc_config.seed`` is ``None`` the
+driver mints one OS-derived seed up front and reuses it across all
+three calls; otherwise the user-supplied seed is honoured.  This
+keeps the chart and the displayed numbers mutually consistent without
+the complexity of a content-fingerprint cache — at the perf-path
+defaults (~10–15 ms per MC batch) the triplet adds 30–45 ms total,
+invisible inside the typical tearsheet render.
 
 .. code-block:: python
 

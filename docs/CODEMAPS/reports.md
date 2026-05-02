@@ -10,7 +10,7 @@ Polars-native replacement for `quantstats`. Computes performance metrics and gen
 | `metrics(returns, *, benchmark, trades, rf, periods_per_year, compounded, mc_config)` | `:262` | `MetricsResult` |
 | `MonteCarloConfig(enabled, horizon, n_simulations, innovations, df, seed, alpha, n_paths_displayed, exchange)` | `_types.py:101` | dataclass |
 
-Both accept `rf="auto"` to fetch 3-month T-bill average via `mktlib.rates`. The internal `_run_monte_carlo_block(ret, mc_config, ppy)` helper (lines `:34-74`) is shared between `html()` and `metrics()` — it calls `mktlib.metrics.monte_carlo_paths` once, populates the metrics-layer MC cache, and returns `(mc_var, mc_cvar, sims_frame)`.
+Both accept `rf="auto"` to fetch 3-month T-bill average via `mktlib.rates`. The internal `_run_monte_carlo_block(ret, mc_config, ppy)` helper (lines `:34-74`) is shared between `html()` and `metrics()` — it runs three MC GBM batches (one for the chart sims, two for VaR/CVaR), all threaded through a single fixed seed so they produce identical sample paths. When `mc_config.seed is None` the driver mints one OS-derived seed up front. Returns `(mc_var, mc_cvar, sims_frame)`.
 
 ## Input Coercion (`_compat.py`)
 
@@ -53,9 +53,9 @@ Benchmark fields (`alpha`, `beta`, `r_squared`, `information_ratio`) are `None` 
 
 Frozen dataclass driving the opt-in MC path. Default `enabled=False` keeps reports byte-identical to v0.10.x. When `enabled=True`:
 
-1. `_run_monte_carlo_block` calls `mktlib.metrics.monte_carlo_paths` once (one MC GBM batch).
-2. The cache hit propagates to two `simulate_metric` calls (VaR + CVaR) which populate `MetricsResult.mc_var/mc_cvar`.
-3. `html()` builds the `monte_carlo_paths` chart from the same sims frame; `metrics()` discards the frame.
+1. `_run_monte_carlo_block` mints one effective seed (`mc_config.seed` or freshly OS-derived) and runs three MC batches with it: one `monte_carlo_paths` for the chart frame, two `simulate_metric` calls for VaR / CVaR.
+2. Identical seeds produce identical sample paths under the perf path (`independent_streams=False`) — the chart and the displayed numbers are mutually consistent without any explicit caching.
+3. `html()` builds the `monte_carlo_paths` chart from the sims frame; `metrics()` discards it.
 
 Knobs: `horizon` (default 21), `n_simulations` (10 000), `innovations` (Innovations | None — Gaussian default), `df` (Student-t), `seed`, `alpha` (0.05 — VaR/CVaR level + percentile-band edges), `n_paths_displayed` (100; capped at 500 inside the chart helper), `exchange` ("XNYS" — calendar for the forward-date axis).
 

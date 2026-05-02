@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import collections
 import enum
 import math
 import statistics
@@ -396,59 +395,6 @@ def _standardized_residuals(ret: pl.Series) -> pl.Series:
     return ((log_r - mean) / std).alias("residuals")
 
 
-def _make_mc_cache_key(
-    ret: pl.Series,
-    *,
-    mu: float,
-    sigma: float,
-    horizon: int,
-    n_simulations: int,
-    dt: float,
-    innovations: "Innovations",
-    df: float | None,
-    seed: int | None,
-) -> tuple:
-    """Build the canonical cache key for an MC GBM batch.
-
-    Content-based fingerprint of *ret* — robust to wrapper-object
-    identity, so two distinct ``pl.Series`` objects over the same data
-    hit the same cache entry.  Both ``_monte_carlo_horizon_returns``
-    and ``monte_carlo_paths`` call this so the keys can never drift apart.
-
-    The fingerprint includes ``(len, sum)`` plus four positional
-    samples — head, 25th, 50th, 75th, tail — so any pair of series with
-    different middle data produce different keys (collision probability
-    ~zero for any realistic financial series).  Each ``.item()`` is
-    O(1) on a polars Series, so the seven-field fingerprint adds
-    microseconds vs. the 10–100ms it gates.
-    """
-    n = len(ret)
-    if n == 0:
-        fingerprint = (0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    elif n < 4:
-        # Series too short for distinct mid-samples — use head/tail only.
-        head = float(ret.head(1).item())
-        tail = float(ret.tail(1).item())
-        fingerprint = (
-            n, float(ret.sum()),  # type: ignore[arg-type]
-            head, head, head, head, tail,
-        )
-    else:
-        fingerprint = (
-            n,
-            float(ret.sum()),  # type: ignore[arg-type]
-            float(ret.head(1).item()),
-            float(ret[n // 4]),
-            float(ret[n // 2]),
-            float(ret[3 * n // 4]),
-            float(ret.tail(1).item()),
-        )
-    return (
-        fingerprint, mu, sigma, horizon, n_simulations, dt,
-        innovations.value, df, seed,
-    )
-
-
 def _monte_carlo_horizon_returns(
     ret: pl.Series,
     *,
@@ -458,18 +404,19 @@ def _monte_carlo_horizon_returns(
     innovations: "Innovations | None",
     df: float | None,
     seed: int | None,
-    cache: bool = False,
 ) -> pl.Series:
     """Compute per-simulation horizon returns under fitted GBM.
 
-    Optional FIFO cache (``_MC_CACHE_MAX = 8``) keyed on a fingerprint
-    of ``ret`` plus the MC parameters; enabled only when ``cache=True``.
-    Disabled by default — single-shot ``var`` / ``cvar`` calls don't pay
-    the cache bookkeeping; reporting code that loops over both metrics
-    with identical args opts in to share one batch.
-
     Bootstrap residuals are derived from ``ret`` directly when
     ``innovations=Innovations.BOOTSTRAP``.
+
+    No caching — at the perf-path defaults a 10k × 22 batch runs in
+    ~10–15 ms, so re-running on every call is cheaper than maintaining
+    a content-fingerprint cache.  Callers who want the chart and the
+    VaR / CVaR numbers to come from the *same* simulation paths
+    should pass a fixed *seed* to every call — identical seeds produce
+    identical sample paths, so consistency is achieved without any
+    explicit batching.
     """
     from mktlib.data import Innovations as _Innovations
     from mktlib.data import Process, monte_carlo
@@ -480,18 +427,6 @@ def _monte_carlo_horizon_returns(
     residuals: pl.Series | None = None
     if inn is _Innovations.BOOTSTRAP:
         residuals = _standardized_residuals(ret)
-
-    cache_key: tuple | None = None
-    if cache:
-        key = _make_mc_cache_key(
-            ret, mu=mu, sigma=sigma, horizon=horizon,
-            n_simulations=n_simulations, dt=dt,
-            innovations=inn, df=df, seed=seed,
-        )
-        cache_key = key
-        cached = _mc_cache.get(key)
-        if cached is not None:
-            return cached
 
     sims = monte_carlo(
         Process.GBM,
@@ -519,30 +454,7 @@ def _monte_carlo_horizon_returns(
         .agg((pl.col("price").last() - 1.0).alias("R"))
         .get_column("R")
     )
-    if cache_key is not None:
-        _mc_cache_insert(cache_key, horizon_returns)
     return horizon_returns
-
-
-_MC_CACHE_MAX = 8
-_mc_cache: dict[tuple, pl.Series] = {}
-_mc_cache_order: collections.deque[tuple] = collections.deque(maxlen=_MC_CACHE_MAX)
-
-
-def _mc_cache_insert(key: tuple, value: pl.Series) -> None:
-    if key in _mc_cache:
-        return
-    if len(_mc_cache_order) == _MC_CACHE_MAX:
-        # deque is full — appending would silently discard the oldest;
-        # mirror that on the dict side before extending.
-        _mc_cache.pop(_mc_cache_order[0], None)
-    _mc_cache_order.append(key)
-    _mc_cache[key] = value
-
-
-def _mc_cache_clear() -> None:
-    _mc_cache.clear()
-    _mc_cache_order.clear()
 
 
 def monte_carlo_paths(
@@ -557,20 +469,13 @@ def monte_carlo_paths(
 ) -> pl.DataFrame:
     """Run one MC GBM batch fitted to *ret*; return the full simulation frame.
 
-    Companion entry point for callers — typically reporting code — that need
-    both the per-simulation horizon-end returns (for VaR / CVaR) and the
-    full price paths (for charting).  This function:
+    Companion entry point for callers — typically reporting code — that
+    need the *full price paths* (e.g. for charting).  Internally:
 
     1. Fits ``mu_hat, sigma_hat`` from the log-returns of *ret*.
     2. Derives standardized residuals when ``innovations=Innovations.BOOTSTRAP``.
     3. Runs ``monte_carlo(Process.GBM, ..., independent_streams=False)``
        — the perf path; statistically i.i.d. by construction.
-    4. Computes the per-simulation horizon return and **inserts it into
-       the module-level MC cache** under the canonical key
-       (``_make_mc_cache_key``).  Subsequent calls to
-       :func:`var` / :func:`cvar` / :func:`simulate_metric` with
-       ``method="monte_carlo"``, ``cache=True``, and matching kwargs
-       hit that cache and skip a second simulation.
 
     Parameters
     ----------
@@ -593,10 +498,14 @@ def monte_carlo_paths(
 
     Notes
     -----
-    The cache key uses a content-based fingerprint of *ret* so two
-    distinct ``pl.Series`` wrappers over the same data hit the same
-    entry — important for callers that re-bind ``df["return"]`` between
-    this call and a downstream :func:`var` call.
+    No caching.  At the perf-path defaults (10k × 22 ≈ 10–15 ms)
+    re-running MC on every call is cheaper than maintaining a
+    content-fingerprint cache.  Callers who want the chart and the
+    VaR / CVaR numbers to come from the *same* simulation paths should
+    pass a fixed ``seed`` to this call and to the subsequent
+    :func:`var` / :func:`cvar` calls — identical seeds produce
+    identical paths, so all three artefacts are mutually consistent
+    without explicit batching.
     """
     from mktlib.data import Innovations as _Innovations
     from mktlib.data import Process, monte_carlo
@@ -625,17 +534,6 @@ def monte_carlo_paths(
         independent_streams=False,
     )
 
-    horizon_returns = (
-        sims.group_by("simulation")
-        .agg((pl.col("price").last() - 1.0).alias("R"))
-        .get_column("R")
-    )
-    cache_key = _make_mc_cache_key(
-        ret, mu=mu, sigma=sigma, horizon=horizon,
-        n_simulations=n_simulations, dt=dt,
-        innovations=inn, df=df, seed=seed,
-    )
-    _mc_cache_insert(cache_key, horizon_returns)
     return sims
 
 
@@ -650,7 +548,6 @@ def var(
     innovations: "Innovations | None" = None,
     df: float | None = None,
     seed: int | None = None,
-    cache: bool = False,
 ) -> float:
     """Value at Risk at the *alpha* confidence level.
 
@@ -696,14 +593,9 @@ def var(
     df
         Degrees of freedom for ``Innovations.STUDENT_T`` (must be > 2).
     seed
-        RNG seed for reproducibility (Monte Carlo path only).
-    cache
-        If ``True``, share the Monte Carlo simulation batch across
-        repeated calls with identical arguments via a module-level FIFO
-        cache (``_MC_CACHE_MAX = 8``).  Default ``False`` — single-shot
-        ad-hoc calls don't pay the bookkeeping.  Reporting code that
-        loops over both :func:`var` and :func:`cvar` (e.g. tearsheet
-        generation) should opt in so the simulation runs once.
+        RNG seed for reproducibility (Monte Carlo path only).  Pass
+        the same seed to :func:`var` and :func:`cvar` to make their
+        simulated paths match exactly.
 
     Returns
     -------
@@ -728,7 +620,6 @@ def var(
             innovations=innovations,
             df=df,
             seed=seed,
-            cache=cache,
         )
         return float(horizon_returns.quantile(alpha, interpolation="linear"))  # type: ignore[arg-type]
     raise ValueError(f"unknown var method: {method!r}")  # pyright: ignore
@@ -745,7 +636,6 @@ def cvar(
     innovations: "Innovations | None" = None,
     df: float | None = None,
     seed: int | None = None,
-    cache: bool = False,
 ) -> float:
     """Conditional Value at Risk (Expected Shortfall) at *alpha*.
 
@@ -795,7 +685,6 @@ def cvar(
             innovations=innovations,
             df=df,
             seed=seed,
-            cache=cache,
         )
         threshold = horizon_returns.quantile(alpha, interpolation="linear")
         tail = horizon_returns.filter(horizon_returns <= threshold)
@@ -1001,7 +890,6 @@ def simulate_metric(
     innovations: "Innovations | None" = None,
     df: float | None = None,
     seed: int | None = None,
-    cache: bool = False,
 ) -> float:
     """Forward-looking parametric estimator for VaR / CVaR.
 
@@ -1031,12 +919,10 @@ def simulate_metric(
         ``"historical"`` is rejected — call :func:`calculate_metric`
         for that.
     horizon, n_simulations, dt, innovations, df, seed
-        Forwarded to :func:`var` / :func:`cvar`.
-    cache
-        Forwarded to :func:`var` / :func:`cvar`.  Default ``False``;
-        set to ``True`` from reporting code that calls both VaR and
-        CVaR with identical args so the underlying simulation batch is
-        reused (``_MC_CACHE_MAX = 8``, FIFO-evicted).
+        Forwarded to :func:`var` / :func:`cvar`.  Pass the same *seed*
+        to both metrics if you want their simulated paths to match
+        exactly (this is what :doc:`/api/reports` does internally so
+        the chart and the displayed VaR / CVaR numbers agree).
 
     Returns
     -------
@@ -1061,7 +947,6 @@ def simulate_metric(
         "innovations": innovations,
         "df": df,
         "seed": seed,
-        "cache": cache,
     }
     if metric is Metric.VAR:
         return var(ret, alpha, **kwargs)  # type: ignore[arg-type]
