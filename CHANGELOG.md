@@ -23,7 +23,7 @@
 
 ### Notes
 
-- **MC under Gaussian innovations at `horizon=1` is computational theatre.** It returns the closed-form Gaussian VaR plus sampling noise — use `method="gaussian"` instead unless you actually need non-Gaussian innovations or path-dependent extensions.
+- **MC and closed-form Gaussian estimators agree at the population level under Gaussian innovations.** This is a validation property — running both paths against each other is the canonical way to confirm a simulator is wired up correctly, and the MC path additionally yields the full sample distribution (useful for percentile bands, "what fraction of paths breach X?" queries, and visualisation). For the scalar VaR / CVaR alone, `method="gaussian"` is cheaper. For non-Gaussian innovations or path-dependent measures, `method="monte_carlo"` is required.
 - **Tail-size rule of thumb:** at small `alpha` (e.g. 0.01), use `n_simulations >= 200/alpha` to keep the CVaR tail well-populated.
 - **OU and FRW innovations support is deferred.** FRW's Davies–Harte construction is only meaningful under Gaussian noise; OU's direct-σ parameterization tangles with the unit-variance contract. A future release may revisit.
 

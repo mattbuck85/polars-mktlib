@@ -105,10 +105,23 @@ short horizons :math:`\hat{\sigma}\sqrt{H \Delta t}` dominates; at long
 horizons drift catches up and the signal-to-noise ratio improves as
 :math:`\sqrt{H}\cdot \hat{\mu} / \hat{\sigma}`.
 
-**When does Monte Carlo earn its compute budget?** Under pure GBM with
-Gaussian innovations, ``method="monte_carlo"`` returns the *closed-form*
-number plus sampling noise — running 10 000 paths to recover an analytic
-quantity is theatre. MC pays off when:
+**Choosing between** ``"gaussian"`` **and** ``"monte_carlo"``. Under pure
+GBM with Gaussian innovations the two estimators agree at the population
+level: MC converges to the closed-form quantity at rate
+:math:`\mathcal{O}(1/\sqrt{N})`.  This agreement is a feature, not a
+redundancy — running ``method="monte_carlo"`` against
+``method="gaussian"`` is the canonical way to validate a simulator
+implementation, and the simulated paths themselves carry information
+the analytic VaR number alone discards (full forecast distribution,
+percentile bands for visualisation, the ability to ask
+"what fraction of paths breach −10 %?", and so on).
+
+That said, when all you need is the scalar tail number and the
+innovations really are Gaussian, ``"gaussian"`` is the cheaper estimator
+of choice — it computes the same answer in microseconds via
+:class:`statistics.NormalDist`.
+
+The simulation path becomes *necessary* (not just useful) when:
 
 1. **Innovations stop being Gaussian** — Student-t (heavier tails),
    bootstrapped empirical residuals, or any callable noise source. Sums
@@ -125,8 +138,9 @@ quantity is theatre. MC pays off when:
 **Practical caveats.**
 
 - Single-bar VaR (``horizon=1``) under Gaussian innovations: the
-  ``"monte_carlo"`` and ``"gaussian"`` paths return the same number
-  modulo sampling noise. Use ``"gaussian"`` to skip the simulation tax.
+  ``"monte_carlo"`` and ``"gaussian"`` paths converge to the same
+  number.  Pick ``"gaussian"`` for the scalar; pick ``"monte_carlo"``
+  when you also want the full sample distribution behind it.
 - Tail-size rule of thumb: at small :math:`\alpha` (e.g. ``0.01``) use
   ``n_simulations >= 200/alpha`` so the CVaR tail (the worst
   :math:`\alpha` fraction of paths) is well-populated.
