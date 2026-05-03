@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 # Add the project root to sys.path so autodoc can find the package
@@ -12,10 +13,10 @@ project = "mktlib"
 author = "Matt Buck"
 copyright = "2025, Matt Buck"  # noqa: A001
 
-# The short X.Y version
-version = "0.5"
 # The full version, including alpha/beta/rc tags
-release = "0.5.4"
+release = _pkg_version("mktlib")
+# The short X.Y version
+version = ".".join(release.split(".")[:2])
 
 extensions = [
     "sphinx.ext.autodoc",

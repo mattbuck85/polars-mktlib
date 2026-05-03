@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 
 from mktlib.data import (
+    Innovations,
     Process,
     fractional_random_walk,
     geometric_brownian_motion,
@@ -113,3 +114,20 @@ class TestMonteCarloSchema:
         assert (df["price"] > 0).all()
         assert (df["step"] >= 0).all()
         assert (df["simulation"] >= 0).all()
+
+    def test_gbm_students_t(self):
+        df = monte_carlo(
+            Process.GBM, n_simulations=3, seed=42, n=50,
+            innovations=Innovations.STUDENT_T, df=5,
+        )
+        MonteCarloGBMSchema.validate(df)
+        assert df.shape == (150, 4)
+
+    def test_gbm_bootstrap(self):
+        residuals = pl.Series("r", [-1.0, 0.0, 1.0, 0.5, -0.5])
+        df = monte_carlo(
+            Process.GBM, n_simulations=3, seed=42, n=50,
+            innovations=Innovations.BOOTSTRAP, residuals=residuals,
+        )
+        MonteCarloGBMSchema.validate(df)
+        assert df.shape == (150, 4)

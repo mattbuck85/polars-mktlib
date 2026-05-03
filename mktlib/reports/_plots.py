@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import random
+import warnings
 from typing import Any
 
 import plotly.graph_objects as go
@@ -255,5 +257,178 @@ def trade_pnl_scatter_chart(
     fig = fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
     fig = fig.update_layout(
         _base_layout("Trade PnL Over Time"), yaxis_tickformat=".2%"
+    )
+    return _to_div(fig)
+
+
+_MC_PATHS_DOM_CAP = 500
+"""Hard cap on individual MC paths rendered as discrete traces.
+
+Plotly's DOM struggles past ~500 ``go.Scatter`` traces in a single
+figure; rendering more silently degrades interactivity.  Callers can
+still ask for more ``n_paths_displayed``; the chart helper clips
+silently to keep the page responsive.
+"""
+
+
+def monte_carlo_paths_chart(
+    historical_dates: list[dt.date],
+    historical_equity: list[float],
+    forward_dates: list[dt.date],
+    sims_frame: Any,
+    last_value: float,
+    n_paths_displayed: int,
+    alpha: float,
+    title: str = "Monte Carlo Forward Paths",
+) -> str:
+    """Spaghetti + percentile-band fan chart anchored at *last_value*.
+
+    Trace order is load-bearing for the ``fill="tonexty"`` band: the
+    lower-percentile trace must precede the upper-percentile trace, and
+    nothing renderable may sit between them.  Order:
+
+    1. Historical equity line (dimmer continuation of the cumulative-returns chart).
+    2. Spaghetti subset — up to ``min(n_paths_displayed, n_simulations, 500)`` paths
+       at low opacity, no legend, no hover.
+    3. Lower-percentile (α/2) line, transparent — the fill anchor.
+    4. Upper-percentile (1−α/2) line with ``fill="tonexty"``.
+    5. Median path on top.
+    6. Vertical anchor line at the last historical date.
+
+    Y values are absolute equity (= ``last_value × price``); the sims
+    frame is produced by :func:`mktlib.metrics.monte_carlo_paths` with
+    ``base_price=1.0`` so the rescale here is the only conversion.
+
+    The forward-date list comes from ``mktlib.scheduling.get_calendar(...)
+    .session_offset(last_date, i)`` in the caller; this helper takes it
+    pre-built so the plotting code stays free of calendar concerns.
+    """
+    import polars as pl
+
+    sims = sims_frame
+    n_sims = int(sims["simulation"].max()) + 1  # type: ignore[operator]
+    horizon_steps = int(sims["step"].max())  # type: ignore[operator]
+
+    # Build forward step → date mapping (step 0 == last historical date,
+    # step 1 == forward_dates[0], etc.).  The chart renders only steps 1+
+    # of each path; step 0 is implicit at last_value on last_date.
+    last_date = historical_dates[-1]
+    step_to_date: list[dt.date] = [last_date] + list(forward_dates)
+    step_to_date = step_to_date[: horizon_steps + 1]
+
+    fig = go.Figure()
+
+    # 1. Historical equity in dimmed Strategy color
+    fig = fig.add_trace(
+        go.Scatter(
+            x=historical_dates,
+            y=historical_equity,
+            name="Historical",
+            line=dict(color=STRATEGY_COLOR, width=2),
+            hoverinfo="skip",
+        )
+    )
+
+    # 2. Spaghetti subset — uniform random sample without replacement.
+    # Selecting the prefix `[0, cap)` would lean on the underlying RNG's
+    # i.i.d. property over consecutive samples (mostly fine for modern
+    # PRNGs but a known MC-literature footgun re: RNG warm-up bias).
+    # Drawing a uniform subset is unambiguously representative; we seed
+    # the subset selection from the MC run's own parent seed so the
+    # displayed paths are deterministic given identical sims input.
+    cap = min(n_paths_displayed, n_sims, _MC_PATHS_DOM_CAP)
+    if n_paths_displayed > _MC_PATHS_DOM_CAP:
+        warnings.warn(
+            f"n_paths_displayed={n_paths_displayed} exceeds the Plotly DOM "
+            f"responsiveness cap (_MC_PATHS_DOM_CAP={_MC_PATHS_DOM_CAP}); "
+            f"clipping to {cap} paths in the displayed subset.",
+            stacklevel=2,
+        )
+    parent_seed = int(sims["seed"][0])
+    selected = random.Random(parent_seed ^ 0xCC0FFEE).sample(
+        range(n_sims), cap,
+    )
+    selected_set = pl.Series("simulation", selected)
+    spaghetti = sims.filter(pl.col("simulation").is_in(selected_set))
+    for sim_idx in selected:
+        path = spaghetti.filter(pl.col("simulation") == sim_idx)
+        prices = path["price"].to_numpy() * last_value
+        fig = fig.add_trace(
+            go.Scatter(
+                x=step_to_date[: len(prices)],
+                y=prices,
+                mode="lines",
+                line=dict(color="rgba(33, 150, 243, 0.12)", width=1),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+    # 3-5. Percentile bands + median, computed across all simulations per step
+    by_step = (
+        sims.group_by("step")
+        .agg(
+            pl.col("price").quantile(alpha / 2.0).alias("lo"),
+            pl.col("price").quantile(0.5).alias("med"),
+            pl.col("price").quantile(1.0 - alpha / 2.0).alias("hi"),
+        )
+        .sort("step")
+    )
+    lo = (by_step["lo"].to_numpy() * last_value).tolist()
+    med = (by_step["med"].to_numpy() * last_value).tolist()
+    hi = (by_step["hi"].to_numpy() * last_value).tolist()
+
+    band_pct = int(round((1.0 - alpha) * 100))
+
+    # Lower percentile — transparent line, must come BEFORE upper for tonexty
+    fig = fig.add_trace(
+        go.Scatter(
+            x=step_to_date,
+            y=lo,
+            mode="lines",
+            line=dict(color="rgba(0, 0, 0, 0)", width=0),
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    # Upper percentile — fills toward previous trace (the lower percentile)
+    fig = fig.add_trace(
+        go.Scatter(
+            x=step_to_date,
+            y=hi,
+            mode="lines",
+            line=dict(color="rgba(0, 0, 0, 0)", width=0),
+            fill="tonexty",
+            fillcolor="rgba(33, 150, 243, 0.15)",
+            name=f"{band_pct}% band",
+        )
+    )
+    # Median
+    fig = fig.add_trace(
+        go.Scatter(
+            x=step_to_date,
+            y=med,
+            mode="lines",
+            line=dict(color=STRATEGY_COLOR, width=2, dash="dash"),
+            name="Median",
+        )
+    )
+
+    # 6. Anchor line at last historical date
+    # plotly accepts dates at runtime; the stub's int|float annotation is wrong.
+    fig = fig.add_vline(
+        x=last_date,  # type: ignore[arg-type]
+        line_dash="dot",
+        line_color="gray",
+        opacity=0.5,
+    )
+
+    fig = fig.update_layout(
+        _base_layout(
+            f"{title} — {n_sims:,} sims, {horizon_steps}-bar horizon",
+            height=420,
+        ),
+        yaxis_tickprefix="",
+        yaxis_tickformat=",.2f",
     )
     return _to_div(fig)

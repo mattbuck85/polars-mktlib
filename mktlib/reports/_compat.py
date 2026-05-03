@@ -20,13 +20,16 @@ def coerce_returns(data: ReturnsInput) -> pl.DataFrame:
     """Coerce returns input to a pl.DataFrame with ``date`` and ``return`` columns.
 
     Accepts ``pl.Series``, ``pl.DataFrame``, or ``pd.Series`` (duck-typed via
-    :class:`PandasConvertible`).
+    :class:`PandasConvertible`).  Sub-daily input (multiple rows per date)
+    is collapsed via geometric compounding — see :func:`_ensure_daily`.
     """
     if isinstance(data, pl.DataFrame):
-        return _validate_returns_df(data)
-    if isinstance(data, pl.Series):
-        return _series_to_df(data)
-    return _pandas_to_df(data)
+        df = _validate_returns_df(data)
+    elif isinstance(data, pl.Series):
+        df = _series_to_df(data)
+    else:
+        df = _pandas_to_df(data)
+    return _ensure_daily(df)
 
 
 def coerce_benchmark(data: ReturnsInput | None) -> pl.DataFrame | None:
@@ -99,3 +102,39 @@ def _normalize_date_col(df: pl.DataFrame) -> pl.DataFrame:
             pl.col("date").dt.replace_time_zone(None).cast(pl.Date)
         )
     return df.with_columns(pl.col("date").cast(pl.Date))
+
+
+def _ensure_daily(df: pl.DataFrame) -> pl.DataFrame:
+    """Collapse multi-row-per-date input to one compounded return per date.
+
+    Compounding rule mirrors :func:`mktlib.reports._stats.monthly_returns`
+    so cross-period composition stays consistent: the daily return for a
+    bundle of intra-day fragments is ``(1+r1)(1+r2)…(1+rN) - 1``.
+
+    Fast path: when ``date`` is already unique we return the frame
+    unchanged.  This is the common case (every existing caller in v0.10.x
+    passed daily data) and the early return preserves byte-for-byte
+    equivalence with the pre-aggregation behaviour — without it the
+    ``(1+r).product()-1`` round-trip introduces ~1e-17 floating-point
+    drift on otherwise pristine inputs.
+
+    Null returns are rejected with :class:`ValueError`.  The geometric
+    aggregate ``(1+r).product()`` would silently skip nulls under
+    polars' default semantics, producing a daily figure that ignores
+    the gap — almost always a data-quality bug worth surfacing rather
+    than masking.
+    """
+    if df["return"].null_count() > 0:
+        msg = (
+            "returns contain null values; sub-daily aggregation would "
+            "silently drop them.  Clean or interpolate the input before "
+            "passing to coerce_returns."
+        )
+        raise ValueError(msg)
+    if df["date"].n_unique() == len(df):
+        return df.sort("date") if not df["date"].is_sorted() else df
+    return (
+        df.group_by("date")
+        .agg(((1 + pl.col("return")).product() - 1).alias("return"))
+        .sort("date")
+    )

@@ -21,6 +21,7 @@ from mktlib.metrics import (
     payoff_ratio,
     profit_factor,
     sharpe,
+    simulate_metric,
     sortino,
     var,
     win_rate,
@@ -190,6 +191,207 @@ class TestCVaR:
         assert cvar(empty_ret) == 0.0
 
 
+class TestVaRMethods:
+    """Method-flag dispatch for var()."""
+
+    def test_historical_default_unchanged(self) -> None:
+        """Calling without method= must yield the old historical number."""
+        ret = pl.Series(
+            "r",
+            [-0.05, -0.03, 0.01, 0.02, 0.015, -0.04, 0.005, -0.02, 0.01, -0.01],
+        )
+        # Historical 5th percentile via linear interpolation
+        expected = float(ret.quantile(0.05, interpolation="linear"))  # type: ignore[arg-type]
+        assert var(ret) == pytest.approx(expected, rel=1e-12)
+        assert var(ret, method="historical") == pytest.approx(expected, rel=1e-12)
+
+    def test_gaussian_closed_form(self) -> None:
+        """Gaussian VaR matches the analytic μ·Hdt + σ·√(Hdt)·Φ⁻¹(α) form."""
+        import statistics
+
+        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+        dt = 1 / 252
+        log_r = (ret + 1.0).log()
+        mu = float(log_r.mean()) / dt  # type: ignore[arg-type]
+        sigma = float(log_r.std()) / math.sqrt(dt)  # type: ignore[arg-type]
+        z = statistics.NormalDist(0.0, 1.0).inv_cdf(0.05)
+        expected = math.expm1(mu * dt + sigma * math.sqrt(dt) * z)
+        assert var(ret, method="gaussian", horizon=1, dt=dt) == pytest.approx(
+            expected, rel=1e-12
+        )
+
+    def test_gaussian_horizon_scaling(self) -> None:
+        """At zero drift, log-VaR's volatility term scales with √H."""
+        # Synthetic zero-drift series with measurable vol so the √H scaling
+        # is visible without drift-domination at long H.
+        ret = pl.Series(
+            "r", [0.02 * math.sin(i * 0.7) - 0.02 * math.sin(i * 0.3) for i in range(252)]
+        )
+        v_h1 = var(ret, method="gaussian", horizon=1)
+        v_h10 = var(ret, method="gaussian", horizon=10)
+        # Convert simple-return VaR back to log-VaR for a clean √H check
+        log_v1 = math.log1p(v_h1)
+        log_v10 = math.log1p(v_h10)
+        # log-VaR_H ≈ μ·H·dt + σ·√(H·dt)·z  → at near-zero drift, ratio ≈ √10
+        ratio = log_v10 / log_v1
+        assert ratio == pytest.approx(math.sqrt(10), rel=0.10)
+
+    def test_unknown_method_raises(self) -> None:
+        ret = pl.Series("r", [0.01, -0.01])
+        with pytest.raises(Exception):
+            var(ret, method="bogus")  # type: ignore[arg-type]
+
+
+class TestCVaRMethods:
+    def test_historical_default_unchanged(self) -> None:
+        ret = pl.Series(
+            "r",
+            [-0.05, -0.03, 0.01, 0.02, 0.015, -0.04, 0.005, -0.02, 0.01, -0.01],
+        )
+        # Compare against the pre-refactor implementation
+        threshold = ret.quantile(0.05, interpolation="linear")
+        tail = ret.filter(ret <= threshold)
+        expected = float(tail.mean()) if len(tail) > 0 else float(threshold)  # type: ignore[arg-type]
+        assert cvar(ret) == pytest.approx(expected, rel=1e-12)
+
+    def test_gaussian_more_extreme_than_var(self) -> None:
+        """Gaussian CVaR ≤ Gaussian VaR (coherence)."""
+        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+        v = var(ret, method="gaussian")
+        c = cvar(ret, method="gaussian")
+        assert c <= v
+
+
+class TestMonteCarloVaRConvergence:
+    """MC under Gaussian innovations should converge to the closed-form Gaussian."""
+
+    def test_gaussian_mc_matches_closed_form(self) -> None:
+        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+        n_sims = 50_000
+        v_closed = var(ret, method="gaussian", horizon=1)
+        v_mc = var(
+            ret, method="monte_carlo", horizon=1, n_simulations=n_sims, seed=42
+        )
+        # Sample SE on the 5%-quantile of n iid normals ~ sigma / (alpha * sqrt(n))
+        # which at alpha=0.05, n=50k is ~3-5 bps.  Use a generous 30 bp tolerance.
+        assert v_mc == pytest.approx(v_closed, abs=3e-3)
+
+    def test_gaussian_mc_cvar_matches_closed_form(self) -> None:
+        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+        c_closed = cvar(ret, method="gaussian", horizon=1)
+        c_mc = cvar(
+            ret, method="monte_carlo", horizon=1, n_simulations=50_000, seed=42
+        )
+        assert c_mc == pytest.approx(c_closed, abs=3e-3)
+
+    def test_var_match_under_same_seed(self) -> None:
+        """Identical seeds produce identical sample paths.  VaR uses a
+        deterministic quantile reducer so two calls match bit-for-bit;
+        CVaR uses a parallel mean which can drift by ~1e-15 — the
+        broader reproducibility test below allows that tolerance."""
+        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+        a = var(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        b = var(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        assert a == b
+
+    def test_cvar_match_under_same_seed(self) -> None:
+        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+        a = cvar(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        b = cvar(ret, method="monte_carlo", n_simulations=5_000, seed=7)
+        assert a == pytest.approx(b, abs=1e-12)
+
+    def test_mc_reproducibility(self) -> None:
+        ret = pl.Series("r", [0.001 + 0.002 * math.sin(i * 0.5) for i in range(252)])
+        v1 = var(ret, method="monte_carlo", seed=42, n_simulations=1_000)
+        v2 = var(ret, method="monte_carlo", seed=42, n_simulations=1_000)
+        assert v1 == v2
+
+
+class TestBootstrapResiduals:
+    """Bootstrap path standardizes the user's returns to unit-variance noise."""
+
+    def test_standardized_residuals_centered_unit_variance(self) -> None:
+        from mktlib.metrics import _standardized_residuals
+
+        ret = pl.Series("r", [-0.05, 0.0, 0.05, 0.02, -0.03])
+        res = _standardized_residuals(ret)
+        assert float(res.mean()) == pytest.approx(0.0, abs=1e-12)  # type: ignore[arg-type]
+        assert float(res.std()) == pytest.approx(1.0, rel=1e-9)  # type: ignore[arg-type]
+
+    def test_zero_variance_input_returns_zeros(self) -> None:
+        from mktlib.metrics import _standardized_residuals
+
+        ret = pl.Series("r", [0.0, 0.0, 0.0])
+        res = _standardized_residuals(ret)
+        assert (res == 0.0).all()
+
+    def test_bootstrap_var_runs(self) -> None:
+        from mktlib.data import Innovations
+
+        ret = pl.Series(
+            "r", [-0.05, -0.03, 0.01, 0.02, 0.015, -0.04, 0.005, -0.02, 0.01, -0.01] * 25
+        )
+        v = var(
+            ret, method="monte_carlo", innovations=Innovations.BOOTSTRAP,
+            horizon=1, n_simulations=5_000, seed=42,
+        )
+        assert v < 0
+        assert math.isfinite(v)
+
+
+class TestMonteCarloPathsHelper:
+    """`monte_carlo_paths()` returns the full sims frame.
+
+    No caching: identical seeds across calls produce identical paths,
+    so callers achieve consistency between the chart frame and any
+    downstream :func:`var` / :func:`cvar` calls by passing the same
+    *seed* (rather than via a fingerprint cache).
+    """
+
+    def test_returns_full_sims_frame(self) -> None:
+        from mktlib.metrics import monte_carlo_paths
+
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
+        sims = monte_carlo_paths(ret, horizon=21, n_simulations=500, seed=42)
+        assert sims.shape == (500 * 22, 4)
+        assert sims.columns == ["simulation", "seed", "step", "price"]
+        assert (sims["price"] > 0).all()
+
+    def test_same_seed_produces_same_horizon_returns_as_var(self) -> None:
+        """The chart's MC sims and a downstream var() call agree exactly
+        on the per-simulation horizon-end returns when seeds match."""
+        from mktlib.metrics import monte_carlo_paths
+
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
+        sims = monte_carlo_paths(ret, horizon=21, n_simulations=500, seed=42)
+        # Manually derive horizon returns from the sims frame
+        horizon_returns_from_sims = (
+            sims.group_by("simulation")
+            .agg((pl.col("price").last() - 1.0).alias("R"))
+            .get_column("R")
+            .sort()
+        )
+        chart_var = float(
+            horizon_returns_from_sims.quantile(0.05, interpolation="linear")  # type: ignore[arg-type]
+        )
+        # var() with the same seed runs MC again; identical paths → identical VaR
+        rerun_var = var(
+            ret, method="monte_carlo", horizon=21, n_simulations=500, seed=42,
+        )
+        assert chart_var == pytest.approx(rerun_var, rel=1e-12)
+
+    def test_bootstrap_runs(self) -> None:
+        from mktlib.data import Innovations
+        from mktlib.metrics import monte_carlo_paths
+
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(100)])
+        sims = monte_carlo_paths(
+            ret, horizon=21, n_simulations=500, seed=42,
+            innovations=Innovations.BOOTSTRAP,
+        )
+        assert (sims["price"] > 0).all()
+
+
 class TestWinRate:
     def test_basic(self) -> None:
         ret = pl.Series("r", [0.01, -0.01, 0.02, -0.02])
@@ -280,3 +482,58 @@ class TestLongestDrawdownDaysFloat:
             Metric.LONGEST_DRAWDOWN_DAYS, ret, dd=dd, dates=dates,
         )
         assert isinstance(result, float)
+
+
+class TestSimulateMetric:
+    """Forward-looking dispatcher for VaR / CVaR."""
+
+    def test_var_gaussian_matches_var_function(self, daily_ret: pl.Series) -> None:
+        a = simulate_metric(Metric.VAR, daily_ret, method="gaussian")
+        b = var(daily_ret, method="gaussian")
+        assert a == pytest.approx(b, rel=1e-12)
+
+    def test_cvar_gaussian_matches_cvar_function(self, daily_ret: pl.Series) -> None:
+        a = simulate_metric(Metric.CVAR, daily_ret, method="gaussian")
+        b = cvar(daily_ret, method="gaussian")
+        assert a == pytest.approx(b, rel=1e-12)
+
+    def test_var_mc_matches_var_function(self, daily_ret: pl.Series) -> None:
+        a = simulate_metric(
+            Metric.VAR, daily_ret, method="monte_carlo",
+            n_simulations=2_000, seed=42,
+        )
+        b = var(daily_ret, method="monte_carlo", n_simulations=2_000, seed=42)
+        assert a == pytest.approx(b, rel=1e-12)
+
+    def test_var_cvar_consistent_under_same_seed(
+        self, daily_ret: pl.Series
+    ) -> None:
+        """Identical seeds → identical sample paths → CVaR ≤ VaR holds
+        precisely (not just statistically) on the shared sample."""
+        v = simulate_metric(
+            Metric.VAR, daily_ret, method="monte_carlo",
+            n_simulations=5_000, seed=42,
+        )
+        c = simulate_metric(
+            Metric.CVAR, daily_ret, method="monte_carlo",
+            n_simulations=5_000, seed=42,
+        )
+        assert c <= v
+
+    def test_rejects_non_simulatable_metric(self, daily_ret: pl.Series) -> None:
+        with pytest.raises(ValueError, match="VAR, CVAR|simulate_metric supports"):
+            simulate_metric(Metric.SHARPE, daily_ret)
+
+    def test_rejects_historical_method(self, daily_ret: pl.Series) -> None:
+        with pytest.raises(ValueError, match='method="historical"|calculate_metric'):
+            simulate_metric(Metric.VAR, daily_ret, method="historical")
+
+    def test_innovations_passthrough(self, daily_ret: pl.Series) -> None:
+        from mktlib.data import Innovations
+
+        v = simulate_metric(
+            Metric.VAR, daily_ret, method="monte_carlo",
+            innovations=Innovations.STUDENT_T, df=5,
+            n_simulations=2_000, seed=42,
+        )
+        assert math.isfinite(v)

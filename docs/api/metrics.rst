@@ -59,9 +59,117 @@ Risk-Adjusted Ratios
 Tail Risk
 ---------
 
+The :func:`mktlib.metrics.var` and :func:`mktlib.metrics.cvar` functions
+support three estimators via the ``method=`` kwarg:
+
+* ``"historical"`` (default) — empirical α-quantile of the input series.
+  Non-parametric, no distributional assumption, no horizon — answers
+  *"how bad were the worst α of bars?"*.
+* ``"gaussian"`` — closed-form parametric estimator under fitted GBM.
+  Cheap and exact under Gaussian innovations.
+* ``"monte_carlo"`` — simulation-based; required for non-Gaussian
+  innovations or when path-dependent extensions are added.
+
+**Closed-form Gaussian VaR / CVaR (the math).**  Fit
+:math:`\hat{\mu} = \overline{\log(1+r_t)} / \Delta t` and
+:math:`\hat{\sigma} = \mathrm{std}(\log(1+r_t)) / \sqrt{\Delta t}` from
+the input series, then the :math:`H`-bar log-return is
+
+.. math::
+
+   \log(1 + R_H) \;\sim\; N\!\bigl(\hat{\mu} \, H \, \Delta t, \;
+                                    \hat{\sigma}^2 \, H \, \Delta t\bigr)
+
+so the analytic VaR / CVaR (in *simple-return* units) are
+
+.. math::
+
+   \mathrm{VaR}_\alpha
+     &= \exp\!\bigl(\hat{\mu} H \Delta t
+                    + \hat{\sigma} \sqrt{H \Delta t} \, \Phi^{-1}(\alpha)\bigr) - 1 \\
+   \mathrm{CVaR}_\alpha
+     &= \exp\!\bigl(\hat{\mu} H \Delta t
+                    - \hat{\sigma} \sqrt{H \Delta t} \;
+                      \tfrac{\phi(z_\alpha)}{\alpha}\bigr) - 1
+
+where :math:`\Phi^{-1}` is the standard-normal inverse CDF (computed
+via :class:`statistics.NormalDist`), :math:`\phi` is the standard-normal
+PDF, and :math:`z_\alpha = \Phi^{-1}(\alpha)`. Both are typically negative.
+
+**Square-root-of-time scaling.** The variance of the cumulative
+log-return is *linear* in :math:`H` under i.i.d. innovations
+(:math:`\mathrm{Var}(\sum r_t) = H \sigma^2 \Delta t`), so the
+volatility component scales as :math:`\sqrt{H}` — Basel's
+"square-root-of-time" rule. Drift scales linearly in :math:`H`. At
+short horizons :math:`\hat{\sigma}\sqrt{H \Delta t}` dominates; at long
+horizons drift catches up and the signal-to-noise ratio improves as
+:math:`\sqrt{H}\cdot \hat{\mu} / \hat{\sigma}`.
+
+**Choosing between** ``"gaussian"`` **and** ``"monte_carlo"``. Under pure
+GBM with Gaussian innovations the two estimators agree at the population
+level: MC converges to the closed-form quantity at rate
+:math:`\mathcal{O}(1/\sqrt{N})`.  This agreement is a feature, not a
+redundancy — running ``method="monte_carlo"`` against
+``method="gaussian"`` is the canonical way to validate a simulator
+implementation, and the simulated paths themselves carry information
+the analytic VaR number alone discards (full forecast distribution,
+percentile bands for visualisation, the ability to ask
+"what fraction of paths breach −10 %?", and so on).
+
+That said, when all you need is the scalar tail number and the
+innovations really are Gaussian, ``"gaussian"`` is the cheaper estimator
+of choice — it computes the same answer in microseconds via
+:class:`statistics.NormalDist`.
+
+The simulation path becomes *necessary* (not just useful) when:
+
+1. **Innovations stop being Gaussian** — Student-t (heavier tails),
+   bootstrapped empirical residuals, or any callable noise source. Sums
+   of Student-t aren't Student-t (only the Gaussian is stable under
+   summation), so no analytic form exists.
+2. **Path-dependent measures** — drawdown over horizon, time-to-barrier,
+   expected shortfall conditional on a within-horizon event. These are
+   functionals of the whole path, not the endpoint.
+3. **Autocorrelated returns / fBm** — variance of the H-bar sum is no
+   longer :math:`H \sigma^2`. Under fBm with Hurst :math:`h`, variance
+   scales as :math:`H^{2h}`: sub-diffusive (:math:`h < 0.5`) tightens
+   long-horizon tails; super-diffusive (:math:`h > 0.5`) fattens them.
+
+**Practical caveats.**
+
+- Single-bar VaR (``horizon=1``) under Gaussian innovations: the
+  ``"monte_carlo"`` and ``"gaussian"`` paths converge to the same
+  number.  Pick ``"gaussian"`` for the scalar; pick ``"monte_carlo"``
+  when you also want the full sample distribution behind it.
+- Tail-size rule of thumb: at small :math:`\alpha` (e.g. ``0.01``) use
+  ``n_simulations >= 200/alpha`` so the CVaR tail (the worst
+  :math:`\alpha` fraction of paths) is well-populated.
+- Identical *seed* values across :func:`var` and :func:`cvar` calls
+  produce identical sample paths under the perf path
+  (``independent_streams=False``).  Pass the same seed to both calls
+  when you want their tail numbers to come from the same simulation.
+
 .. autofunction:: mktlib.metrics.var
 
 .. autofunction:: mktlib.metrics.cvar
+
+Forward-Looking Estimators
+--------------------------
+
+.. autofunction:: mktlib.metrics.simulate_metric
+
+.. autofunction:: mktlib.metrics.monte_carlo_paths
+
+The :func:`monte_carlo_paths` helper is the entry point used by
+:doc:`reports` to render the Monte Carlo simulation-paths chart. It
+runs MC and returns the *full* sims frame (long-form
+``simulation, seed, step, price`` — base price 1.0, scale by initial
+equity for absolute units).  Callers who want the chart paths and a
+downstream VaR / CVaR to come from the same simulation pass an
+identical *seed* to every call: deterministic seeding produces
+byte-for-byte identical samples.  At the perf-path defaults
+(~10–15 ms per 10 k × 22 batch) re-running MC for each metric is
+cheap, so there is no shared-batch machinery to thread through.
 
 Win/Loss
 --------

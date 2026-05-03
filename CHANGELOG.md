@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- **Pluggable innovation distributions for `monte_carlo(Process.GBM, ...)`** — new `mktlib.data.Innovations` enum with three variants: `GAUSSIAN` (default; preserves existing behavior), `STUDENT_T` (heavier tails; requires `df=` > 2 and is rescaled to unit variance), and `BOOTSTRAP` (resamples a caller-supplied unit-variance `residuals: pl.Series` with replacement). All variants emit unit-variance i.i.d. noise — the host process's `volatility` parameter remains the controlling scale. The `monte_carlo()` API also accepts a callable `innovations: Callable[[int, int | None], pl.Series]` as an escape hatch for arbitrary samplers (skew-normal, mixture-of-normals, etc.). Innovations are GBM-only in this release; passing a non-Gaussian member with `Process.OU`, `Process.FRW`, or a callable process raises `NotImplementedError`.
+- **Forward-looking VaR / CVaR via `method=` and `horizon=` on `var()` / `cvar()`** — three estimators now share the same surface: `"historical"` (default, unchanged from 0.10.x — empirical quantile), `"gaussian"` (closed-form parametric VaR/CVaR under fitted GBM, with √(H·dt) volatility scaling), and `"monte_carlo"` (simulation-based; required for non-Gaussian innovations). New keyword-only kwargs: `method`, `horizon`, `n_simulations`, `dt`, `innovations`, `df`, `seed`. Defaults are chosen so existing positional calls (`var(ret, 0.05)`) return the exact same number as before.
+- **Deterministic MC across `var` + `cvar`.** Identical *seed* values across :func:`var` and :func:`cvar` calls produce identical sample paths under the perf path (``independent_streams=False``), so passing the same seed to both is enough to make their tail-risk numbers come from the same simulation.
+- **`simulate_metric(metric, ret, ...)` — new dispatcher for forward-looking parametric VaR / CVaR.** Companion to `calculate_metric`; accepts `method` (`"gaussian"` or `"monte_carlo"`), `horizon`, `n_simulations`, `dt`, `innovations`, `df`, `seed`. Restricted to `Metric.VAR` / `Metric.CVAR` — other members raise `ValueError`. `method="historical"` is rejected (use `calculate_metric` instead). Splitting the simulation surface out of `calculate_metric` keeps that dispatcher free of MC kwargs and preserves its existing call signature unchanged.
+
+### Performance
+
+- **`independent_streams: bool = True` flag on `monte_carlo()`** — when set to `False`, all unit-variance noise is drawn in one batched sampler call instead of per-simulation seeded child RNGs. Statistically identical (i.i.d. samples by construction; backed by Kolmogorov–Smirnov integration tests across all process / innovation combinations) but **5–7× faster for Gaussian / Student-t and ~60× faster for Bootstrap** at typical (10k sims) scales. Trade-off: the `seed` column reports a single parent-derived seed shared across simulations rather than one per stream. Supported for `Process.GBM`, `Process.OU`, and `Process.FRW` (both Hurst=0.5 and Davies–Harte paths); callable processes own their own noise source and reject the flag.
+- **Metrics-layer MC defaults to `independent_streams=False`** — `var(method="monte_carlo")`, `cvar(method="monte_carlo")`, and `simulate_metric(...)` now use the single-batch path internally. The metrics layer never introspects per-simulation seeds, so the only property lost is cosmetic. Reduces the inline MC tax per `var` + `cvar` pair from ~100 ms to ~15 ms at the report-default workload (10k sims × horizon=21).
+
+### Reports — Monte Carlo integration
+
+- **`mktlib.reports.MonteCarloConfig`** — new opt-in dataclass on `html(mc_config=)` and `metrics(mc_config=)`. When `enabled=True`, populates two new `Optional[float]` fields on `MetricsResult` (`mc_var`, `mc_cvar`) with simulation-based forward-looking risk numbers and renders a Monte Carlo simulation-paths chart on the HTML tearsheet (spaghetti subset + α/2 / 1−α/2 percentile band + median path, anchored at the last historical equity value over forward business days from `mktlib.scheduling`). Default disabled — existing reports unchanged. The displayed spaghetti subset is drawn via uniform random sampling without replacement (seeded from the MC parent seed for reproducibility) so the visual is unbiased relative to the full simulation population — verified by a two-sample Kolmogorov–Smirnov integration test.
+- **`mktlib.metrics.monte_carlo_paths(ret, ...)`** — new public helper returning the full sims frame. Used by `mktlib.reports` to render the simulation-paths chart; the report driver runs it under the same fixed seed it threads through subsequent `var` / `cvar` calls so all three artefacts come from identical sample paths. At the perf-path defaults (~10–15 ms per batch) the report's three MC runs add 30–45 ms total — invisible inside the typical tearsheet render.
+- **`mktlib.reports._compat._ensure_daily`** — sub-daily input is collapsed via `(1+r).product()-1` group-by-date as the final coercion step. Idempotent (fast-path skip when dates are already unique, preserving byte-for-byte equivalence on existing daily inputs).
+- **`MetricsResult` gains `mc_var`, `mc_cvar`** — both `Optional[float] = None`, populated only by the MC opt-in path. Existing constructors and `compute_metrics()` callers unchanged.
+
+### Notes
+
+- **MC and closed-form Gaussian estimators agree at the population level under Gaussian innovations.** This is a validation property — running both paths against each other is the canonical way to confirm a simulator is wired up correctly, and the MC path additionally yields the full sample distribution (useful for percentile bands, "what fraction of paths breach X?" queries, and visualisation). For the scalar VaR / CVaR alone, `method="gaussian"` is cheaper. For non-Gaussian innovations or path-dependent measures, `method="monte_carlo"` is required.
+- **Tail-size rule of thumb:** at small `alpha` (e.g. 0.01), use `n_simulations >= 200/alpha` to keep the CVaR tail well-populated.
+- **OU and FRW innovations support is deferred.** FRW's Davies–Harte construction is only meaningful under Gaussian noise; OU's direct-σ parameterization tangles with the unit-variance contract. A future release may revisit.
+
 ## 0.10.1
 
 ### Added
