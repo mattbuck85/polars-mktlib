@@ -14,7 +14,7 @@ h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
 identify==2.6.19
-idna==3.14
+idna==3.15
 iniconfig==2.3.0
 Jinja2==3.1.6
 korean-lunar-calendar==0.3.1
@@ -23,11 +23,11 @@ MarkupSafe==3.0.3
 mccabe==0.7.0
 mdurl==0.1.2
 mypy_extensions==1.1.0
-narwhals==2.21.0
+narwhals==2.21.2
 nodeenv==1.10.0
-numpy==2.4.4
+numpy==2.4.5
 packaging==26.2
-pandas==3.0.2
+pandas==3.0.3
 pandera==0.31.1
 platformdirs==4.9.6
 plotly==6.7.0
@@ -51,7 +51,7 @@ pyright==1.1.409
 pytest==9.0.3
 pytest-cov==7.1.0
 python-dateutil==2.9.0.post0
-python-discovery==1.3.0
+python-discovery==1.3.1
 python-dotenv==1.2.2
 PyYAML==6.0.3
 questionary==2.1.1
@@ -61,11 +61,11 @@ scipy==1.17.1
 six==1.17.0
 tomlkit==0.15.0
 toolz==1.1.0
-typeguard==4.5.1
+typeguard==4.5.2
 typing-inspect==0.9.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.2
-virtualenv==21.3.1
+virtualenv==21.3.3
 wcmatch==10.1
 wcwidth==0.7.0
