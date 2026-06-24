@@ -5,7 +5,13 @@ on:
 
 jobs:
   lock-dev:
-    if: github.event_name == 'pull_request'
+    # Skip on the automated Treasury refresh PR: those PRs are data-only
+    # (mktlib/rates/_data/*.csv), never touch deps, yet `pip freeze` still
+    # diffs on unrelated transitive PyPI bumps -> a bot commit + push ->
+    # a github-actions[bot]-triggered `synchronize` run that GitHub gates
+    # behind manual "approve and run". Skipping it here removes that push,
+    # so the chore PR no longer needs approval.
+    if: github.event_name == 'pull_request' && github.head_ref != 'chore/refresh-treasury-data'
     runs-on: ubuntu-latest
     permissions:
       contents: write
