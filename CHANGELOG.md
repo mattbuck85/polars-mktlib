@@ -9,6 +9,7 @@
 ### Automation
 
 - **Bundled Treasury data refresh moved to a monthly cadence with an automated patch release.** The `refresh-treasury-data` workflow now runs on the 1st of each month, bundles a `bump-my-version` patch bump (and a CHANGELOG stub) into the same auto-PR commit, and — after the merged commit passes CI on `main` — a new `tag-release` job pushes the `vX.Y.Z` tag (via `GH_PAT`) that triggers the existing release → PyPI publish pipeline.
+- **New-instrument guard.** A test now fails when the bundled data contains a `BC_*` field absent from the `TreasuryRate` enum, so a newly-listed Treasury tenor surfaced by the monthly refresh blocks auto-merge until a maintainer adds the enum member (instead of being silently dropped).
 
 ## 0.11.0
 
