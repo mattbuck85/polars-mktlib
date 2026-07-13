@@ -7,6 +7,109 @@ from importlib.resources import files
 
 from mktlib.rates._schema import all_fields, load_schema
 
+# ---------------------------------------------------------------------------
+# Deterministic Treasury BC_* tenor helpers.
+#
+# Used by the guard tests below to (1) assert the TreasuryRate enum is declared
+# in ascending-maturity order and (2) emit a copy-paste-ready fix — including
+# the correct sorted insertion point — when a newly-listed instrument shows up
+# in the refreshed data. Insertion ORDER matters: get_treasury_spread_matrix
+# pairs tenors by enum declaration order, so a member added out of place
+# silently mislabels/sign-flips spread columns.
+# ---------------------------------------------------------------------------
+
+_ONES = (
+    "",
+    "ONE",
+    "TWO",
+    "THREE",
+    "FOUR",
+    "FIVE",
+    "SIX",
+    "SEVEN",
+    "EIGHT",
+    "NINE",
+    "TEN",
+    "ELEVEN",
+    "TWELVE",
+    "THIRTEEN",
+    "FOURTEEN",
+    "FIFTEEN",
+    "SIXTEEN",
+    "SEVENTEEN",
+    "EIGHTEEN",
+    "NINETEEN",
+)
+_TENS = (
+    "",
+    "",
+    "TWENTY",
+    "THIRTY",
+    "FORTY",
+    "FIFTY",
+    "SIXTY",
+    "SEVENTY",
+    "EIGHTY",
+    "NINETY",
+)
+
+
+def _tenor_months(bc_field: str) -> float:
+    """Maturity of a Treasury ``BC_*`` field in months, for ordering.
+
+    ``BC_3MONTH`` -> 3, ``BC_1_5MONTH`` -> 1.5, ``BC_2YEAR`` -> 24,
+    ``BC_30YEARDISPLAY`` -> 360 (a display duplicate of ``BC_30YEAR``).
+    """
+    body = bc_field.removeprefix("BC_").removesuffix("DISPLAY")
+    if body.endswith("MONTH"):
+        return float(body.removesuffix("MONTH").replace("_", "."))
+    if body.endswith("YEAR"):
+        return float(body.removesuffix("YEAR").replace("_", ".")) * 12
+    raise ValueError(f"cannot parse tenor from {bc_field!r}")
+
+
+def _number_word(n: int) -> str | None:
+    """English SCREAMING_SNAKE word for a small whole number, else None."""
+    if not 0 < n < 100:
+        return None
+    if n < 20:
+        return _ONES[n]
+    tens, ones = divmod(n, 10)
+    return _TENS[tens] + (f"_{_ONES[ones]}" if ones else "")
+
+
+def _suggested_member_line(bc_field: str) -> str:
+    """Suggested ``NAME = "BC_..."`` enum line for a BC_* field.
+
+    Derives the friendly name for the standard ``<int><UNIT>`` pattern; falls
+    back to a ``<NAME>`` placeholder for non-standard (fractional / display)
+    fields, which need a human-chosen name.
+    """
+    body = bc_field.removeprefix("BC_")
+    for unit in ("MONTH", "YEAR"):
+        stem = body.removesuffix(unit)
+        if body.endswith(unit) and stem.isdigit():
+            word = _number_word(int(stem))
+            if word:
+                return f'{word}_{unit} = "{bc_field}"'
+    return f'<NAME> = "{bc_field}"'
+
+
+def _placement_hint(bc_field: str) -> str:
+    """`field (N months): add <line> after X and before Y` for a new tenor."""
+    from mktlib.rates import TreasuryRate
+
+    months = _tenor_months(bc_field)
+    ordered = sorted(TreasuryRate, key=lambda m: _tenor_months(m.value))
+    lower = [m for m in ordered if _tenor_months(m.value) <= months]
+    higher = [m for m in ordered if _tenor_months(m.value) > months]
+    insert_after = lower[-1].name if lower else "(start of enum)"
+    insert_before = higher[0].name if higher else "(end of enum)"
+    return (
+        f"{bc_field} ({months:g} months): add `{_suggested_member_line(bc_field)}` "
+        f"after {insert_after} and before {insert_before}"
+    )
+
 
 class TestAllFields:
     def test_returns_bc_columns(self):
@@ -34,10 +137,27 @@ class TestAllFields:
 
         known = {m.value for m in TreasuryRate}
         unknown = sorted(set(all_fields()) - known)
+        hints = "\n  ".join(_placement_hint(f) for f in unknown)
         assert not unknown, (
-            f"Bundled Treasury data has fields not in TreasuryRate: {unknown}. "
-            "Add each as a TreasuryRate member in mktlib/rates/__init__.py "
-            '(FRIENDLY_NAME = "BC_..."), then re-run.'
+            "Bundled Treasury data has BC_* fields not in the TreasuryRate "
+            "enum (mktlib/rates/__init__.py). Add each member IN MATURITY "
+            "ORDER (get_treasury_spread_matrix pairs tenors by declaration "
+            f"order, so position matters):\n  {hints}"
+        )
+
+
+class TestTreasuryRateOrdering:
+    def test_declared_in_ascending_maturity(self):
+        """A misplaced enum insert silently mislabels spread-matrix columns
+        (pairing keys off declaration order), so pin the ordering invariant."""
+        from mktlib.rates import TreasuryRate
+
+        months = [_tenor_months(m.value) for m in TreasuryRate]
+        assert months == sorted(months), (
+            "TreasuryRate must be declared in ascending maturity order. Got: "
+            + ", ".join(
+                f"{m.name}={mo:g}" for m, mo in zip(TreasuryRate, months)
+            )
         )
 
 
