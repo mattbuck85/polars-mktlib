@@ -100,13 +100,24 @@ jobs:
         fi
 
   # Cut a release whenever a merge to main advances [project] version and no
-  # matching tag exists yet. `needs: test` gates this on a green main, so we
-  # never tag (and therefore publish to PyPI — irreversible) on a red build.
+  # matching tag exists yet. We only tag on a green main (needs.test.result ==
+  # 'success'), so we never publish to PyPI — irreversible — on a red build.
   # The tag MUST be pushed with GH_PAT, not GITHUB_TOKEN: tags pushed with the
   # default token do not trigger other workflows, so release.yml would never
   # fire. Idempotent via the rev-parse guard.
+  #
+  # `!cancelled() && needs.test.result == 'success'` (NOT a bare boolean `if`)
+  # is required: the `test` job uses `if: always()` so it can run when the
+  # conditionally-skipped `lock-dev` is skipped. GitHub propagates that
+  # "skipped" state to downstream jobs whose `if` lacks a status function, so
+  # a plain `if: github.event_name == 'push' && ...` here is silently skipped
+  # even on a green main. The status function overrides the propagated skip.
   tag-release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      !cancelled()
+      && needs.test.result == 'success'
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     steps:
