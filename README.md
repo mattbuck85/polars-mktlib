@@ -261,6 +261,16 @@ spread = get_treasury_spread("2024-01-01", "2024-03-31")
 matrix = get_treasury_spread_matrix("2024-01-01", "2024-03-31")
 # columns: date, spread_two_month_one_month, ..., spread_thirty_year_twenty_year
 # spread_{long}_{short} = long - short; nulls where a leg is missing (rows kept)
+
+# Restrict each leg: long-end vs short-end block only (keyword-only longs/shorts)
+block = get_treasury_spread_matrix(
+    "2024-01-01", "2024-03-31",
+    longs=[TreasuryRate.TEN_YEAR, TreasuryRate.THIRTY_YEAR],
+    shorts=[TreasuryRate.THREE_MONTH, TreasuryRate.TWO_YEAR],
+)
+# columns: date, spread_ten_year_three_month, spread_thirty_year_three_month,
+#          spread_ten_year_two_year, spread_thirty_year_two_year
+# Only long-strictly-longer-than-short pairs; self/inverted pairs skipped
 ```
 
 ### Available Instruments

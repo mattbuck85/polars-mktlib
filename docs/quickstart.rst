@@ -191,6 +191,13 @@ Fetch Treasury yield curve data with automatic caching:
    # Every pairwise spread (one column per tenor pair, one row per date)
    matrix = get_treasury_spread_matrix("2024-01-01", "2024-03-31")
 
+   # Or just a block: each long-end tenor spread against each short-end tenor
+   block = get_treasury_spread_matrix(
+       "2024-01-01", "2024-03-31",
+       longs=[TreasuryRate.TEN_YEAR, TreasuryRate.THIRTY_YEAR],
+       shorts=[TreasuryRate.THREE_MONTH, TreasuryRate.TWO_YEAR],
+   )
+
 Data is cached in memory, on disk (``~/.cache/mktlib/rates/``), and bundled with the package for offline use. See :doc:`api/rates` for the full API.
 
 Performance Reports

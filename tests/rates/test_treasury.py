@@ -1042,6 +1042,99 @@ class TestGetTreasurySpreadMatrix:
         assert df["date"].dtype == pl.Date
         assert df["spread_ten_year_two_year"].dtype == pl.Float64
 
+    def test_longs_shorts_cross_product(self):
+        """Explicit long/short leg sets → only that block of the matrix."""
+        with patch(
+            "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
+        ):
+            df = get_treasury_spread_matrix(
+                date(2024, 1, 1),
+                date(2024, 1, 31),
+                longs=[TreasuryRate.TEN_YEAR],
+                shorts=[TreasuryRate.THREE_MONTH, TreasuryRate.TWO_YEAR],
+            )
+
+        assert df.columns == [
+            "date",
+            "spread_ten_year_three_month",
+            "spread_ten_year_two_year",
+        ]
+        # Jan 2: 10Y=0.0388, 3M=0.0540 / 2Y=0.0432
+        assert df["spread_ten_year_three_month"][0] == pytest.approx(
+            0.0388 - 0.0540
+        )
+        assert df["spread_ten_year_two_year"][0] == pytest.approx(
+            0.0388 - 0.0432
+        )
+
+    def test_longs_only_expands_short_leg(self):
+        """longs set, shorts=None → every shorter tenor as the short leg."""
+        with patch(
+            "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
+        ):
+            df = get_treasury_spread_matrix(
+                date(2024, 1, 1),
+                date(2024, 1, 31),
+                longs=[TreasuryRate.TEN_YEAR],
+            )
+
+        spreads = df.columns[1:]
+        # Every tenor with maturity below 10Y (11 of them: 1M … 7Y).
+        assert len(spreads) == 11
+        assert all(c.startswith("spread_ten_year_") for c in spreads)
+
+    def test_self_and_inverted_pairs_skipped(self):
+        """A leg appearing in both sets never spreads against itself."""
+        with patch(
+            "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
+        ):
+            df = get_treasury_spread_matrix(
+                date(2024, 1, 1),
+                date(2024, 1, 31),
+                longs=[TreasuryRate.TEN_YEAR],
+                shorts=[TreasuryRate.TWO_YEAR, TreasuryRate.TEN_YEAR],
+            )
+
+        # (10Y, 10Y) self-pair dropped; only the valid 10y-2y remains.
+        assert df.columns == ["date", "spread_ten_year_two_year"]
+
+    def test_instruments_universe_with_leg_override(self):
+        """instruments sets the universe; longs refines the long leg."""
+        with patch(
+            "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
+        ):
+            df = get_treasury_spread_matrix(
+                date(2024, 1, 1),
+                date(2024, 1, 31),
+                [
+                    TreasuryRate.THREE_MONTH,
+                    TreasuryRate.TWO_YEAR,
+                    TreasuryRate.TEN_YEAR,
+                ],
+                longs=[TreasuryRate.TEN_YEAR],
+            )
+
+        assert df.columns == [
+            "date",
+            "spread_ten_year_three_month",
+            "spread_ten_year_two_year",
+        ]
+
+    def test_inverted_leg_sets_yield_date_only(self):
+        """Nothing in longs out-ranks shorts → no columns (date-only), no error."""
+        with patch(
+            "mktlib.rates._treasury.urlopen", _mock_urlopen({2024: _XML_2024})
+        ):
+            df = get_treasury_spread_matrix(
+                date(2024, 1, 1),
+                date(2024, 1, 31),
+                longs=[TreasuryRate.TWO_YEAR],
+                shorts=[TreasuryRate.TEN_YEAR],
+            )
+
+        assert df.columns == ["date"]
+        assert df.shape[0] == 3
+
 
 # ---------------------------------------------------------------------------
 # Robustness / hardening tests
