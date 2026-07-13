@@ -98,3 +98,32 @@ jobs:
           git commit -m "chore: update dependency lockfiles"
           git push
         fi
+
+  # Cut a release whenever a merge to main advances [project] version and no
+  # matching tag exists yet. `needs: test` gates this on a green main, so we
+  # never tag (and therefore publish to PyPI — irreversible) on a red build.
+  # The tag MUST be pushed with GH_PAT, not GITHUB_TOKEN: tags pushed with the
+  # default token do not trigger other workflows, so release.yml would never
+  # fire. Idempotent via the rev-parse guard.
+  tag-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: main
+        fetch-depth: 0
+        token: ${{ secrets.GH_PAT }}
+    - name: Create + push tag if new
+      run: |
+        version="$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)"
+        tag="v${version}"
+        git fetch --tags --quiet
+        if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+          echo "Tag $tag already exists — skipping"
+        else
+          echo "Tagging release $tag"
+          git tag "$tag"
+          git push origin "$tag"
+        fi

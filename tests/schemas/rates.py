@@ -33,6 +33,29 @@ def validate_multi_rate_df(
     assert df.columns[0] == "date"
     assert df["date"].dtype == pl.Date
     for col in df.columns[1:]:
-        assert df[col].dtype == pl.Float64, f"{col}: expected Float64, got {df[col].dtype}"
+        assert (
+            df[col].dtype == pl.Float64
+        ), f"{col}: expected Float64, got {df[col].dtype}"
+    if expected_cols is not None:
+        assert df.columns[1:] == expected_cols
+
+
+def validate_spread_matrix_df(
+    df: pl.DataFrame,
+    expected_cols: list[str] | None = None,
+) -> None:
+    """Validate a wide-format pairwise spread matrix DataFrame.
+
+    Dynamic column names (one per tenor pair) prevent use of a static
+    DataFrameModel. Checks: first column is ``date``/Date, remaining columns
+    are Float64 and named ``spread_<long>_<short>``.
+    """
+    assert df.columns[0] == "date"
+    assert df["date"].dtype == pl.Date
+    for col in df.columns[1:]:
+        assert col.startswith("spread_"), f"{col}: expected 'spread_' prefix"
+        assert (
+            df[col].dtype == pl.Float64
+        ), f"{col}: expected Float64, got {df[col].dtype}"
     if expected_cols is not None:
         assert df.columns[1:] == expected_cols

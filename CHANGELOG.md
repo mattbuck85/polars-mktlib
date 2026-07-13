@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- **`mktlib.rates.get_treasury_spread_matrix(start, end, instruments=None, *, longs=None, shorts=None)`** — returns the cross-join of Treasury yield-curve spreads: a wide Polars DataFrame with a `date` column plus one `Float64` column per tenor pair, named `spread_{long}_{short}` (e.g. `spread_ten_year_two_year`) and computed as `long - short` where *long* is the longer maturity. Pairing follows maturity order regardless of the argument order, so the sign and column names are stable no matter how a caller orders its inputs. By default it pairs every tenor except `TreasuryRate.THIRTY_YEAR_DISPLAY` (a duplicate of `THIRTY_YEAR`), yielding C(14, 2) = 91 spread columns. The optional keyword-only `longs` / `shorts` restrict each leg to a subset (`instruments` sets the shared universe; each leg defaults to it), so passing a set of long-maturity and short-maturity tenors computes just that block of the matrix. Only pairs where the long leg is strictly longer than the short are emitted — self-pairs (always zero) and inverted pairs are skipped. Unlike the single-pair `get_treasury_spread`, rows are **not** dropped — nulls propagate per-column on days where either leg is missing.
+
+### Automation
+
+- **Bundled Treasury data refresh moved to a monthly cadence with an automated patch release.** The `refresh-treasury-data` workflow now runs on the 1st of each month, bundles a `bump-my-version` patch bump (and a CHANGELOG stub) into the same auto-PR commit, and — after the merged commit passes CI on `main` — a new `tag-release` job pushes the `vX.Y.Z` tag (via `GH_PAT`) that triggers the existing release → PyPI publish pipeline.
+- **New-instrument guard.** A test fails when the bundled data contains a `BC_*` field absent from the `TreasuryRate` enum, so a newly-listed Treasury tenor surfaced by the monthly refresh blocks auto-merge until a maintainer adds the enum member (instead of being silently dropped). The failure message derives the tenor's maturity and prints a copy-paste-ready `NAME = "BC_..."` line with the exact sorted insertion point, and a companion test pins the enum's ascending-maturity order (which `get_treasury_spread_matrix` relies on for pairing) so a misplaced insert can't silently mislabel spread columns.
+
 ## 0.11.0
 
 ### Added

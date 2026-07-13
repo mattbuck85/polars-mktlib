@@ -21,6 +21,7 @@ __all__ = [
     "get_risk_free_rate",
     "get_treasury_rates",
     "get_treasury_spread",
+    "get_treasury_spread_matrix",
 ]
 
 
@@ -203,3 +204,82 @@ def get_treasury_spread(
         "date",
         (pl.col(long_name) - pl.col(short_name)).alias("spread"),
     ).drop_nulls("spread")
+
+
+def get_treasury_spread_matrix(
+    start: date | str,
+    end: date | str,
+    instruments: Sequence[TreasuryRate] | None = None,
+    *,
+    longs: Sequence[TreasuryRate] | None = None,
+    shorts: Sequence[TreasuryRate] | None = None,
+) -> pl.DataFrame:
+    """Daily spreads for pairs of Treasury instruments (cross join).
+
+    Returns a wide DataFrame with ``date`` plus one ``Float64`` column per
+    tenor pair, named ``spread_{long}_{short}`` (e.g.
+    ``spread_ten_year_two_year``) and computed as ``long - short``. Only pairs
+    where the long leg has a **strictly greater maturity** than the short leg
+    are emitted, so self-pairs (always zero) and inverted pairs are skipped.
+    Nulls propagate per-column on days where either leg is missing; rows are
+    **not** dropped (unlike the single-pair :func:`get_treasury_spread`).
+
+    Parameters
+    ----------
+    start, end
+        Date range (inclusive). Accepts ``date`` objects or ISO strings.
+    instruments
+        The universe of tenors available to both legs. ``None`` (default)
+        uses every tenor except ``TreasuryRate.THIRTY_YEAR_DISPLAY`` (a
+        duplicate of ``THIRTY_YEAR``).
+    longs, shorts
+        Optionally restrict the long / short leg to a subset. ``None``
+        (default) means "any tenor in ``instruments``". Pass ``longs`` a set
+        of long-maturity tenors and ``shorts`` a set of short-maturity tenors
+        to compute only that block of the matrix. Ordering follows maturity,
+        not argument order, so the ``long - short`` orientation is stable; a
+        leg set with nothing longer than the other yields no columns (a
+        ``date``-only frame) rather than an error.
+    """
+    import polars as pl
+
+    universe = (
+        set(TreasuryRate) - {TreasuryRate.THIRTY_YEAR_DISPLAY}
+        if instruments is None
+        else set(instruments)
+    )
+    long_set = universe if longs is None else set(longs)
+    short_set = universe if shorts is None else set(shorts)
+
+    # Enum declaration order is ascending maturity (pinned by a test), so a
+    # member's index is its maturity rank. Iterate short-outer / long-inner in
+    # rank order and keep only valid term spreads (long strictly longer than
+    # short). With longs/shorts unset this reproduces the full upper-triangle
+    # all-pairs matrix; the ordering is independent of how the caller ordered
+    # its arguments.
+    rank = {m: i for i, m in enumerate(TreasuryRate)}
+    pairs = [
+        (long, short)
+        for short in sorted(short_set, key=rank.__getitem__)
+        for long in sorted(long_set, key=rank.__getitem__)
+        if rank[long] > rank[short]
+    ]
+
+    needed = sorted({m for pair in pairs for m in pair}, key=rank.__getitem__)
+    df = get_treasury_rates(start, end, needed)
+
+    spread_exprs = [
+        (pl.col(long.name.lower()) - pl.col(short.name.lower())).alias(
+            f"spread_{long.name.lower()}_{short.name.lower()}"
+        )
+        for long, short in pairs
+    ]
+
+    if df.is_empty():
+        schema = {"date": pl.Date} | {
+            f"spread_{long.name.lower()}_{short.name.lower()}": pl.Float64
+            for long, short in pairs
+        }
+        return pl.DataFrame(schema=schema)
+
+    return df.select(pl.col("date"), *spread_exprs)

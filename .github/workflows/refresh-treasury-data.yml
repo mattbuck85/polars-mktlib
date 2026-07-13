@@ -2,7 +2,7 @@ name: Refresh Treasury Data
 
 on:
   schedule:
-    - cron: "0 6 * * 1" # Monday 06:00 UTC
+    - cron: "0 6 1 * *" # 1st of the month, 06:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -24,6 +24,44 @@ jobs:
         run: |
           git diff --quiet mktlib/rates/_data/ && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      # Bundle a patch version bump + CHANGELOG entry into the same PR commit
+      # so that merging the data refresh cuts a release. bump-my-version's
+      # default config commits/tags nothing (verified) — it only rewrites
+      # `[project] version` and `[tool.bumpversion] current_version`, which
+      # peter-evans/create-pull-request then commits alongside the CSVs.
+      - name: Bump patch version
+        id: bump
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          pip install bump-my-version
+          # --allow-dirty: the working tree already carries the refreshed CSVs.
+          bump-my-version bump patch --allow-dirty
+          new_version="$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)"
+          echo "version=${new_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepend CHANGELOG entry
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          python - "$VERSION" <<'PY'
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          path = Path("CHANGELOG.md")
+          text = path.read_text()
+          marker = "# Changelog\n\n"
+          assert text.startswith(marker), "unexpected CHANGELOG header"
+          entry = (
+              f"## {version}\n\n"
+              "### Data\n\n"
+              "- Monthly bundled Treasury yield-curve data refresh "
+              "from Treasury.gov.\n\n"
+          )
+          path.write_text(marker + entry + text[len(marker):])
+          PY
+
       - name: Create pull request
         if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
@@ -31,7 +69,14 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           branch: chore/refresh-treasury-data
           delete-branch: true
-          commit-message: "chore: refresh bundled Treasury yield data"
-          title: "chore: refresh bundled Treasury yield data"
-          body: "Automated weekly refresh of `mktlib/rates/_data/*.csv` from Treasury.gov."
+          commit-message: "chore: monthly Treasury data refresh + release v${{ steps.bump.outputs.version }}"
+          title: "chore: monthly Treasury data refresh + release v${{ steps.bump.outputs.version }}"
+          body: |
+            Automated monthly refresh of `mktlib/rates/_data/*.csv` from Treasury.gov,
+            bundled with a patch version bump to `v${{ steps.bump.outputs.version }}` and a
+            CHANGELOG entry. Merging this PR to `main` triggers the `tag-release` CI job,
+            which pushes `v${{ steps.bump.outputs.version }}` and cuts the GitHub + PyPI release.
+
+            Note: if a manual release lands on `main` while this PR is open, close it and
+            re-run the workflow so the version bump is recomputed from current `main`.
           labels: automated

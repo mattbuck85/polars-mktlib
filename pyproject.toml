@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "mktlib"
 authors = [{name = "Matt Buck", email = "matt@mblance.com"}]
 description = "Polars-native financial market toolkit"
-version = "0.11.0"
+version = "0.12.0"
 requires-python = ">=3.12"
 keywords = ["finance", "markets", "polars", "trading", "indicators"]
 classifiers = [
@@ -68,4 +68,4 @@ line-length = 79
 [tool.setuptools.packages.find]
 
 [tool.bumpversion]
-current_version = "0.11.0"
+current_version = "0.12.0"
