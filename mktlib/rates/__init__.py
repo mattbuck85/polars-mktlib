@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import operator
 from collections.abc import Sequence
 from datetime import date
@@ -21,6 +22,7 @@ __all__ = [
     "get_risk_free_rate",
     "get_treasury_rates",
     "get_treasury_spread",
+    "get_treasury_spread_matrix",
 ]
 
 
@@ -203,3 +205,58 @@ def get_treasury_spread(
         "date",
         (pl.col(long_name) - pl.col(short_name)).alias("spread"),
     ).drop_nulls("spread")
+
+
+def get_treasury_spread_matrix(
+    start: date | str,
+    end: date | str,
+    instruments: Sequence[TreasuryRate] | None = None,
+) -> pl.DataFrame:
+    """Daily spreads for every pair of Treasury instruments (cross join).
+
+    Returns a wide DataFrame with ``date`` plus one ``Float64`` column per
+    unique tenor pair, named ``spread_{long}_{short}`` (e.g.
+    ``spread_ten_year_two_year``) and computed as ``long - short`` where
+    *long* is the longer-maturity instrument. Nulls propagate per-column on
+    days where either leg is missing; rows are **not** dropped (unlike the
+    single-pair :func:`get_treasury_spread`).
+
+    Parameters
+    ----------
+    start, end
+        Date range (inclusive). Accepts ``date`` objects or ISO strings.
+    instruments
+        Instruments to pair. ``None`` (default) uses every tenor except
+        ``TreasuryRate.THIRTY_YEAR_DISPLAY`` (a duplicate of ``THIRTY_YEAR``).
+        Pairing follows maturity order regardless of the argument order, so
+        the ``long - short`` orientation and column names are stable.
+    """
+    import polars as pl
+
+    requested = (
+        set(TreasuryRate) - {TreasuryRate.THIRTY_YEAR_DISPLAY}
+        if instruments is None
+        else set(instruments)
+    )
+    # Iterate in enum declaration order (ascending maturity) so each pair is
+    # (short, long) irrespective of how the caller ordered ``instruments``.
+    ordered = [m for m in TreasuryRate if m in requested]
+    pairs = list(itertools.combinations(ordered, 2))
+
+    df = get_treasury_rates(start, end, ordered)
+
+    spread_exprs = [
+        (pl.col(long.name.lower()) - pl.col(short.name.lower())).alias(
+            f"spread_{long.name.lower()}_{short.name.lower()}"
+        )
+        for short, long in pairs
+    ]
+
+    if df.is_empty():
+        schema = {"date": pl.Date} | {
+            f"spread_{long.name.lower()}_{short.name.lower()}": pl.Float64
+            for short, long in pairs
+        }
+        return pl.DataFrame(schema=schema)
+
+    return df.select(pl.col("date"), *spread_exprs)

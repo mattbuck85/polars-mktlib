@@ -11,7 +11,8 @@ Fetches daily Treasury yield data from Treasury.gov with 3-tier caching and bund
 | `get_risk_free_rate(start, end, instrument)` | `:52` | Returns arithmetic mean annualised rate as decimal (e.g. 0.0436) |
 | `get_mean_treasury_rate(start, end, instrument, method)` | `:76` | Returns mean rate with configurable method (arithmetic/geometric) |
 | `get_treasury_rates(start, end, instrument)` | `:100` | Polars DataFrame of daily rates — single, multi, or all instruments |
-| `get_treasury_spread(start, end, long, short)` | `:168` | Polars DataFrame with daily spread between two instruments |
+| `get_treasury_spread(start, end, long, short)` | `:179` | Polars DataFrame with daily spread between two instruments |
+| `get_treasury_spread_matrix(start, end, instruments)` | `:210` | Wide DataFrame of every pairwise spread (`spread_{long}_{short}`), one row per date |
 
 ## Fetching (`_treasury.py`)
 

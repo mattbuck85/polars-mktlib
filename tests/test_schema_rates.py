@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import math
 from datetime import date
 from unittest.mock import patch
 
@@ -12,11 +13,17 @@ from mktlib.rates import (
     TreasuryRate,
     get_treasury_rates,
     get_treasury_spread,
+    get_treasury_spread_matrix,
 )
 from mktlib.rates import _disk_cache as _dc_mod
 from mktlib.rates._treasury import clear_cache
 
-from tests.schemas.rates import SingleRateSchema, SpreadSchema, validate_multi_rate_df
+from tests.schemas.rates import (
+    SingleRateSchema,
+    SpreadSchema,
+    validate_multi_rate_df,
+    validate_spread_matrix_df,
+)
 
 # ---------------------------------------------------------------------------
 # XML fixture — mimics Treasury.gov Atom/OData feed
@@ -132,6 +139,35 @@ class TestSpreadSchema:
         SpreadSchema.validate(df)
 
 
+class TestSpreadMatrixSchema:
+    def test_subset(self):
+        with patch(
+            "mktlib.rates._treasury.urlopen",
+            _mock_urlopen({2024: _XML_2024}),
+        ):
+            df = get_treasury_spread_matrix(
+                date(2024, 1, 1),
+                date(2024, 1, 31),
+                [TreasuryRate.TWO_YEAR, TreasuryRate.TEN_YEAR],
+            )
+        validate_spread_matrix_df(
+            df, expected_cols=["spread_ten_year_two_year"]
+        )
+
+    def test_all_instruments(self):
+        with patch(
+            "mktlib.rates._treasury.urlopen",
+            _mock_urlopen({2024: _XML_2024}),
+        ):
+            df = get_treasury_spread_matrix(
+                date(2024, 1, 1), date(2024, 1, 31)
+            )
+        validate_spread_matrix_df(df)
+        # date + C(n-1, 2) pairs (all tenors except THIRTY_YEAR_DISPLAY).
+        expected_pairs = math.comb(len(TreasuryRate) - 1, 2)
+        assert len(df.columns) == 1 + expected_pairs
+
+
 class TestMultiRateSchema:
     def test_multi_instrument(self):
         with patch(
@@ -150,9 +186,7 @@ class TestMultiRateSchema:
             "mktlib.rates._treasury.urlopen",
             _mock_urlopen({2024: _XML_2024}),
         ):
-            df = get_treasury_rates(
-                date(2024, 1, 1), date(2024, 1, 31), None
-            )
+            df = get_treasury_rates(date(2024, 1, 1), date(2024, 1, 31), None)
         validate_multi_rate_df(df)
         assert df.columns[0] == "date"
         assert len(df.columns) == 16  # date + 15 instruments
