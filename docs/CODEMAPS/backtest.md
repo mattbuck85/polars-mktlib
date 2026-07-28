@@ -7,6 +7,7 @@ Signal-driven backtesting with fill-at-next-open semantics, exchange calendar in
 | Export | Source | Description |
 |-|-|-|
 | `run(df, strategy, *, trade_side, calendar, flatten_eod, instrument_col)` | `_engine.py:279` | Run vectorized backtest; returns `BacktestResult` or `MultiBacktestResult` |
+| `Cost` | `_cost.py:47` | Frozen dataclass: per-side transaction cost in basis points (`commission_bps`, `slippage_bps`, `slippage_col`) |
 | `Strategy` | `_types.py:28` | Protocol: `entry() -> Condition \| pl.Expr`, `exit() -> Condition \| pl.Expr` |
 | `BacktestResult` | `_types.py:43` | Dataclass: `returns`, `trades`, `signals` DataFrames |
 | `MultiBacktestResult` | `_types.py:54` | Dict-like container of per-symbol `BacktestResult`s with lazy-cached combined views |
@@ -45,8 +46,21 @@ Single-symbol backtest pipeline:
 4. Resolve exit condition to `_exit` column (pass 2 — snapshot columns now exist)
 5. Build `_position` (1=in, 0=out) with forward-fill
 6. Detect clean entry/exit transitions (`_entry_clean`, `_exit_clean`)
-7. Compute per-bar returns with fill-at-open adjustment
-8. Extract trade log via `_extract_trades`
+7. Materialize `_cost_bps` when `cost=Cost(...)` was passed (dropped before return)
+8. Compute per-bar returns with fill-at-open adjustment
+9. Extract trade log via `_extract_trades`
+
+### Transaction costs (`_cost.py`)
+
+| Symbol | Purpose |
+|-|-|
+| `Cost` | Frozen, `slots=True`, primitives only (no callables — a closure is invisible to a consumer's cache key). Validates non-negative + finite in `__post_init__` |
+| `COST_COLUMN` | `"_cost_bps"` — the internal per-bar column the engine materializes and drops |
+| `cost_bps_expr(cost)` | `lit(commission_bps + slippage_bps) [+ col(slippage_col)]` |
+
+Cost is folded into the three **fill-bar** return expressions (`_entry_ret`, `_exit_ret`, `_limit_ret`) via the local `_charge()` helper — never into the `when/then` chains, and never multiplied by `effective_side`. `_extract_trades` reads each leg's cost with the same alignment as the price that leg pays: the entry leg from `shift(-1)`, the exit leg mirroring `exit_price`'s limit / session-last / next-open priority.
+
+Backward compatibility: `cost=None` takes a byte-for-byte unchanged code path; `cost=Cost()` exercises the real arithmetic and is pinned against the frozen Parquet baselines in `tests/backtest/test_golden_baseline.py`.
 
 ### EntryRef tree walker — L87
 

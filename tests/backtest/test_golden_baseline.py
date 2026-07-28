@@ -58,6 +58,7 @@ from polars.testing import assert_frame_equal
 from mktlib.backtest import (
     Col,
     Condition,
+    Cost,
     Crossover,
     Crossunder,
     EntryRef,
@@ -252,40 +253,44 @@ def _artifacts(result: BacktestResult | MultiBacktestResult) -> dict[str, pl.Dat
     return {name: getattr(result, name) for name in ARTIFACTS}
 
 
-def _scenario_plain() -> dict[str, pl.DataFrame]:
-    return _artifacts(run(_daily_frame(), _CrossStrategy()))
+def _scenario_plain(**kw: object) -> dict[str, pl.DataFrame]:
+    return _artifacts(run(_daily_frame(), _CrossStrategy(), **kw))  # type: ignore[arg-type]
 
 
-def _scenario_short() -> dict[str, pl.DataFrame]:
-    return _artifacts(run(_daily_frame(), _CrossStrategy(), trade_side=TradeSide.SHORT))
+def _scenario_short(**kw: object) -> dict[str, pl.DataFrame]:
+    return _artifacts(
+        run(_daily_frame(), _CrossStrategy(), trade_side=TradeSide.SHORT, **kw)  # type: ignore[arg-type]
+    )
 
 
-def _scenario_entry_ref() -> dict[str, pl.DataFrame]:
-    return _artifacts(run(_daily_frame(), _EntryRefTargetStrategy()))
+def _scenario_entry_ref(**kw: object) -> dict[str, pl.DataFrame]:
+    return _artifacts(run(_daily_frame(), _EntryRefTargetStrategy(), **kw))  # type: ignore[arg-type]
 
 
-def _scenario_limit_exit() -> dict[str, pl.DataFrame]:
-    return _artifacts(run(_daily_frame(), _LimitTakeProfitStrategy()))
+def _scenario_limit_exit(**kw: object) -> dict[str, pl.DataFrame]:
+    return _artifacts(run(_daily_frame(), _LimitTakeProfitStrategy(), **kw))  # type: ignore[arg-type]
 
 
-def _scenario_flatten_eod() -> dict[str, pl.DataFrame]:
+def _scenario_flatten_eod(**kw: object) -> dict[str, pl.DataFrame]:
     return _artifacts(
         run(
             _intraday_frame(),
             _CrossStrategy(),
             calendar=get_calendar("XNYS"),
             flatten_eod=True,
+            **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_flatten_eod_limit() -> dict[str, pl.DataFrame]:
+def _scenario_flatten_eod_limit(**kw: object) -> dict[str, pl.DataFrame]:
     return _artifacts(
         run(
             _intraday_frame(),
             _LimitTakeProfitStrategy(),
             calendar=get_calendar("XNYS"),
             flatten_eod=True,
+            **kw,  # type: ignore[arg-type]
         )
     )
 
@@ -306,28 +311,36 @@ def _multi_frame() -> pl.DataFrame:
     )
 
 
-def _scenario_multi() -> dict[str, pl.DataFrame]:
-    return _artifacts(run(_multi_frame(), _CrossStrategy(), instrument_col="symbol"))
+def _scenario_multi(**kw: object) -> dict[str, pl.DataFrame]:
+    return _artifacts(
+        run(_multi_frame(), _CrossStrategy(), instrument_col="symbol", **kw)  # type: ignore[arg-type]
+    )
 
 
-def _scenario_multi_weighted() -> dict[str, pl.DataFrame]:
+def _scenario_multi_weighted(**kw: object) -> dict[str, pl.DataFrame]:
     return _artifacts(
         run(
             _multi_frame(),
             _CrossStrategy(),
             instrument_col="symbol",
             instrument_weights={"AAA": 0.5, "BBB": 0.3, "CCC": 0.2},
+            **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_dual() -> dict[str, pl.DataFrame]:
+def _scenario_dual(**kw: object) -> dict[str, pl.DataFrame]:
     return _artifacts(
-        run(_daily_frame(), _CrossStrategy(), short_strategy=_ShortCrossStrategy())
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            short_strategy=_ShortCrossStrategy(),
+            **kw,  # type: ignore[arg-type]
+        )
     )
 
 
-SCENARIOS: dict[str, Callable[[], dict[str, pl.DataFrame]]] = {
+SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     "plain": _scenario_plain,
     "short": _scenario_short,
     "entry_ref": _scenario_entry_ref,
@@ -402,6 +415,28 @@ def test_golden_baseline(scenario: str, artifact: str) -> None:
     )
     produced = SCENARIOS[scenario]()[artifact]
     expected = pl.read_parquet(path)
+    assert_frame_equal(
+        produced,
+        expected,
+        check_exact=True,
+        check_dtypes=True,
+        check_column_order=True,
+        check_row_order=True,
+    )
+
+
+@pytest.mark.parametrize("artifact", ARTIFACTS)
+@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+def test_golden_baseline_zero_cost(scenario: str, artifact: str) -> None:
+    """``cost=Cost()`` is an exact no-op — the 0.13.0 release gate.
+
+    This deliberately exercises the *real* cost arithmetic (a literal
+    ``0.0`` bps column is materialized and subtracted) rather than
+    short-circuiting on an all-zero model.  If subtracting zero ever
+    perturbs a value, this fails and the release is blocked.
+    """
+    produced = SCENARIOS[scenario](cost=Cost())[artifact]
+    expected = pl.read_parquet(_baseline_path(scenario, artifact))
     assert_frame_equal(
         produced,
         expected,

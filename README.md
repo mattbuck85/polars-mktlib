@@ -572,6 +572,10 @@ Wrap an exit condition in `Limit(...)` to fill on the same bar the condition fir
 
 Pass `instrument_col` for per-symbol results, or `instrument_weights` (dict or `(instrument, weight)` DataFrame) to get a single weighted portfolio return series. See [Multi-Symbol Backtesting](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#multi-symbol-backtesting) for schema, renormalization behavior, and examples.
 
+### Transaction costs
+
+Pass `cost=Cost(commission_bps=..., slippage_bps=..., slippage_col=...)` to charge per-side costs **in basis points** at each fill — entry bar, exit bar, limit fill and session-forced exit — in both `returns` and `trades.pnl`. `Cost()` is an exact no-op. See [Transaction Costs](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#transaction-costs).
+
 ### Backtest API
 
 Full signature and parameter reference: [`mktlib.backtest.run`](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#mktlib.backtest.run).

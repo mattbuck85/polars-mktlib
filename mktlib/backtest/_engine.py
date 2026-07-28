@@ -25,6 +25,7 @@ from mktlib.backtest._conditions import (
     ValueLTE,
     _BinOp,
 )
+from mktlib.backtest._cost import COST_COLUMN, Cost, cost_bps_expr
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
 from mktlib.backtest._weights import (
     INSTRUMENT_COLUMN,
@@ -152,6 +153,7 @@ def _run_core(
     trade_side: TradeSide,
     calendar: ExchangeCalendar | None,
     flatten_eod: bool,
+    cost: Cost | None = None,
 ) -> BacktestResult:
     """Inner engine: assumes *df* is already calendar-filtered."""
     # Let strategy enrich the DataFrame with indicator columns
@@ -264,16 +266,42 @@ def _run_core(
         (pl.col("_position") * effective_side).cast(pl.Int8).alias("_side"),
     )
 
+    # Transaction costs: one per-bar basis-point column, materialized once and
+    # read *unshifted on the fill bar* by every branch that pays a fill. It is
+    # dropped again before the result is handed back.
+    if cost is not None:
+        if cost.slippage_col is not None and cost.slippage_col not in signals.columns:
+            msg = (
+                f"Cost.slippage_col={cost.slippage_col!r} not found in DataFrame "
+                f"columns: {sorted(signals.columns)}"
+            )
+            raise ValueError(msg)
+        signals = signals.with_columns(cost_bps_expr(cost).alias(COST_COLUMN))
+
+    def _charge(expr: pl.Expr) -> pl.Expr:
+        """Deduct the fill-bar cost from a fill-bar return expression.
+
+        Subtracted, never multiplied by ``effective_side``: a cost reduces
+        the realized return on both sides of the market.
+        """
+        if cost is None:
+            return expr
+        return expr - pl.col(COST_COLUMN) / 1e4
+
     # Detect transition bars (after the 1-bar delay for fill)
     _is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
     _is_exit_bar = (pl.col("_pos_d1") == 0) & (pl.col("_pos_d2") == 1)
 
-    # Per-bar returns with fill-at-open adjustment
-    _entry_ret = ((pl.col("close") - pl.col("open")) / pl.col("open")) * effective_side
+    # Per-bar returns with fill-at-open adjustment. Entry/exit/limit bars are
+    # fill bars and therefore pay cost; middle bars hold and do not.
+    _entry_ret = _charge(
+        ((pl.col("close") - pl.col("open")) / pl.col("open")) * effective_side
+    )
     _normal_ret = (pl.col("close") / pl.col("_close_prev") - 1) * effective_side
-    _exit_ret = (
-        (pl.col("open") - pl.col("_close_prev")) / pl.col("_close_prev")
-    ) * effective_side
+    _exit_ret = _charge(
+        ((pl.col("open") - pl.col("_close_prev")) / pl.col("_close_prev"))
+        * effective_side
+    )
 
     # Limit-exit branches: fill at _limit_price on the same bar the
     # inner condition fires while we were holding. Suppress the normal
@@ -282,10 +310,10 @@ def _run_core(
     _is_limit_exit_bar: pl.Expr = pl.lit(False)
     _is_post_limit_bar: pl.Expr = pl.lit(False)
     if is_limit_exit:
-        _limit_ret = (
-            (pl.col("_limit_price") - pl.col("_close_prev"))
-            / pl.col("_close_prev")
-        ) * effective_side
+        _limit_ret = _charge(
+            ((pl.col("_limit_price") - pl.col("_close_prev")) / pl.col("_close_prev"))
+            * effective_side
+        )
         _is_limit_exit_bar = pl.col("_exit") & (pl.col("_pos_d1") == 1)
         _is_post_limit_bar = _is_limit_exit_bar.shift(1).fill_null(False)
 
@@ -359,6 +387,8 @@ def _run_core(
         _drop_cols.append("_session_last")
     if is_limit_exit:
         _drop_cols.append("_limit_price")
+    if cost is not None:
+        _drop_cols.append(COST_COLUMN)
     signals = signals.drop(_drop_cols)
 
     return BacktestResult(returns=returns, trades=trades, signals=signals)
@@ -371,6 +401,7 @@ def _run_dual(
     *,
     calendar: ExchangeCalendar | None,
     flatten_eod: bool,
+    cost: Cost | None = None,
 ) -> BacktestResult:
     """Run long and short strategies independently, validate, merge.
 
@@ -383,11 +414,11 @@ def _run_dual(
     with ThreadPoolExecutor(max_workers=2) as pool:
         long_future = pool.submit(
             _run_core, df, long_strategy, trade_side=TradeSide.LONG,
-            calendar=calendar, flatten_eod=flatten_eod,
+            calendar=calendar, flatten_eod=flatten_eod, cost=cost,
         )
         short_future = pool.submit(
             _run_core, df, short_strategy, trade_side=TradeSide.SHORT,
-            calendar=calendar, flatten_eod=flatten_eod,
+            calendar=calendar, flatten_eod=flatten_eod, cost=cost,
         )
         long = long_future.result()
         short = short_future.result()
@@ -428,6 +459,7 @@ def _run_multi(
     calendar: ExchangeCalendar | None,
     flatten_eod: bool,
     weights: pl.DataFrame | None = None,
+    cost: Cost | None = None,
 ) -> MultiBacktestResult:
     """Run independent backtests per instrument and combine results."""
     if instrument_col not in df.columns:
@@ -449,6 +481,7 @@ def _run_multi(
                 short_strategy,
                 calendar=calendar,
                 flatten_eod=flatten_eod,
+                cost=cost,
             )
         else:
             by_instrument[instrument] = _run_core(
@@ -457,6 +490,7 @@ def _run_multi(
                 trade_side=trade_side,
                 calendar=calendar,
                 flatten_eod=flatten_eod,
+                cost=cost,
             )
 
     if weights is not None:
@@ -506,6 +540,7 @@ def run(
     short_strategy: Strategy,
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
+    cost: Cost | None = ...,
     instrument_col: str,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
@@ -519,6 +554,7 @@ def run(
     short_strategy: Strategy,
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
+    cost: Cost | None = ...,
     instrument_col: None = ...,
 ) -> BacktestResult: ...
 
@@ -531,6 +567,7 @@ def run(
     trade_side: TradeSide = ...,
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
+    cost: Cost | None = ...,
     instrument_col: str,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
@@ -544,6 +581,7 @@ def run(
     trade_side: TradeSide = ...,
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
+    cost: Cost | None = ...,
     instrument_col: None = ...,
 ) -> BacktestResult: ...
 
@@ -556,6 +594,7 @@ def run(
     trade_side: TradeSide = ...,
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
+    cost: Cost | None = ...,
     instrument_col: None = ...,
     instrument_weights: Mapping[str, float] | pl.DataFrame,
 ) -> MultiBacktestResult: ...
@@ -569,6 +608,7 @@ def run(
     trade_side: TradeSide = TradeSide.LONG,
     calendar: ExchangeCalendar | None = None,
     flatten_eod: bool = False,
+    cost: Cost | None = None,
     instrument_col: str | None = None,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = None,
 ) -> BacktestResult | MultiBacktestResult:
@@ -598,6 +638,12 @@ def run(
     flatten_eod
         Force-close positions at each session's last bar, eliminating
         overnight exposure. Requires *calendar*.
+    cost
+        Optional :class:`~mktlib.backtest.Cost` describing per-side
+        transaction costs in **basis points of notional**. Charged at the
+        fill — on the entry bar and on the exit bar — in both the returns
+        series and ``trades.pnl``; holding bars are unaffected. ``None``
+        (default) and ``Cost()`` are both exact no-ops.
     instrument_col
         Column name identifying the symbol/ticker in a multi-symbol
         DataFrame. When provided, returns a
@@ -631,6 +677,10 @@ def run(
     - **Middle bars**: return = ``close / prev_close - 1``
     - **Exit bar** (first bar where position drops to 0): return =
       ``(open - prev_close) / prev_close`` (gap to fill price only)
+
+    When *cost* is supplied, ``cost_bps / 1e4`` is **subtracted** from the
+    entry-bar, exit-bar and limit-fill returns — never from holding bars,
+    and never multiplied by the trade side.
 
     When *instrument_col* is set, each symbol is backtested independently —
     indicators (e.g. rolling SMA) do not bleed across symbols. Calendar
@@ -671,6 +721,7 @@ def run(
                 calendar=calendar,
                 flatten_eod=flatten_eod,
                 weights=weights_df,
+                cost=cost,
             )
         if calendar is not None:
             df = calendar.filter_market_hours(df, "date")
@@ -680,6 +731,7 @@ def run(
             short_strategy,
             calendar=calendar,
             flatten_eod=flatten_eod,
+            cost=cost,
         )
 
     if instrument_col is not None:
@@ -691,6 +743,7 @@ def run(
             calendar=calendar,
             flatten_eod=flatten_eod,
             weights=weights_df,
+            cost=cost,
         )
 
     # Single-symbol path: calendar filter → _run_core
@@ -703,6 +756,7 @@ def run(
         trade_side=trade_side,
         calendar=calendar,
         flatten_eod=flatten_eod,
+        cost=cost,
     )
 
 
@@ -718,17 +772,33 @@ def _extract_trades(
     session-last bar's own open (can't trade during the close minute).
 
     Side is extracted from ``_side`` at each entry bar.
+
+    When the engine materialized a per-bar cost column, each leg's cost is
+    read with **exactly the same alignment as the price it pays**: the entry
+    leg from the next bar (where ``entry_price`` comes from), the exit leg
+    mirroring ``exit_price``'s limit / session-last / next-open priority.
     """
+    has_cost = COST_COLUMN in signals.columns
+
     # Pre-compute next bar's open for fill price
     signals_with_next = signals.with_columns(
         pl.col("open").shift(-1).alias("_next_open"),
     )
-    entries = signals_with_next.filter(pl.col("_entry_clean")).select(
+    if has_cost:
+        signals_with_next = signals_with_next.with_columns(
+            pl.col(COST_COLUMN).shift(-1).alias("_next_cost_bps"),
+        )
+
+    entry_selects = [
         pl.col("date").alias("entry_date"),
         pl.col("_next_open").alias("entry_price"),
         pl.col("_side").alias("_trade_side"),
         pl.int_range(pl.len()).alias("_entry_idx"),
-    )
+    ]
+    if has_cost:
+        # Entry fills at _next_open, so its cost is the *next* bar's cost.
+        entry_selects.append(pl.col("_next_cost_bps").alias("_entry_cost_bps"))
+    entries = signals_with_next.filter(pl.col("_entry_clean")).select(entry_selects)
 
     # Exit fill price priority:
     #   1. _limit_price when a same-bar limit exit fired on this bar
@@ -754,11 +824,33 @@ def _extract_trades(
     else:
         exit_price_expr = base_expr.alias("exit_price")
 
-    exits = signals_with_next.filter(pl.col("_exit_clean")).select(
+    exit_selects = [
         pl.col("date").alias("exit_date"),
         exit_price_expr,
         pl.int_range(pl.len()).alias("_exit_idx"),
-    )
+    ]
+    if has_cost:
+        # Mirror the exit_price priority exactly — a same-bar fill pays this
+        # bar's cost, a next-open fill pays the next bar's.
+        if flatten_eod:
+            base_cost = (
+                pl.when(pl.col("_session_last"))
+                .then(pl.col(COST_COLUMN))
+                .otherwise(pl.col("_next_cost_bps"))
+            )
+        else:
+            base_cost = pl.col("_next_cost_bps")
+        if has_limit:
+            exit_cost_expr = (
+                pl.when(pl.col("_limit_price").is_not_null())
+                .then(pl.col(COST_COLUMN))
+                .otherwise(base_cost)
+            )
+        else:
+            exit_cost_expr = base_cost
+        exit_selects.append(exit_cost_expr.alias("_exit_cost_bps"))
+
+    exits = signals_with_next.filter(pl.col("_exit_clean")).select(exit_selects)
 
     # Pair entries with exits by ordinal position
     n_trades = min(entries.height, exits.height)
@@ -776,18 +868,26 @@ def _extract_trades(
     entries = entries.head(n_trades)
     exits = exits.head(n_trades)
 
-    trades = pl.DataFrame(
-        {
-            "entry_date": entries["entry_date"],
-            "exit_date": exits["exit_date"],
-            "side": entries["_trade_side"],
-            "entry_price": entries["entry_price"],
-            "exit_price": exits["exit_price"],
-        }
-    )
+    trade_cols = {
+        "entry_date": entries["entry_date"],
+        "exit_date": exits["exit_date"],
+        "side": entries["_trade_side"],
+        "entry_price": entries["entry_price"],
+        "exit_price": exits["exit_price"],
+    }
+    if has_cost:
+        trade_cols["_entry_cost_bps"] = entries["_entry_cost_bps"]
+        trade_cols["_exit_cost_bps"] = exits["_exit_cost_bps"]
+    trades = pl.DataFrame(trade_cols)
+
+    pnl_expr = pl.col("side") * (pl.col("exit_price") / pl.col("entry_price") - 1)
+    if has_cost:
+        pnl_expr = pnl_expr - (
+            pl.col("_entry_cost_bps") + pl.col("_exit_cost_bps")
+        ) / 1e4
 
     trades = trades.with_columns(
-        (pl.col("side") * (pl.col("exit_price") / pl.col("entry_price") - 1)).alias("pnl"),
+        pnl_expr.alias("pnl"),
         (
             (pl.col("exit_date").cast(pl.Date) - pl.col("entry_date").cast(pl.Date)).dt.total_days()
         ).alias("bars_held"),

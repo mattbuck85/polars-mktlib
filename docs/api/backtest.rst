@@ -32,6 +32,53 @@ Return Model
      - ``(open - prev_close) / prev_close``
    * - Session-forced exit (``flatten_eod``)
      - ``(open - prev_close) / prev_close`` for held positions; ``0`` for same-bar entry+exit
+   * - Any fill bar, with ``cost=Cost(...)``
+     - the formula above, minus ``cost_bps / 1e4`` (holding bars unchanged)
+
+Transaction Costs
+~~~~~~~~~~~~~~~~~
+
+Pass ``cost=Cost(...)`` to :func:`run` to charge per-side transaction costs.
+Costs are stated in **basis points of notional** because the engine is
+share-count free — it composes price relatives only, so a per-share or
+per-order fee schedule cannot be expressed without a quantity. Convert at
+the call site: ``bps = 1e4 * fee_per_share / expected_fill_price``.
+
+.. code-block:: python
+
+   from mktlib.backtest import Cost, run
+
+   # 1 bp commission + 0.5 bp assumed slippage, each side
+   result = run(df, strategy, cost=Cost(commission_bps=1.0, slippage_bps=0.5))
+
+   # flat commission plus a per-bar slippage column the strategy computed
+   result = run(df, strategy, cost=Cost(commission_bps=1.0, slippage_col="half_spread_bps"))
+
+The charge is applied **at the fill** — on the entry bar, the exit bar, the
+limit-fill bar and the session-forced-exit bar — in both ``returns`` and
+``trades.pnl``. It is never applied as a post-hoc transform on the returns
+series, which cannot see trade boundaries, and never multiplied by the trade
+side: a short pays the same haircut a long does.
+
+``Cost()`` with its all-zero defaults is an exact no-op, so adding the
+parameter cannot move an existing backtest.
+
+.. note::
+
+   Costs are primitives only — floats and a column name, never a callable.
+   A closure has no stable identity, so a callable cost model would be
+   invisible to a caller's cache key and two runs with colliding keys could
+   serve each other's results.
+
+.. note::
+
+   Two known reconciliation gaps between ``returns`` and ``trades.pnl``:
+   a position still open on the final bar produces no trade row (pre-existing),
+   and where a limit exit fires on the entry-fill bar the returns series
+   charges one side while ``trades.pnl`` charges two.
+
+.. autoclass:: mktlib.backtest.Cost
+   :members:
 
 Engine
 ------
