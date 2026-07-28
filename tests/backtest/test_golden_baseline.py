@@ -447,6 +447,45 @@ def test_golden_baseline_zero_cost(scenario: str, artifact: str) -> None:
     )
 
 
+@pytest.mark.parametrize("artifact", ARTIFACTS)
+@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+def test_golden_baseline_no_bracket(scenario: str, artifact: str) -> None:
+    """``bracket=None`` is an exact no-op — the other half of the 0.13.0 gate.
+
+    Unlike ``Cost()`` there is no all-zero :class:`~mktlib.backtest.Bracket`
+    to exercise (an empty one is rejected at construction), so what this
+    pins is the *plumbing*: threading a new keyword through ``run`` →
+    ``_run_multi`` → ``_run_dual`` → ``_run_core`` must not perturb any of
+    the four return-expression chains.
+    """
+    produced = SCENARIOS[scenario](bracket=None)[artifact]
+    expected = pl.read_parquet(_baseline_path(scenario, artifact))
+    assert_frame_equal(
+        produced,
+        expected,
+        check_exact=True,
+        check_dtypes=True,
+        check_column_order=True,
+        check_row_order=True,
+    )
+
+
+@pytest.mark.parametrize("artifact", ARTIFACTS)
+@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+def test_golden_baseline_zero_cost_no_bracket(scenario: str, artifact: str) -> None:
+    """Both new 0.13.0 knobs at their no-op settings, together."""
+    produced = SCENARIOS[scenario](cost=Cost(), bracket=None)[artifact]
+    expected = pl.read_parquet(_baseline_path(scenario, artifact))
+    assert_frame_equal(
+        produced,
+        expected,
+        check_exact=True,
+        check_dtypes=True,
+        check_column_order=True,
+        check_row_order=True,
+    )
+
+
 def test_run_is_deterministic_across_invocations() -> None:
     """Two identical calls agree — a precondition for the pins to mean anything."""
     for scenario in sorted(SCENARIOS):

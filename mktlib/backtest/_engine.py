@@ -9,6 +9,25 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
+from mktlib.backtest._bracket import (
+    BLOCK_COLUMN,
+    BRACKET_CANDIDATE_COLUMN,
+    BRACKET_COLUMNS,
+    BRACKET_EXIT_COLUMN,
+    BRACKET_KIND_COLUMN,
+    BRACKET_LEVEL_COLUMN,
+    BRACKET_POST_COLUMN,
+    BRACKET_SEEN_COLUMN,
+    ENTRY_FILL_COLUMN,
+    SL_LEVEL_COLUMN,
+    STOP_LOSS,
+    TAKE_PROFIT,
+    TP_LEVEL_COLUMN,
+    Bracket,
+    fill_expr,
+    level_expr,
+    trigger_expr,
+)
 from mktlib.backtest._conditions import (
     All,
     Any_,
@@ -146,6 +165,183 @@ def _walk_expr(node: str | float | ColExpr, cols: set[str]) -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# Bracket exits — protective TP/SL resting against every open position
+# ---------------------------------------------------------------------------
+
+_DUAL_BRACKET_MSG = (
+    "bracket=... is not supported together with short_strategy=.... The dual "
+    "path merges only _position and _side from the two legs, so a bracket "
+    "would silently evaluate the long leg's levels against the short leg's "
+    "position. Run the two sides as separate single-side backtests, each with "
+    "its own bracket, and combine the returns yourself."
+)
+
+
+def _apply_bracket(
+    signals: pl.DataFrame,
+    bracket: Bracket,
+    *,
+    is_long: bool,
+    flatten_eod: bool,
+) -> pl.DataFrame:
+    """Materialize the bracket columns and truncate bracketed position blocks.
+
+    Consumes ``_pos_d1`` / ``_pos_d2`` / ``_entry_clean`` / ``_exit_clean``
+    (all already materialized by :func:`_run_core`) and adds:
+
+    ``_bracket_level``
+        Realized fill price on the bar the bracket closed the position,
+        null everywhere else. Doubles as the discriminator that lets
+        :func:`_extract_trades` recognize a same-bar bracket fill.
+    ``_bracket_kind``
+        ``"take_profit"`` / ``"stop_loss"`` on that same bar — which leg
+        fired, which ``_bracket_level`` alone cannot say.
+    ``_bracket_exit_bar`` / ``_bracket_post``
+        The exit bar itself, and the bars after it that the stale
+        ``_position`` still marks as held and whose returns must be zeroed.
+
+    ``_position`` is deliberately **left inconsistent** — the same trick the
+    same-bar ``Limit`` exit uses. The return expression and the trade
+    extractor carry the truth; recomputing ``_position`` would require a
+    sequential scan for no gain, since a bracketed block cannot re-enter.
+    """
+    missing_ohlc = [col for col in ("high", "low") if col not in signals.columns]
+    if missing_ohlc:
+        msg = (
+            f"Bracket requires {missing_ohlc} column(s) in the DataFrame: a "
+            "take-profit or stop-loss can only be evaluated against the bar's "
+            "full range."
+        )
+        raise ValueError(msg)
+
+    for col in bracket.level_columns:
+        if col not in signals.columns:
+            msg = (
+                f"Bracket level column {col!r} not found in DataFrame columns: "
+                f"{sorted(signals.columns)}"
+            )
+            raise ValueError(msg)
+        stale = signals.filter(pl.col("_entry_clean"))[col].is_null().any()
+        if stale:
+            msg = (
+                f"Bracket level column {col!r} is null on at least one entry "
+                "signal bar. The level is latched at entry and forward-filled, "
+                "so a null there would silently carry the previous trade's "
+                "level into this one."
+            )
+            raise ValueError(msg)
+
+    is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
+
+    # Latch the entry fill price (the entry bar's own open) and give every
+    # position block an id, so "first trigger wins" is a windowed cum_sum.
+    signals = signals.with_columns(
+        pl.when(is_entry_bar)
+        .then(pl.col("open"))
+        .otherwise(None)
+        .forward_fill()
+        .alias(ENTRY_FILL_COLUMN),
+        is_entry_bar.cast(pl.UInt32).cum_sum().alias(BLOCK_COLUMN),
+    )
+
+    legs: list[tuple[str, str]] = []
+    level_exprs: list[pl.Expr] = []
+    if bracket.take_profit is not None:
+        legs.append((TAKE_PROFIT, TP_LEVEL_COLUMN))
+        level_exprs.append(
+            level_expr(
+                bracket.take_profit,
+                leg=TAKE_PROFIT,
+                is_long=is_long,
+                entry_clean_col="_entry_clean",
+                entry_fill_col=ENTRY_FILL_COLUMN,
+            ).alias(TP_LEVEL_COLUMN)
+        )
+    if bracket.stop_loss is not None:
+        legs.append((STOP_LOSS, SL_LEVEL_COLUMN))
+        level_exprs.append(
+            level_expr(
+                bracket.stop_loss,
+                leg=STOP_LOSS,
+                is_long=is_long,
+                entry_clean_col="_entry_clean",
+                entry_fill_col=ENTRY_FILL_COLUMN,
+            ).alias(SL_LEVEL_COLUMN)
+        )
+    signals = signals.with_columns(level_exprs)
+
+    # The bracket rests from the entry fill bar (``_pos_d1 == 1``) until the
+    # position closes. Under flatten_eod the session-last bar is exempt: the
+    # engine flattens at that bar's *open*, so the position is already gone
+    # before any intra-bar level could be tagged.
+    live = pl.col("_pos_d1") == 1
+    if flatten_eod:
+        live = live & ~pl.col("_session_last")
+
+    hits = {
+        leg: (
+            live & trigger_expr(leg=leg, is_long=is_long, level_col=level_col)
+        ).fill_null(False)
+        for leg, level_col in legs
+    }
+    tp_hit = hits.get(TAKE_PROFIT, pl.lit(False))
+    sl_hit = hits.get(STOP_LOSS, pl.lit(False))
+
+    if bracket.both_touch == "stop_first":
+        candidate = (
+            pl.when(sl_hit).then(pl.lit(STOP_LOSS))
+            .when(tp_hit).then(pl.lit(TAKE_PROFIT))
+            .otherwise(None)
+        )
+    else:
+        candidate = (
+            pl.when(tp_hit).then(pl.lit(TAKE_PROFIT))
+            .when(sl_hit).then(pl.lit(STOP_LOSS))
+            .otherwise(None)
+        )
+    signals = signals.with_columns(candidate.alias(BRACKET_CANDIDATE_COLUMN))
+
+    # Only the first trigger in a block closes the position; later triggers
+    # are noise against a position that is already flat.
+    triggered = pl.col(BRACKET_CANDIDATE_COLUMN).is_not_null()
+    signals = signals.with_columns(
+        (triggered & (triggered.cast(pl.UInt32).cum_sum().over(BLOCK_COLUMN) == 1))
+        .alias(BRACKET_EXIT_COLUMN),
+    )
+    signals = signals.with_columns(
+        pl.when(pl.col(BRACKET_EXIT_COLUMN))
+        .then(pl.col(BRACKET_CANDIDATE_COLUMN))
+        .otherwise(None)
+        .alias(BRACKET_KIND_COLUMN),
+        (
+            pl.col(BRACKET_EXIT_COLUMN).cast(pl.UInt32).cum_sum().over(BLOCK_COLUMN) >= 1
+        ).alias(BRACKET_SEEN_COLUMN),
+    )
+
+    fill_price = pl.lit(None, dtype=pl.Float64)
+    for leg, level_col in legs:
+        fill_price = (
+            pl.when(pl.col(BRACKET_KIND_COLUMN) == leg)
+            .then(fill_expr(leg=leg, is_long=is_long, level_col=level_col))
+            .otherwise(fill_price)
+        )
+    signals = signals.with_columns(
+        fill_price.cast(pl.Float64).alias(BRACKET_LEVEL_COLUMN),
+        (pl.col(BRACKET_SEEN_COLUMN) & ~pl.col(BRACKET_EXIT_COLUMN))
+        .alias(BRACKET_POST_COLUMN),
+    )
+
+    # Redirect the trade extractor: the bracket bar is this block's exit, and
+    # the signal exit that would have followed it never happens.
+    return signals.with_columns(
+        (
+            pl.col(BRACKET_EXIT_COLUMN)
+            | (pl.col("_exit_clean") & ~pl.col(BRACKET_SEEN_COLUMN))
+        ).alias("_exit_clean"),
+    )
+
+
 def _run_core(
     df: pl.DataFrame,
     strategy: Strategy,
@@ -154,6 +350,7 @@ def _run_core(
     calendar: ExchangeCalendar | None,
     flatten_eod: bool,
     cost: Cost | None = None,
+    bracket: Bracket | None = None,
 ) -> BacktestResult:
     """Inner engine: assumes *df* is already calendar-filtered."""
     # Let strategy enrich the DataFrame with indicator columns
@@ -188,6 +385,19 @@ def _run_core(
     limit_price_expr: pl.Expr | None = (
         exit_cond.resolve_price() if is_limit_exit else None  # type: ignore[attr-defined]
     )
+
+    if bracket is not None and is_limit_exit:
+        # Both want to own the same-bar fill. Which one wins when a Limit
+        # exit and a bracket leg tag the same bar is exactly the within-bar
+        # ordering question OHLC cannot answer, and picking silently would
+        # bury an assumption in the engine. Refuse instead of guessing.
+        msg = (
+            "bracket=... is not supported together with a Limit(...) exit "
+            "condition. Both fill inside the same bar, and OHLC cannot say "
+            "which came first. Express the target as Bracket(take_profit=...) "
+            "and use a plain (non-Limit) exit condition."
+        )
+        raise NotImplementedError(msg)
 
     effective_side = int(entry_cond.trade_side or trade_side)
 
@@ -266,6 +476,16 @@ def _run_core(
         (pl.col("_position") * effective_side).cast(pl.Int8).alias("_side"),
     )
 
+    # Bracket exits: resolved before costs so the bracket bar can be charged
+    # like any other fill bar.
+    if bracket is not None:
+        signals = _apply_bracket(
+            signals,
+            bracket,
+            is_long=effective_side == 1,
+            flatten_eod=flatten_eod,
+        )
+
     # Transaction costs: one per-bar basis-point column, materialized once and
     # read *unshifted on the fill bar* by every branch that pays a fill. It is
     # dropped again before the result is handed back.
@@ -278,15 +498,17 @@ def _run_core(
             raise ValueError(msg)
         signals = signals.with_columns(cost_bps_expr(cost).alias(COST_COLUMN))
 
-    def _charge(expr: pl.Expr) -> pl.Expr:
+    def _charge(expr: pl.Expr, *, sides: int = 1) -> pl.Expr:
         """Deduct the fill-bar cost from a fill-bar return expression.
 
         Subtracted, never multiplied by ``effective_side``: a cost reduces
-        the realized return on both sides of the market.
+        the realized return on both sides of the market. *sides* is the
+        number of fills the bar pays for — two when a bracket closes the
+        position on the very bar the entry filled.
         """
         if cost is None:
             return expr
-        return expr - pl.col(COST_COLUMN) / 1e4
+        return expr - pl.col(COST_COLUMN) * sides / 1e4
 
     # Detect transition bars (after the 1-bar delay for fill)
     _is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
@@ -317,6 +539,39 @@ def _run_core(
         _is_limit_exit_bar = pl.col("_exit") & (pl.col("_pos_d1") == 1)
         _is_post_limit_bar = _is_limit_exit_bar.shift(1).fill_null(False)
 
+    # Bracket branches: the level is tagged *inside* the bar, so the fill is
+    # same-bar. Two shapes, because the base the return is measured against
+    # differs — the entry fill price when the bracket closes the position on
+    # the bar it opened, the previous close otherwise. The first case pays
+    # two fills, matching what ``trades.pnl`` charges for that trade.
+    _bracket_ret: pl.Expr = pl.lit(0.0)
+    _bracket_entry_ret: pl.Expr = pl.lit(0.0)
+    if bracket is not None:
+        _bracket_ret = _charge(
+            (
+                (pl.col(BRACKET_LEVEL_COLUMN) - pl.col("_close_prev"))
+                / pl.col("_close_prev")
+            )
+            * effective_side
+        )
+        _bracket_entry_ret = _charge(
+            ((pl.col(BRACKET_LEVEL_COLUMN) - pl.col("open")) / pl.col("open"))
+            * effective_side,
+            sides=2,
+        )
+
+    def _with_bracket(base: pl.Expr) -> pl.Expr:
+        """Give the bracket first refusal on every bar of a bracketed block."""
+        if bracket is None:
+            return base
+        return (
+            pl.when(pl.col(BRACKET_POST_COLUMN)).then(0.0)
+            .when(pl.col(BRACKET_EXIT_COLUMN) & _is_entry_bar).then(_bracket_entry_ret)
+            .when(pl.col(BRACKET_EXIT_COLUMN)).then(_bracket_ret)
+            .otherwise(base)
+            .fill_null(0.0)
+        )
+
     # Compute returns + flatten_eod overrides in minimal with_columns calls
     if flatten_eod:
         # Base returns + session-last override in one pass. When limits
@@ -344,7 +599,7 @@ def _run_core(
                 .otherwise(0.0)
                 .fill_null(0.0)
             )
-        signals = signals.with_columns(ret_expr.alias("return"))
+        signals = signals.with_columns(_with_bracket(ret_expr).alias("return"))
         # Post-session-last bar zeroing
         signals = signals.with_columns(
             pl.when(
@@ -374,7 +629,7 @@ def _run_core(
                 .otherwise(0.0)
                 .fill_null(0.0)
             )
-        signals = signals.with_columns(ret_expr.alias("return"))
+        signals = signals.with_columns(_with_bracket(ret_expr).alias("return"))
 
     returns = signals.select("date", "return")
 
@@ -387,6 +642,9 @@ def _run_core(
         _drop_cols.append("_session_last")
     if is_limit_exit:
         _drop_cols.append("_limit_price")
+    if bracket is not None:
+        # Only one of the two level columns exists for a single-leg bracket.
+        _drop_cols.extend(col for col in BRACKET_COLUMNS if col in signals.columns)
     if cost is not None:
         _drop_cols.append(COST_COLUMN)
     signals = signals.drop(_drop_cols)
@@ -402,6 +660,7 @@ def _run_dual(
     calendar: ExchangeCalendar | None,
     flatten_eod: bool,
     cost: Cost | None = None,
+    bracket: Bracket | None = None,
 ) -> BacktestResult:
     """Run long and short strategies independently, validate, merge.
 
@@ -409,6 +668,9 @@ def _run_dual(
     during computation so this gives real parallelism.  Merged signals
     use the long strategy's indicator columns as base.
     """
+    if bracket is not None:
+        raise NotImplementedError(_DUAL_BRACKET_MSG)
+
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -460,6 +722,7 @@ def _run_multi(
     flatten_eod: bool,
     weights: pl.DataFrame | None = None,
     cost: Cost | None = None,
+    bracket: Bracket | None = None,
 ) -> MultiBacktestResult:
     """Run independent backtests per instrument and combine results."""
     if instrument_col not in df.columns:
@@ -482,6 +745,7 @@ def _run_multi(
                 calendar=calendar,
                 flatten_eod=flatten_eod,
                 cost=cost,
+                bracket=bracket,
             )
         else:
             by_instrument[instrument] = _run_core(
@@ -491,6 +755,7 @@ def _run_multi(
                 calendar=calendar,
                 flatten_eod=flatten_eod,
                 cost=cost,
+                bracket=bracket,
             )
 
     if weights is not None:
@@ -541,6 +806,7 @@ def run(
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
+    bracket: Bracket | None = ...,
     instrument_col: str,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
@@ -555,6 +821,7 @@ def run(
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
+    bracket: Bracket | None = ...,
     instrument_col: None = ...,
 ) -> BacktestResult: ...
 
@@ -568,6 +835,7 @@ def run(
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
+    bracket: Bracket | None = ...,
     instrument_col: str,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
@@ -582,6 +850,7 @@ def run(
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
+    bracket: Bracket | None = ...,
     instrument_col: None = ...,
 ) -> BacktestResult: ...
 
@@ -595,6 +864,7 @@ def run(
     calendar: ExchangeCalendar | None = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
+    bracket: Bracket | None = ...,
     instrument_col: None = ...,
     instrument_weights: Mapping[str, float] | pl.DataFrame,
 ) -> MultiBacktestResult: ...
@@ -609,6 +879,7 @@ def run(
     calendar: ExchangeCalendar | None = None,
     flatten_eod: bool = False,
     cost: Cost | None = None,
+    bracket: Bracket | None = None,
     instrument_col: str | None = None,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = None,
 ) -> BacktestResult | MultiBacktestResult:
@@ -644,6 +915,14 @@ def run(
         fill — on the entry bar and on the exit bar — in both the returns
         series and ``trades.pnl``; holding bars are unaffected. ``None``
         (default) and ``Cost()`` are both exact no-ops.
+    bracket
+        Optional :class:`~mktlib.backtest.Bracket` describing protective
+        take-profit / stop-loss levels resting against every position from
+        its entry fill bar. The first leg to be tagged closes the position
+        *inside* that bar, ahead of the strategy's own exit condition.
+        Requires ``high`` and ``low`` columns. Not supported together with
+        *short_strategy* or with a ``Limit(...)`` exit condition — both
+        raise :class:`NotImplementedError`.
     instrument_col
         Column name identifying the symbol/ticker in a multi-symbol
         DataFrame. When provided, returns a
@@ -682,6 +961,14 @@ def run(
     entry-bar, exit-bar and limit-fill returns — never from holding bars,
     and never multiplied by the trade side.
 
+    When *bracket* is supplied, a bracketed exit replaces the signal exit
+    for that position and fills on the bar that tagged the level. The bars
+    between a bracket exit and the signal exit that would have followed it
+    return ``0.0``: the position is closed, and a still-true entry signal
+    does **not** re-open it until the block ends. See
+    :class:`~mktlib.backtest.Bracket` for the full fill table and for why
+    same-bar both-touch resolution is an assumption rather than a result.
+
     When *instrument_col* is set, each symbol is backtested independently —
     indicators (e.g. rolling SMA) do not bleed across symbols. Calendar
     filtering is applied once on the full DataFrame before partitioning.
@@ -711,6 +998,8 @@ def run(
         if trade_side is not TradeSide.LONG:
             msg = "trade_side is ignored when short_strategy is provided"
             raise ValueError(msg)
+        if bracket is not None:
+            raise NotImplementedError(_DUAL_BRACKET_MSG)
         if instrument_col is not None:
             return _run_multi(
                 df,
@@ -722,6 +1011,7 @@ def run(
                 flatten_eod=flatten_eod,
                 weights=weights_df,
                 cost=cost,
+                bracket=bracket,
             )
         if calendar is not None:
             df = calendar.filter_market_hours(df, "date")
@@ -732,6 +1022,7 @@ def run(
             calendar=calendar,
             flatten_eod=flatten_eod,
             cost=cost,
+            bracket=bracket,
         )
 
     if instrument_col is not None:
@@ -744,6 +1035,7 @@ def run(
             flatten_eod=flatten_eod,
             weights=weights_df,
             cost=cost,
+            bracket=bracket,
         )
 
     # Single-symbol path: calendar filter → _run_core
@@ -757,6 +1049,7 @@ def run(
         calendar=calendar,
         flatten_eod=flatten_eod,
         cost=cost,
+        bracket=bracket,
     )
 
 
@@ -776,7 +1069,12 @@ def _extract_trades(
     When the engine materialized a per-bar cost column, each leg's cost is
     read with **exactly the same alignment as the price it pays**: the entry
     leg from the next bar (where ``entry_price`` comes from), the exit leg
-    mirroring ``exit_price``'s limit / session-last / next-open priority.
+    mirroring ``exit_price``'s bracket / limit / session-last / next-open
+    priority.
+
+    A bracket exit fills *inside* the bar that tagged the level, so its row
+    is that fill bar and ``exit_date`` names it directly — unlike a signal
+    exit, whose row is the signal bar and whose fill is the next bar's open.
     """
     has_cost = COST_COLUMN in signals.columns
 
@@ -801,10 +1099,12 @@ def _extract_trades(
     entries = signals_with_next.filter(pl.col("_entry_clean")).select(entry_selects)
 
     # Exit fill price priority:
-    #   1. _limit_price when a same-bar limit exit fired on this bar
-    #   2. session-last bar's own open (flatten_eod path)
-    #   3. next bar's open (default fill-at-next-open)
+    #   1. _bracket_level when a bracket leg closed the position on this bar
+    #   2. _limit_price when a same-bar limit exit fired on this bar
+    #   3. session-last bar's own open (flatten_eod path)
+    #   4. next bar's open (default fill-at-next-open)
     has_limit = "_limit_price" in signals.columns
+    has_bracket = BRACKET_LEVEL_COLUMN in signals.columns
     if flatten_eod:
         base_expr = (
             pl.when(pl.col("_session_last"))
@@ -815,14 +1115,18 @@ def _extract_trades(
         base_expr = pl.col("_next_open")
 
     if has_limit:
-        exit_price_expr = (
+        base_expr = (
             pl.when(pl.col("_limit_price").is_not_null())
             .then(pl.col("_limit_price"))
             .otherwise(base_expr)
-            .alias("exit_price")
         )
-    else:
-        exit_price_expr = base_expr.alias("exit_price")
+    if has_bracket:
+        base_expr = (
+            pl.when(pl.col(BRACKET_LEVEL_COLUMN).is_not_null())
+            .then(pl.col(BRACKET_LEVEL_COLUMN))
+            .otherwise(base_expr)
+        )
+    exit_price_expr = base_expr.alias("exit_price")
 
     exit_selects = [
         pl.col("date").alias("exit_date"),
@@ -841,14 +1145,18 @@ def _extract_trades(
         else:
             base_cost = pl.col("_next_cost_bps")
         if has_limit:
-            exit_cost_expr = (
+            base_cost = (
                 pl.when(pl.col("_limit_price").is_not_null())
                 .then(pl.col(COST_COLUMN))
                 .otherwise(base_cost)
             )
-        else:
-            exit_cost_expr = base_cost
-        exit_selects.append(exit_cost_expr.alias("_exit_cost_bps"))
+        if has_bracket:
+            base_cost = (
+                pl.when(pl.col(BRACKET_LEVEL_COLUMN).is_not_null())
+                .then(pl.col(COST_COLUMN))
+                .otherwise(base_cost)
+            )
+        exit_selects.append(base_cost.alias("_exit_cost_bps"))
 
     exits = signals_with_next.filter(pl.col("_exit_clean")).select(exit_selects)
 

@@ -568,6 +568,10 @@ entry = Crossover("fast", "slow", trade_side=TradeSide.SHORT)
 
 Wrap an exit condition in `Limit(...)` to fill on the same bar the condition fires, at the limit price — see the [backtest API docs](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#same-bar-fills-take-profit-stop-loss) for examples and trailing-stop patterns.
 
+### Bracket exits (take-profit + stop-loss)
+
+Pass `bracket=Bracket(take_profit=..., stop_loss=...)` to rest a protective pair against every position from its entry fill bar. Levels are fractions of the entry fill price, or a column of absolute levels latched at the entry signal bar. Requires `high`/`low`. Same-bar both-touch resolves per `both_touch`, defaulting to the pessimistic `"stop_first"` — see [Bracket Exits](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#bracket-exits) for the full fill table and the deliberate divergence from live submission order.
+
 ### Multi-instrument & portfolio weights
 
 Pass `instrument_col` for per-symbol results, or `instrument_weights` (dict or `(instrument, weight)` DataFrame) to get a single weighted portfolio return series. See [Multi-Symbol Backtesting](https://polars-mktlib.readthedocs.io/en/latest/api/backtest.html#multi-symbol-backtesting) for schema, renormalization behavior, and examples.
