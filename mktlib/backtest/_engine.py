@@ -44,7 +44,12 @@ from mktlib.backtest._conditions import (
     ValueLTE,
     _BinOp,
 )
-from mktlib.backtest._cost import COST_COLUMN, Cost, cost_bps_expr
+from mktlib.backtest._cost import (
+    COST_COLUMN,
+    Cost,
+    cost_bps_expr,
+    validate_slippage_col,
+)
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
 from mktlib.backtest._weights import (
     INSTRUMENT_COLUMN,
@@ -486,16 +491,37 @@ def _run_core(
             flatten_eod=flatten_eod,
         )
 
+    # Detect transition bars (after the 1-bar delay for fill). Defined here,
+    # ahead of the cost column, because the fill-bar mask that validates a
+    # per-bar slippage column is built out of exactly these predicates.
+    _is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
+    _is_exit_bar = (pl.col("_pos_d1") == 0) & (pl.col("_pos_d2") == 1)
+
+    # Limit-exit bars fill *inside* the bar the inner condition fires while
+    # we were holding; the bar after is stale and contributes nothing.
+    _is_limit_exit_bar: pl.Expr = pl.lit(False)
+    _is_post_limit_bar: pl.Expr = pl.lit(False)
+    if is_limit_exit:
+        _is_limit_exit_bar = pl.col("_exit") & (pl.col("_pos_d1") == 1)
+        _is_post_limit_bar = _is_limit_exit_bar.shift(1).fill_null(False)
+
     # Transaction costs: one per-bar basis-point column, materialized once and
     # read *unshifted on the fill bar* by every branch that pays a fill. It is
     # dropped again before the result is handed back.
     if cost is not None:
-        if cost.slippage_col is not None and cost.slippage_col not in signals.columns:
-            msg = (
-                f"Cost.slippage_col={cost.slippage_col!r} not found in DataFrame "
-                f"columns: {sorted(signals.columns)}"
+        # Every bar on which some branch below reads the cost column. A
+        # per-bar slippage column is only ever consumed here, so this is
+        # also exactly the set of bars it has to be well-formed on.
+        _fill_bar = _is_entry_bar | _is_exit_bar
+        if is_limit_exit:
+            _fill_bar = _fill_bar | _is_limit_exit_bar
+        if bracket is not None:
+            _fill_bar = _fill_bar | pl.col(BRACKET_EXIT_COLUMN)
+        if flatten_eod:
+            _fill_bar = _fill_bar | (
+                pl.col("_session_last") & (pl.col("_pos_d1") == 1)
             )
-            raise ValueError(msg)
+        validate_slippage_col(signals, cost, fill_bar=_fill_bar.fill_null(False))
         signals = signals.with_columns(cost_bps_expr(cost).alias(COST_COLUMN))
 
     def _charge(expr: pl.Expr, *, sides: int = 1) -> pl.Expr:
@@ -509,10 +535,6 @@ def _run_core(
         if cost is None:
             return expr
         return expr - pl.col(COST_COLUMN) * sides / 1e4
-
-    # Detect transition bars (after the 1-bar delay for fill)
-    _is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
-    _is_exit_bar = (pl.col("_pos_d1") == 0) & (pl.col("_pos_d2") == 1)
 
     # Per-bar returns with fill-at-open adjustment. Entry/exit/limit bars are
     # fill bars and therefore pay cost; middle bars hold and do not.
@@ -528,16 +550,26 @@ def _run_core(
     # Limit-exit branches: fill at _limit_price on the same bar the
     # inner condition fires while we were holding. Suppress the normal
     # next-bar exit-open fill that would otherwise apply.
+    #
+    # Two shapes, differing only in how many fills the bar pays for: when
+    # the limit fires on the bar the entry itself filled, the entry and the
+    # exit both land inside that one bar, so it owes *two* sides — the same
+    # accounting ``_bracket_entry_ret`` does, and the same two legs
+    # ``trades.pnl`` charges for that trade.
     _limit_ret: pl.Expr = pl.lit(0.0)
-    _is_limit_exit_bar: pl.Expr = pl.lit(False)
-    _is_post_limit_bar: pl.Expr = pl.lit(False)
+    _limit_entry_ret: pl.Expr = pl.lit(0.0)
     if is_limit_exit:
-        _limit_ret = _charge(
-            ((pl.col("_limit_price") - pl.col("_close_prev")) / pl.col("_close_prev"))
-            * effective_side
-        )
-        _is_limit_exit_bar = pl.col("_exit") & (pl.col("_pos_d1") == 1)
-        _is_post_limit_bar = _is_limit_exit_bar.shift(1).fill_null(False)
+        _limit_raw = (
+            (pl.col("_limit_price") - pl.col("_close_prev")) / pl.col("_close_prev")
+        ) * effective_side
+        _limit_ret = _charge(_limit_raw)
+        _limit_entry_ret = _charge(_limit_raw, sides=2)
+
+    # Under flatten_eod an entry fill can land on the session-last bar: the
+    # position opens at that bar's open and is force-flattened at the same
+    # open. The price return is exactly zero, but two fills happened, so the
+    # bar owes two sides — ``trades.pnl`` already charges both.
+    _flat_entry_ret: pl.Expr = _charge(pl.lit(0.0), sides=2)
 
     # Bracket branches: the level is tagged *inside* the bar, so the fill is
     # same-bar. Two shapes, because the base the return is measured against
@@ -579,9 +611,10 @@ def _run_core(
         # (intra-bar fill precedes the session-close flatten).
         if is_limit_exit:
             ret_expr = (
-                pl.when(_is_limit_exit_bar).then(_limit_ret)
+                pl.when(_is_limit_exit_bar & _is_entry_bar).then(_limit_entry_ret)
+                .when(_is_limit_exit_bar).then(_limit_ret)
                 .when(_is_post_limit_bar).then(0.0)
-                .when(pl.col("_session_last") & _is_entry_bar).then(0.0)
+                .when(pl.col("_session_last") & _is_entry_bar).then(_flat_entry_ret)
                 .when(pl.col("_session_last") & (pl.col("_pos_d1") == 1)).then(_exit_ret)
                 .when(_is_entry_bar).then(_entry_ret)
                 .when(_is_exit_bar).then(_exit_ret)
@@ -591,7 +624,7 @@ def _run_core(
             )
         else:
             ret_expr = (
-                pl.when(pl.col("_session_last") & _is_entry_bar).then(0.0)
+                pl.when(pl.col("_session_last") & _is_entry_bar).then(_flat_entry_ret)
                 .when(pl.col("_session_last") & (pl.col("_pos_d1") == 1)).then(_exit_ret)
                 .when(_is_entry_bar).then(_entry_ret)
                 .when(_is_exit_bar).then(_exit_ret)
@@ -613,7 +646,8 @@ def _run_core(
     else:
         if is_limit_exit:
             ret_expr = (
-                pl.when(_is_limit_exit_bar).then(_limit_ret)
+                pl.when(_is_limit_exit_bar & _is_entry_bar).then(_limit_entry_ret)
+                .when(_is_limit_exit_bar).then(_limit_ret)
                 .when(_is_post_limit_bar).then(0.0)
                 .when(_is_entry_bar).then(_entry_ret)
                 .when(_is_exit_bar).then(_exit_ret)

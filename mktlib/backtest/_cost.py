@@ -63,8 +63,12 @@ class Cost:
         Optional column name holding **additional** per-bar slippage in
         basis points, read on the fill bar. Stacks on top of the two flat
         terms. The column must exist in the DataFrame the engine sees (i.e.
-        after the strategy's ``init()`` hook has run) and must be numeric
-        and non-null on fill bars.
+        after the strategy's ``init()`` hook has run) and must be numeric,
+        finite, non-null and non-negative **on every fill bar**. All four
+        conditions are enforced by :func:`validate_slippage_col`; values on
+        non-fill bars are never read and are unconstrained, so a column
+        that is null during an indicator warm-up is fine as long as it is
+        populated wherever a fill actually lands.
 
     Notes
     -----
@@ -113,3 +117,92 @@ def cost_bps_expr(cost: Cost) -> pl.Expr:
     if cost.slippage_col is not None:
         expr = expr + pl.col(cost.slippage_col)
     return expr
+
+
+def validate_slippage_col(
+    signals: pl.DataFrame,
+    cost: Cost,
+    *,
+    fill_bar: pl.Expr,
+) -> None:
+    """Reject a ``slippage_col`` that would silently produce a wrong number.
+
+    Checked on the *fill bars only* — the bars whose cost the engine
+    actually reads (``fill_bar`` is that mask). Four failure modes, each
+    of which is silent rather than loud if left unguarded:
+
+    missing column
+        Raises rather than letting Polars fail deep inside the return
+        expression with an unrecognizable message.
+    non-numeric dtype
+        Same reasoning.
+    null on a fill bar
+        ``flat + null`` is null, the null propagates through the fill-bar
+        return expression, and the engine's terminal ``fill_null(0.0)``
+        then replaces that bar's **real return with zero** while the
+        corresponding ``trades.pnl`` goes null. A missing quote on one
+        fill bar would silently rewrite the P&L of the whole run.
+    negative or non-finite on a fill bar
+        A negative slippage is a *rebate* — it would pay the strategy for
+        trading and inflate every metric downstream. The scalar fields are
+        already guarded in :meth:`Cost.__post_init__`; the column has to
+        be guarded here because its values only exist at run time.
+
+    Raises
+    ------
+    ValueError
+        If the column is missing, or violates any of the fill-bar
+        conditions.
+    TypeError
+        If the column exists but is not of a numeric dtype.
+    """
+    col = cost.slippage_col
+    if col is None:
+        return
+
+    if col not in signals.columns:
+        msg = (
+            f"Cost.slippage_col={col!r} not found in DataFrame columns: "
+            f"{sorted(signals.columns)}"
+        )
+        raise ValueError(msg)
+
+    if not signals.schema[col].is_numeric():
+        msg = (
+            f"Cost.slippage_col={col!r} must be a numeric column of basis "
+            f"points, got dtype {signals.schema[col]}"
+        )
+        raise TypeError(msg)
+
+    on_fill = signals.filter(fill_bar).get_column(col)
+    if on_fill.is_empty():
+        return
+
+    n_null = int(on_fill.is_null().sum())
+    if n_null:
+        msg = (
+            f"Cost.slippage_col={col!r} is null on {n_null} fill bar(s). The "
+            "cost is read unshifted on the bar a fill lands, so a null there "
+            "would propagate into that bar's return and be silently zeroed — "
+            "replacing a real return with 0.0 and nulling the trade's pnl. "
+            "Fill or forward-fill the column before passing it to run()."
+        )
+        raise ValueError(msg)
+
+    values = on_fill.cast(pl.Float64)
+    if not bool(values.is_finite().all()):
+        msg = (
+            f"Cost.slippage_col={col!r} has non-finite value(s) on at least "
+            "one fill bar; slippage in basis points must be finite."
+        )
+        raise ValueError(msg)
+
+    n_negative = int((values < 0.0).sum())
+    if n_negative:
+        msg = (
+            f"Cost.slippage_col={col!r} is negative on {n_negative} fill "
+            f"bar(s) (minimum {values.min()}). A negative slippage is a "
+            "rebate that would pay the strategy for trading; Cost models a "
+            "cost, so per-bar slippage must be non-negative."
+        )
+        raise ValueError(msg)

@@ -406,6 +406,95 @@ class TestSlippageColumn:
         assert_frame_equal(costed.returns, base.returns, check_exact=True)
 
 
+class TestSlippageColumnValidation:
+    """A malformed slippage column must fail loudly, never silently.
+
+    Every case here produced a plausible-looking but wrong number before
+    the column was validated — the failure mode the guard exists to stop.
+    """
+
+    def test_null_on_a_fill_bar_raises(self, daily: pl.DataFrame) -> None:
+        # Bar 3 is the entry fill bar.
+        df = daily.with_columns(
+            pl.when(pl.int_range(pl.len()) == 3)
+            .then(None)
+            .otherwise(1.0)
+            .cast(pl.Float64)
+            .alias("slip")
+        )
+        with pytest.raises(ValueError, match="is null on 1 fill bar"):
+            run(df, CrossStrategy(), cost=Cost(slippage_col="slip"))
+
+    def test_null_off_a_fill_bar_is_allowed(self, daily: pl.DataFrame) -> None:
+        """Indicator warm-up nulls are fine — those bars are never read."""
+        df = daily.with_columns(
+            pl.when(pl.int_range(pl.len()) < 2)
+            .then(None)
+            .otherwise(4.0)
+            .cast(pl.Float64)
+            .alias("slip")
+        )
+        base = _rets(run(df, CrossStrategy()).returns)
+        costed = _rets(run(df, CrossStrategy(), cost=Cost(slippage_col="slip")).returns)
+        assert costed[_ENTRY_BAR] - base[_ENTRY_BAR] == pytest.approx(
+            -4.0 * BPS, rel=1e-9
+        )
+
+    def test_null_fill_bar_would_have_zeroed_a_real_return(
+        self, daily: pl.DataFrame
+    ) -> None:
+        """Pins *why* the guard exists: the bar had a non-zero return."""
+        base = _rets(run(daily, CrossStrategy()).returns)
+        assert base[_ENTRY_BAR] != 0.0
+
+    def test_negative_column_raises(self, daily: pl.DataFrame) -> None:
+        df = daily.with_columns(pl.lit(-100.0).alias("slip"))
+        with pytest.raises(ValueError, match="is negative on .* fill bar"):
+            run(df, CrossStrategy(), cost=Cost(slippage_col="slip"))
+
+    def test_negative_only_off_fill_bars_is_allowed(
+        self, daily: pl.DataFrame
+    ) -> None:
+        df = daily.with_columns(
+            pl.when(pl.int_range(pl.len()) == 0)
+            .then(-5.0)
+            .otherwise(1.0)
+            .cast(pl.Float64)
+            .alias("slip")
+        )
+        run(df, CrossStrategy(), cost=Cost(slippage_col="slip"))
+
+    def test_non_finite_column_raises(self, daily: pl.DataFrame) -> None:
+        df = daily.with_columns(pl.lit(math.inf).alias("slip"))
+        with pytest.raises(ValueError, match="non-finite value"):
+            run(df, CrossStrategy(), cost=Cost(slippage_col="slip"))
+
+    def test_nan_column_raises(self, daily: pl.DataFrame) -> None:
+        df = daily.with_columns(pl.lit(math.nan).alias("slip"))
+        with pytest.raises(ValueError, match="non-finite value"):
+            run(df, CrossStrategy(), cost=Cost(slippage_col="slip"))
+
+    def test_non_numeric_column_raises(self, daily: pl.DataFrame) -> None:
+        df = daily.with_columns(pl.lit("wide").alias("slip"))
+        with pytest.raises(TypeError, match="must be a numeric column"):
+            run(df, CrossStrategy(), cost=Cost(slippage_col="slip"))
+
+    def test_integer_column_is_accepted(self, daily: pl.DataFrame) -> None:
+        df = daily.with_columns(pl.lit(3).cast(pl.Int64).alias("slip"))
+        base = _rets(run(df, CrossStrategy()).returns)
+        costed = _rets(run(df, CrossStrategy(), cost=Cost(slippage_col="slip")).returns)
+        assert costed[_ENTRY_BAR] - base[_ENTRY_BAR] == pytest.approx(
+            -3.0 * BPS, rel=1e-9
+        )
+
+    def test_no_trades_skips_validation(self, daily: pl.DataFrame) -> None:
+        """No fills, no fill bars, nothing to validate."""
+        flat = daily.with_columns(pl.lit(1.0).alias("fast"), pl.lit(2.0).alias("slow"))
+        flat = flat.with_columns(pl.lit(None).cast(pl.Float64).alias("slip"))
+        result = run(flat, CrossStrategy(), cost=Cost(slippage_col="slip"))
+        assert result.trades.height == 0
+
+
 # ---------------------------------------------------------------------------
 # F) Limit exits
 # ---------------------------------------------------------------------------
@@ -417,8 +506,10 @@ class TestLimitExitCost:
         costed = _rets(
             run(limit_daily, CrossEntryLimitExit(), cost=Cost(20.0)).returns
         )
-        # bar 3 is the limit fill bar (high 103.5 tags TP 103).
-        assert costed[3] - base[3] == pytest.approx(-20.0 * BPS, rel=1e-9)
+        # Bar 3 is the limit fill bar (high 103.5 tags TP 103) *and* the
+        # entry fill bar, so it pays two sides — see
+        # ``test_same_bar_entry_and_limit_exit_charges_both_sides``.
+        assert costed[3] - base[3] == pytest.approx(-2 * 20.0 * BPS, rel=1e-9)
 
     def test_post_limit_bar_stays_costless(self, limit_daily: pl.DataFrame) -> None:
         base = _rets(run(limit_daily, CrossEntryLimitExit()).returns)
@@ -435,17 +526,15 @@ class TestLimitExitCost:
         costed = run(limit_daily, CrossEntryLimitExit(), cost=Cost(11.0)).trades["pnl"][0]
         assert costed - base == pytest.approx(-2 * 11.0 * BPS, rel=1e-9)
 
-    def test_same_bar_entry_and_limit_exit_charges_one_side_in_returns(
+    def test_same_bar_entry_and_limit_exit_charges_both_sides(
         self, limit_daily: pl.DataFrame
     ) -> None:
-        """KNOWN GAP, pinned deliberately — see the module note in the plan.
+        """A limit firing on the entry fill bar pays two sides, not one.
 
-        When a limit exit fires on the *entry fill bar* itself, two fills
-        occur but the return-expression chain takes the ``_limit_ret``
-        branch and charges a single side. ``trades.pnl`` charges both. The
-        returns series therefore understates cost by one side for this
-        (uncommon) overlap. Ratify or fix before relying on cost-adjusted
-        returns for TP-on-entry-bar strategies.
+        Both fills land inside that single bar, so the returns series must
+        charge the same two legs ``trades.pnl`` charges. Regression test:
+        the returns chain used to take the one-side ``_limit_ret`` branch
+        here and understate the cost of every TP-on-entry-bar trade.
         """
         base = run(limit_daily, CrossEntryLimitExit())
         costed = run(limit_daily, CrossEntryLimitExit(), cost=Cost(20.0))
@@ -454,8 +543,9 @@ class TestLimitExitCost:
             for b, c in zip(_rets(base.returns), _rets(costed.returns), strict=True)
         )
         pnl_charge = base.trades["pnl"][0] - costed.trades["pnl"][0]
-        assert ret_charge == pytest.approx(20.0 * BPS, rel=1e-9)
+        assert ret_charge == pytest.approx(2 * 20.0 * BPS, rel=1e-9)
         assert pnl_charge == pytest.approx(2 * 20.0 * BPS, rel=1e-9)
+        assert ret_charge == pytest.approx(pnl_charge, rel=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -493,23 +583,33 @@ class TestFlattenEodCost:
             -2 * 15.0 * BPS, rel=1e-9
         )
 
-    def test_suppressed_entry_bar_return_stays_zero(self) -> None:
-        """Entry filling *on* the session-last bar returns 0.0, uncharged.
+    def test_entry_filling_on_session_last_bar_charges_both_sides(self) -> None:
+        """Open-and-immediately-flatten is a real round trip and pays for it.
 
-        KNOWN DIVERGENCE, pinned deliberately: the engine models this
-        open-and-immediately-flatten as a non-trade in the returns series
-        (0.0, no cost), while ``_extract_trades`` still emits a row and
-        therefore charges both legs.
+        The entry fills at the session-last bar's open and the forced
+        flatten sells at that same open, so the *price* return is exactly
+        zero — but two fills happened. Regression test: the returns chain
+        used to hard-code ``0.0`` for this bar and charge nothing, while
+        ``trades.pnl`` charged both legs.
         """
         df = _intraday_frame(entry_signal_bar=_BARS_PER_SESSION - 2)  # bar 24
         cal = get_calendar("XNYS")
+        base = run(df, CrossStrategy(), calendar=cal, flatten_eod=True)
         costed = run(
             df, CrossStrategy(), calendar=cal, flatten_eod=True, cost=Cost(15.0)
         )
+        session_last = _BARS_PER_SESSION - 1  # bar 25
+
+        # Uncosted, the bar is still exactly zero: the fix is cost-only.
+        assert all(r == 0.0 for r in _rets(base.returns))
+
         rets = _rets(costed.returns)
-        assert all(r == 0.0 for r in rets)
+        assert rets[session_last] == pytest.approx(-2 * 15.0 * BPS, rel=1e-9)
+        assert all(r == 0.0 for i, r in enumerate(rets) if i != session_last)
         assert costed.trades.height == 1
         assert costed.trades["pnl"][0] == pytest.approx(-2 * 15.0 * BPS, rel=1e-9)
+        # returns and pnl now agree on the number of legs charged.
+        assert sum(rets) == pytest.approx(costed.trades["pnl"][0], rel=1e-9)
 
 
 # ---------------------------------------------------------------------------
