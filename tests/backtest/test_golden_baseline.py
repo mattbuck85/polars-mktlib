@@ -34,6 +34,12 @@ multi_weighted       ``MultiBacktestResult._weighted_returns``
 dual                 ``_run_dual`` long/short merge
 ===================  ======================================================
 
+The ``bracket_*`` scenarios pin the bracket path's own output. The base
+scenarios above cannot: ``test_golden_baseline_no_bracket`` only pins
+``bracket=None`` as a no-op, which proves the non-bracket path is unperturbed
+and says nothing about what a firing bracket produces. That distinction matters
+whenever ``_apply_bracket`` is *changed* rather than added.
+
 Regenerating the baselines is a deliberate act, never a convenience::
 
     python tests/backtest/test_golden_baseline.py --regenerate
@@ -56,6 +62,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from mktlib.backtest import (
+    Bracket,
     Col,
     Condition,
     Cost,
@@ -340,7 +347,134 @@ def _scenario_dual(**kw: object) -> dict[str, pl.DataFrame]:
     )
 
 
-SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
+# ---------------------------------------------------------------------------
+# Bracket scenarios
+#
+# These pin the OUTPUT OF THE BRACKET PATH ITSELF, which the base scenarios do
+# not: ``test_golden_baseline_no_bracket`` only pins ``bracket=None`` as a
+# no-op, so before these existed the suite proved the non-bracket path was
+# unperturbed and said nothing at all about bracket output. That is a fine gate
+# for adding the feature and a useless one for changing its implementation —
+# which is exactly what the ``_apply_bracket`` optimisation does.
+#
+# Each fires a bracket for real. ``test_bracket_scenario_actually_brackets``
+# asserts that, so a fixture that quietly stops triggering fails loudly rather
+# than pinning a vacuous baseline.
+# ---------------------------------------------------------------------------
+
+
+def _scenario_bracket_tp_long(**kw: object) -> dict[str, pl.DataFrame]:
+    """Take-profit leg only — exercises the missing-stop ``pl.lit(False)`` branch."""
+    return _artifacts(
+        run(_daily_frame(), _CrossStrategy(), bracket=Bracket(take_profit=0.010), **kw)  # type: ignore[arg-type]
+    )
+
+
+def _scenario_bracket_sl_long(**kw: object) -> dict[str, pl.DataFrame]:
+    """Stop-loss leg only — the mirror missing-leg branch."""
+    return _artifacts(
+        run(_daily_frame(), _CrossStrategy(), bracket=Bracket(stop_loss=0.008), **kw)  # type: ignore[arg-type]
+    )
+
+
+def _scenario_bracket_both_stop_first(**kw: object) -> dict[str, pl.DataFrame]:
+    """Both legs, conservative tie policy (the default)."""
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(take_profit=0.010, stop_loss=0.008, both_touch="stop_first"),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_both_tp_first(**kw: object) -> dict[str, pl.DataFrame]:
+    """Both legs, opt-in submission-order tie policy — the other branch."""
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(
+                take_profit=0.010, stop_loss=0.008, both_touch="take_profit_first"
+            ),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_short(**kw: object) -> dict[str, pl.DataFrame]:
+    """The short mirror — an asymmetry here is the easy bug to introduce."""
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _ShortCrossStrategy(),
+            trade_side=TradeSide.SHORT,
+            bracket=Bracket(take_profit=0.010, stop_loss=0.008),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_col_level(**kw: object) -> dict[str, pl.DataFrame]:
+    """``str`` spec — absolute levels latched at the entry signal bar."""
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(take_profit="tp_level"),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_entry_bar_gap(**kw: object) -> dict[str, pl.DataFrame]:
+    """A stop tight enough to fire on the entry fill bar itself.
+
+    That bar owes two fills, so it is the branch where the bracket return and
+    ``trades.pnl`` have to agree on leg count.
+    """
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(stop_loss=0.0005),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_flatten_eod(**kw: object) -> dict[str, pl.DataFrame]:
+    """Bracket alongside session-forced exits — the two exit paths interacting."""
+    return _artifacts(
+        run(
+            _intraday_frame(),
+            _CrossStrategy(),
+            calendar=get_calendar("XNYS"),
+            flatten_eod=True,
+            bracket=Bracket(take_profit=0.004, stop_loss=0.003),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_cost(**kw: object) -> dict[str, pl.DataFrame]:
+    """Bracket + cost together — pins the both-legs charge on a bracket fill."""
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(take_profit=0.010, stop_loss=0.008),
+            cost=Cost(commission_bps=1.5, slippage_bps=0.75),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+#: The nine original scenarios. These — and only these — feed the three
+#: no-op gates, which pass ``cost=``/``bracket=`` themselves and would collide
+#: with a scenario that hardcodes those keywords.
+BASE_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     "plain": _scenario_plain,
     "short": _scenario_short,
     "entry_ref": _scenario_entry_ref,
@@ -350,6 +484,25 @@ SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     "multi": _scenario_multi,
     "multi_weighted": _scenario_multi_weighted,
     "dual": _scenario_dual,
+}
+
+#: Scenarios that fire a bracket. Baseline-pinned like the rest, but excluded
+#: from the no-op gates.
+BRACKET_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
+    "bracket_tp_long": _scenario_bracket_tp_long,
+    "bracket_sl_long": _scenario_bracket_sl_long,
+    "bracket_both_stop_first": _scenario_bracket_both_stop_first,
+    "bracket_both_tp_first": _scenario_bracket_both_tp_first,
+    "bracket_short": _scenario_bracket_short,
+    "bracket_col_level": _scenario_bracket_col_level,
+    "bracket_entry_bar_gap": _scenario_bracket_entry_bar_gap,
+    "bracket_flatten_eod": _scenario_bracket_flatten_eod,
+    "bracket_cost": _scenario_bracket_cost,
+}
+
+SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
+    **BASE_SCENARIOS,
+    **BRACKET_SCENARIOS,
 }
 
 # Pinned separately so that deleting a scenario is itself a test failure —
@@ -365,6 +518,15 @@ EXPECTED_SCENARIOS = frozenset(
         "multi",
         "multi_weighted",
         "dual",
+        "bracket_tp_long",
+        "bracket_sl_long",
+        "bracket_both_stop_first",
+        "bracket_both_tp_first",
+        "bracket_short",
+        "bracket_col_level",
+        "bracket_entry_bar_gap",
+        "bracket_flatten_eod",
+        "bracket_cost",
     }
 )
 
@@ -398,6 +560,28 @@ def test_scenario_is_not_degenerate(scenario: str) -> None:
     assert returns.is_null().sum() == 0, f"{scenario}: null returns"
 
 
+@pytest.mark.parametrize("scenario", sorted(BRACKET_SCENARIOS))
+def test_bracket_scenario_actually_brackets(scenario: str) -> None:
+    """A bracket scenario that stopped firing would pin a vacuous baseline.
+
+    Without this, a change that silently disabled the bracket would still match
+    its frozen artifacts — the baseline would faithfully record "nothing
+    happened" and the gate would pass while measuring nothing.
+
+    A bracket exit is detectable from the public artifacts alone: the internal
+    ``_bracket_*`` columns are dropped before return, but a bracketed trade
+    exits on the bar that tagged the level rather than the bar after a signal,
+    so its held count differs from the same strategy run without a bracket.
+    """
+    produced = BRACKET_SCENARIOS[scenario]()
+    plain = _scenario_plain()
+    assert produced["trades"].height > 0, f"{scenario}: no trades"
+    assert not produced["trades"].equals(plain["trades"]), (
+        f"{scenario}: trades are identical to the un-bracketed run — "
+        f"the bracket never fired, so this baseline pins nothing"
+    )
+
+
 @pytest.mark.parametrize("artifact", ARTIFACTS)
 @pytest.mark.parametrize("scenario", sorted(SCENARIOS))
 def test_golden_baseline(scenario: str, artifact: str) -> None:
@@ -426,7 +610,7 @@ def test_golden_baseline(scenario: str, artifact: str) -> None:
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
-@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+@pytest.mark.parametrize("scenario", sorted(BASE_SCENARIOS))
 def test_golden_baseline_zero_cost(scenario: str, artifact: str) -> None:
     """``cost=Cost()`` is an exact no-op — the 0.13.0 release gate.
 
@@ -435,7 +619,7 @@ def test_golden_baseline_zero_cost(scenario: str, artifact: str) -> None:
     short-circuiting on an all-zero model.  If subtracting zero ever
     perturbs a value, this fails and the release is blocked.
     """
-    produced = SCENARIOS[scenario](cost=Cost())[artifact]
+    produced = BASE_SCENARIOS[scenario](cost=Cost())[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
     assert_frame_equal(
         produced,
@@ -448,7 +632,7 @@ def test_golden_baseline_zero_cost(scenario: str, artifact: str) -> None:
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
-@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+@pytest.mark.parametrize("scenario", sorted(BASE_SCENARIOS))
 def test_golden_baseline_no_bracket(scenario: str, artifact: str) -> None:
     """``bracket=None`` is an exact no-op — the other half of the 0.13.0 gate.
 
@@ -458,7 +642,7 @@ def test_golden_baseline_no_bracket(scenario: str, artifact: str) -> None:
     ``_run_multi`` → ``_run_dual`` → ``_run_core`` must not perturb any of
     the four return-expression chains.
     """
-    produced = SCENARIOS[scenario](bracket=None)[artifact]
+    produced = BASE_SCENARIOS[scenario](bracket=None)[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
     assert_frame_equal(
         produced,
@@ -471,10 +655,10 @@ def test_golden_baseline_no_bracket(scenario: str, artifact: str) -> None:
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
-@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+@pytest.mark.parametrize("scenario", sorted(BASE_SCENARIOS))
 def test_golden_baseline_zero_cost_no_bracket(scenario: str, artifact: str) -> None:
     """Both new 0.13.0 knobs at their no-op settings, together."""
-    produced = SCENARIOS[scenario](cost=Cost(), bracket=None)[artifact]
+    produced = BASE_SCENARIOS[scenario](cost=Cost(), bracket=None)[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
     assert_frame_equal(
         produced,
@@ -502,9 +686,17 @@ def test_run_is_deterministic_across_invocations() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _regenerate() -> None:
+def _regenerate(only: frozenset[str] | None = None) -> None:
+    """Rewrite frozen baselines.
+
+    ``only`` restricts the rewrite to named scenarios. Adding a scenario should
+    not require rewriting the other twenty-seven artifacts — a bulk rewrite makes
+    an unintended numeric change invisible inside a large, expected diff.
+    """
     GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
     for scenario, build in SCENARIOS.items():
+        if only is not None and scenario not in only:
+            continue
         produced = build()
         (GOLDEN_DIR / scenario).mkdir(parents=True, exist_ok=True)
         for artifact in ARTIFACTS:
@@ -514,9 +706,19 @@ def _regenerate() -> None:
 
 
 if __name__ == "__main__":
-    if "--regenerate" not in sys.argv[1:]:
+    _argv = sys.argv[1:]
+    if "--regenerate" not in _argv:
         print(__doc__)
         raise SystemExit(
             "refusing to run: pass --regenerate to rewrite the frozen baselines"
         )
-    _regenerate()
+    _only: frozenset[str] | None = None
+    if "--only" in _argv:
+        _names = _argv[_argv.index("--only") + 1 :]
+        if not _names:
+            raise SystemExit("--only requires at least one scenario name")
+        _unknown = set(_names) - set(SCENARIOS)
+        if _unknown:
+            raise SystemExit(f"unknown scenario(s): {sorted(_unknown)}")
+        _only = frozenset(_names)
+    _regenerate(_only)
