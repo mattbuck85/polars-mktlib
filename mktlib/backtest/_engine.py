@@ -434,6 +434,21 @@ def _run_core(
     # Pass 1: compute _entry
     signals = df.with_columns(entry_expr.alias("_entry"))
 
+    # flatten_eod rewrites _entry (deferring a session-last signal to the next
+    # session's first bar) and that rewrite must land BEFORE anything reads
+    # _entry. It used to run after the EntryRef snapshot, which latched the
+    # anchor on the session-last bar the deferral then moved away from — the
+    # trade opened on one bar and was measured against another.
+    if flatten_eod:
+        _session_last = _build_session_last_mask(signals["date"], calendar)  # type: ignore[arg-type]
+        signals = signals.with_columns(_session_last.alias("_session_last"))
+        # Defer entries on session-last bars to the first bar of the next
+        # session (e.g. crossover on 15:59 → enter at next day's 09:30).
+        _suppressed = pl.col("_entry") & pl.col("_session_last")
+        signals = signals.with_columns(
+            (pl.col("_entry") | _suppressed.shift(1).fill_null(False)).alias("_entry"),
+        )
+
     # Create snapshot columns for any EntryRef nodes in exit condition
     entry_refs = collect_entry_refs(exit_cond)
     if entry_refs:
@@ -457,14 +472,6 @@ def _run_core(
 
     # Position tracking: 1 on entry, 0 on exit, forward-fill
     if flatten_eod:
-        _session_last = _build_session_last_mask(signals["date"], calendar)  # type: ignore[arg-type]
-        signals = signals.with_columns(_session_last.alias("_session_last"))
-        # Defer entries on session-last bars to the first bar of the next
-        # session (e.g. crossover on 15:59 → enter at next day's 09:30).
-        _suppressed = pl.col("_entry") & pl.col("_session_last")
-        signals = signals.with_columns(
-            (pl.col("_entry") | _suppressed.shift(1).fill_null(False)).alias("_entry"),
-        )
         # Suppress entries on session-last bars (position opens and immediately
         # force-closes in the same bar — not a valid trade).
         signals = signals.with_columns(
