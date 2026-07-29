@@ -416,9 +416,48 @@ Under the hood, the engine:
 
 1. Detects ``EntryRef`` nodes in the exit condition tree
 2. Computes ``_entry`` signals (pass 1)
-3. Creates ``_entry_{col}`` snapshot columns: the column value where ``_entry``
-   is true, ``null`` elsewhere, then ``forward_fill()``
-4. Resolves the exit condition against the snapshot columns (pass 2)
+3. Resolves which of those signals actually **open a position**, by walking the
+   entry/exit chain forward — a signal arriving while a position is still open
+   opens nothing and must not anchor
+4. Creates ``_entry_{col}`` snapshot columns: the column value at each realized
+   entry, ``null`` elsewhere, then ``forward_fill()``
+5. Resolves the exit condition against the snapshot columns (pass 2)
+
+.. note::
+
+   The snapshot latches on entry signals that actually **open a position**. A
+   signal that fires while a position is already open is suppressed by the
+   position machinery, and the anchor does not follow it — the level stays put
+   for the life of the trade, which is what makes an ``EntryRef`` take-profit a
+   *fixed* target rather than a trailing one.
+
+   Two consequences worth knowing:
+
+   * If an entry signal lands on the very bar an exit would have fired, the
+     entry wins and the position stays open. The exit does not happen and the
+     trade continues on its **original** anchor.
+   * Under ``flatten_eod``, an entry deferred across a session boundary anchors
+     on the bar it actually opens on, not the one the signal fired on.
+
+   Before 0.14.0 the snapshot was filled from every raw signal, so it moved
+   mid-trade. Pin ``mktlib==0.13.2`` to reproduce results from that behaviour.
+
+.. tip::
+
+   Everything on the threshold side is read **once, at the entry bar** — so
+   arithmetic over several snapshots stays a fixed level:
+
+   .. code-block:: python
+
+      # Fixed stop: 2 ATR below the entry bar's close.
+      sl = ValueLT("close", EntryRef("close") - EntryRef("atr") * 2)
+
+      # TRAILING stop: re-reads atr every bar, so the level moves with it.
+      sl = ValueLT("close", EntryRef("close") - Col("atr") * 2)
+
+   Both are supported and both are correct; they are simply different
+   instruments. The first can be resolved by a faster search, because the
+   barrier does not move.
 
 ``EntryRef`` composes freely with other expressions:
 

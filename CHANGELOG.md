@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.14.0
+
+### Fixed
+
+- **`EntryRef` anchored on every raw entry signal, so its level moved mid-trade.** The snapshot was forward-filled from every `_entry`, including signals the position machinery suppresses because a position was already open — despite the documented contract that it holds "through the position's lifetime". The exit was therefore measured against a bar the trade did not begin on. **Emitted values change** for any strategy whose entry condition can be true while a position is open; pin `mktlib==0.13.2` to reproduce prior numbers.
+
+  This is not a rounding-level difference. On the canonical take-profit / stop-loss idiom (`Crossover` entry, `close > EntryRef(close)*1.05 | close < EntryRef(close)*0.97`), measured over 15 runs of 3,000 bars across seeds and drifts against a sequential reference:
+
+  | regime | mean bias | runs inflated |
+  |-|-|-|
+  | no drift | +1.2 bps/trade | 2 / 5 |
+  | uptrend | **+75.6 bps/trade** | 5 / 5 |
+  | downtrend | +3.8 bps/trade | 4 / 5 |
+
+  Overall **+26.9 bps/trade**, up to +171.8 on one seed, with re-anchoring on 93%–256% of trades. The mechanism is a ratchet: re-anchoring at a higher close pushes the target away *and* drags the stop up behind it, so winners run and losses are cut. That silently converts a fixed bracket into a trailing one — a strictly better strategy than the one written — with the bias concentrated exactly where an equity curve looks most convincing.
+
+  The safe shape was an edge-triggered entry paired with its own complement (`Crossover`/`Crossunder`), where no entry can fire while held. The affected shape is the *non*-complementary pair, which is the documented idiom.
+
+- **`EntryRef` under `flatten_eod` anchored on the wrong bar.** The snapshot was built before `flatten_eod` defers a session-last entry to the next session, so it latched on the bar the deferral moved away from. No test combined the two features. It now anchors on the bar the position actually opens on.
+
 ## 0.13.2
 
 ### Data

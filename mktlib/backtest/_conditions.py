@@ -178,6 +178,13 @@ class EntryRef(ColExpr):
     detects ``EntryRef`` nodes in the exit condition tree.
 
     ``EntryRef("close")`` resolves to ``pl.col("_entry_close")``.
+
+    The snapshot latches on entries that actually **open a position** — a signal
+    firing while a position is already open is suppressed and does not move the
+    anchor, so the level holds for the life of the trade. Everything on the
+    threshold side is read once, at that bar, so arithmetic over several
+    snapshots is still a fixed level; a plain :class:`Col` in the same
+    expression makes it a trailing one instead.
     """
 
     col: str
