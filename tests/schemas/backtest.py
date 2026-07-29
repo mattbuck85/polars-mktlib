@@ -51,6 +51,18 @@ class SignalsSchemaBase(pa.DataFrameModel):
         strict = False
 
 
+class RearmSignalsSchema(SignalsSchemaBase):
+    """``BacktestResult.signals`` for a ``Bracket(rearm=True)`` run.
+
+    Adds ``_held`` — the re-armed position state, resolved by a recurrence that
+    treats a bracket touch as a position close. Under ``rearm=False`` the engine
+    deliberately leaves ``_position`` stale after a bracket fires, so the two
+    columns are NOT interchangeable and ``_held`` only exists on the re-arm path.
+    """
+
+    held: pl.Int8 = pa.Field(alias="_held", isin=[0, 1])
+
+
 class PortfolioWeightsSchema(pa.DataFrameModel):
     """Canonical ``to_portfolio_weights_df()`` output: ``(instrument, weight)``.
 

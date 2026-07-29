@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pandera.polars as pa
 import polars as pl
 import pytest
 
@@ -11,6 +12,7 @@ from mktlib.backtest import Bracket, Cost, Crossover, Crossunder, run
 
 from tests.schemas.backtest import (
     IntradayTradesSchema,
+    RearmSignalsSchema,
     ReturnsSchema,
     SignalsSchemaBase,
     TradesSchema,
@@ -168,6 +170,44 @@ class TestBarsHeldCountsBars:
             result.trades["exit_date"] - result.trades["entry_date"]
         ).dt.total_minutes()
         assert result.trades["bars_held"].equals(minutes - 1, check_dtypes=False)
+
+
+class TestRearmSignalsSchema:
+    """The ``_held`` contract, stated before the engine emits it.
+
+    Validated against a hand-built frame rather than a ``run()`` result: the
+    schema is the contract the re-arm path must satisfy, so it is pinned first
+    and the engine is written to it. A failing schema test is the signal that a
+    contract changed.
+    """
+
+    def _frame(self, held: list[int]) -> pl.DataFrame:
+        n = len(held)
+        return pl.DataFrame(
+            {
+                "_entry": [False] * n,
+                "_exit": [False] * n,
+                "_position": pl.Series([0] * n, dtype=pl.Int32),
+                "_side": pl.Series([0] * n, dtype=pl.Int8),
+                "_held": pl.Series(held, dtype=pl.Int8),
+            }
+        )
+
+    def test_accepts_binary_held(self) -> None:
+        RearmSignalsSchema.validate(self._frame([0, 1, 1, 0, 1]))
+
+    def test_rejects_non_binary_held(self) -> None:
+        with pytest.raises(pa.errors.SchemaError):
+            RearmSignalsSchema.validate(self._frame([0, 1, 2]))
+
+    def test_rejects_missing_held(self) -> None:
+        frame = self._frame([0, 1]).drop("_held")
+        with pytest.raises(pa.errors.SchemaError):
+            RearmSignalsSchema.validate(frame)
+
+    def test_base_schema_still_accepts_a_frame_without_held(self) -> None:
+        """``_held`` must not leak into the non-rearm contract."""
+        SignalsSchemaBase.validate(self._frame([0, 1]).drop("_held"))
 
 
 class TestCostLeavesSchemasUnchanged:
