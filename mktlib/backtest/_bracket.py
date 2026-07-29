@@ -273,6 +273,43 @@ def level_expr(
     return pl.col(entry_fill_col) * pl.lit(multiplier, dtype=pl.Float64)
 
 
+def held_expr(
+    *,
+    entry_col: str,
+    exit_col: str,
+    touch: pl.Expr,
+) -> pl.Expr:
+    """Position state with a bracket touch treated as a close — the re-arm path.
+
+    This is the ordinary ``_position`` recurrence with *touch* OR-ed into its
+    zero branch. Entry keeps priority over both, matching the non-bracket
+    engine: a bracket closing inside bar *t* and an entry signal firing at
+    bar *t*'s close are not in conflict — the first ends a trade intrabar, the
+    second opens one that fills at *t+1*.
+
+    Because the forward-fill already latches the first zero, "first trigger in
+    the block wins" falls out for free, and the position re-arms on the next
+    entry. That is the whole mechanism: no block ids, no window.
+
+    *touch* is deliberately **ungated** — it is not masked by "were we actually
+    holding?". It does not need to be: forcing ``0`` on a bar where the position
+    is already flat is a no-op, so the ungated recurrence and the gated one
+    agree everywhere. Gating would reintroduce the circularity the re-arm path
+    exists to avoid, since the gate is the very state being computed.
+    ``tests/backtest/test_bracket_rearm_recurrence.py`` pins that equivalence
+    against a sequential reference implementation.
+    """
+    return (
+        pl.when(pl.col(entry_col))
+        .then(pl.lit(1))
+        .when(pl.col(exit_col) | touch)
+        .then(pl.lit(0))
+        .otherwise(pl.lit(None))
+        .forward_fill()
+        .fill_null(0)
+    )
+
+
 def trigger_expr(*, leg: str, is_long: bool, level_col: str) -> pl.Expr:
     """Boolean: does this bar's range reach *leg*'s level?
 
