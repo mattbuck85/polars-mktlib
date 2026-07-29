@@ -11,7 +11,7 @@
 
 - **`Bracket` runs about 18% cheaper**, with byte-identical output. Two changes, both in `_apply_bracket`. First, the per-block "first trigger wins" count no longer uses a window: the block id is a `cum_sum` of a non-negative cast and so is contiguous and monotonically non-decreasing, which makes a per-block cumulative count equal to the global cumulative count minus a forward-filled per-block base. Second, the fill price is selected from the per-leg trigger booleans rather than by comparing a String column against a leg name once per leg, and `both_touch` is now expressed once as an ordering that both the candidate and the fill price read.
 
-  Measured at 491,400 one-minute bars, best of 41 interleaved rounds against a control arm running the unchanged code: `_apply_bracket` 27.3 ms → 20.0 ms (−26.7%), a full `run()` 50.5 ms → 44.5 ms (−11.9%), and the marginal cost of adding a bracket to a run 33.7 ms → 27.7 ms (−18%). The 54 frozen Parquet baselines covering the non-bracket path pass unmodified.
+  Measured at 491,400 one-minute bars, best of 41 interleaved rounds against a control arm running the unchanged code: `_apply_bracket` 27.3 ms → 20.0 ms (−26.7%), a full `run()` 50.5 ms → 44.5 ms (−11.9%), and the marginal cost of adding a bracket to a run 33.7 ms → 27.7 ms (−18%). Taken on its own this change leaves all 54 frozen Parquet baselines untouched — the 12 that move in this release move because of the `bars_held` fix above, not because of it.
 
 ### Testing
 
