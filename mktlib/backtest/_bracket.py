@@ -89,6 +89,16 @@ BLOCK_COLUMN = "_bracket_block"
 ENTRY_FILL_COLUMN = "_bracket_entry_fill"
 TP_LEVEL_COLUMN = "_bracket_tp"
 SL_LEVEL_COLUMN = "_bracket_sl"
+#: Re-arm path only: either leg tagged on this bar, ungated by position state.
+#: Materialized before ``_position``, because ``_position`` consumes it.
+TOUCH_COLUMN = "_bracket_touch"
+#: Re-arm path only: per-leg tags, kept so the fill price can be attributed
+#: without re-deriving the comparisons or comparing a String column.
+TP_HIT_COLUMN = "_bracket_hit_tp"
+SL_HIT_COLUMN = "_bracket_hit_sl"
+
+#: The re-armed position state (``held_expr``), exposed on ``signals``.
+HELD_COLUMN = "_held"
 
 BRACKET_COLUMNS: tuple[str, ...] = (
     BRACKET_LEVEL_COLUMN,
@@ -101,6 +111,9 @@ BRACKET_COLUMNS: tuple[str, ...] = (
     ENTRY_FILL_COLUMN,
     TP_LEVEL_COLUMN,
     SL_LEVEL_COLUMN,
+    TOUCH_COLUMN,
+    TP_HIT_COLUMN,
+    SL_HIT_COLUMN,
 )
 
 
@@ -271,6 +284,27 @@ def level_expr(
     up = favourable == is_long
     multiplier = 1.0 + spec if up else 1.0 - spec
     return pl.col(entry_fill_col) * pl.lit(multiplier, dtype=pl.Float64)
+
+
+def leg_priority(
+    bracket: Bracket, legs: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """*legs* reordered so the winner of a both-touch bar comes first.
+
+    Both bracket paths read this one list, so the ``both_touch`` policy is
+    expressed exactly once rather than mirrored in places that could drift.
+    """
+    order = (
+        (STOP_LOSS, TAKE_PROFIT)
+        if bracket.both_touch == "stop_first"
+        else (TAKE_PROFIT, STOP_LOSS)
+    )
+    return [
+        (leg, level_col)
+        for leg in order
+        for present, level_col in legs
+        if present == leg
+    ]
 
 
 def held_expr(

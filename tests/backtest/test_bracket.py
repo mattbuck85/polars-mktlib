@@ -705,18 +705,18 @@ def test_missing_range_column_raises(flat: pl.DataFrame, dropped: str) -> None:
         run(flat.drop(dropped), CrossStrategy(), bracket=Bracket(take_profit=0.02))
 
 
-def test_rearm_is_not_silently_ignored_by_the_engine(flat: pl.DataFrame) -> None:
-    """Until the re-arm path is wired, asking for it must fail loudly.
+def test_rearm_with_flatten_eod_refused() -> None:
+    """Two features that both rewrite ``_position``, not yet reconciled.
 
-    A dropped ``rearm=True`` would return the no-rearm result — a different,
-    entirely plausible-looking number.
+    Refusing beats shipping an untested interaction: ``flatten_eod`` defers
+    entries across the session boundary and exempts the session-last bar from
+    the bracket, and neither is folded into the re-arm recurrence yet.
     """
     with pytest.raises(NotImplementedError, match="rearm=True"):
         run(
-            flat.with_columns(
-                (pl.col("close") * 1.01).alias("tp"),
-                (pl.col("close") * 0.99).alias("sl"),
-            ),
+            _intraday_frame().with_columns((pl.col("close") * 1.01).alias("tp")),
             CrossStrategy(),
-            bracket=Bracket(take_profit="tp", stop_loss="sl", rearm=True),
+            bracket=Bracket(take_profit="tp", rearm=True),
+            flatten_eod=True,
+            calendar=get_calendar("XNYS"),
         )

@@ -19,12 +19,18 @@ from mktlib.backtest._bracket import (
     BRACKET_POST_COLUMN,
     BRACKET_SEEN_COLUMN,
     ENTRY_FILL_COLUMN,
+    HELD_COLUMN,
+    SL_HIT_COLUMN,
     SL_LEVEL_COLUMN,
     STOP_LOSS,
     TAKE_PROFIT,
+    TOUCH_COLUMN,
+    TP_HIT_COLUMN,
     TP_LEVEL_COLUMN,
     Bracket,
     fill_expr,
+    held_expr,
+    leg_priority,
     level_expr,
     trigger_expr,
 )
@@ -211,13 +217,6 @@ def _apply_bracket(
     extractor carry the truth; recomputing ``_position`` would require a
     sequential scan for no gain, since a bracketed block cannot re-enter.
     """
-    if bracket.rearm:
-        # Wired in a later commit. Raising rather than ignoring: a silently
-        # dropped rearm=True would return the no-rearm result, which differs and
-        # looks perfectly plausible.
-        msg = "Bracket(rearm=True) is not yet supported by the engine."
-        raise NotImplementedError(msg)
-
     missing_ohlc = [col for col in ("high", "low") if col not in signals.columns]
     if missing_ohlc:
         msg = (
@@ -318,17 +317,7 @@ def _apply_bracket(
     # and the fill price are both built from this one list, so the
     # ``both_touch`` policy is expressed exactly once rather than mirrored in
     # two places that could drift apart.
-    _priority = (
-        (STOP_LOSS, TAKE_PROFIT)
-        if bracket.both_touch == "stop_first"
-        else (TAKE_PROFIT, STOP_LOSS)
-    )
-    ordered: list[tuple[str, str]] = [
-        (leg, level_col)
-        for leg in _priority
-        for present, level_col in legs
-        if present == leg
-    ]
+    ordered = leg_priority(bracket, legs)
 
     # Built back to front so the first entry in ``ordered`` ends up outermost
     # and therefore wins.
@@ -428,6 +417,140 @@ def _apply_bracket(
     ).drop(_hit_cols.values())
 
 
+def _rearm_touch_columns(
+    signals: pl.DataFrame,
+    bracket: Bracket,
+    *,
+    is_long: bool,
+) -> pl.DataFrame:
+    """Materialize the levels and their tags — **before** ``_position`` exists.
+
+    This is the half of the re-arm path that has to run early, because
+    ``_position`` consumes the touch. It is only expressible because ``rearm``
+    accepts ``str`` level specs alone: a column read at the entry *signal* bar
+    needs nothing but ``_entry``, whereas a fraction scales the entry fill price
+    and so would need the position state this is a prerequisite for.
+
+    The levels anchor on raw ``_entry`` rather than ``_entry_clean`` — the same
+    rule :class:`~mktlib.backtest.EntryRef` already uses. That is exact when an
+    entry signal cannot fire while a position is open, and wrong when it can;
+    the engine checks for the latter once ``_position`` is known and raises.
+    """
+    missing_ohlc = [col for col in ("high", "low") if col not in signals.columns]
+    if missing_ohlc:
+        msg = (
+            f"Bracket requires {missing_ohlc} column(s) in the DataFrame: a "
+            "take-profit or stop-loss can only be evaluated against the bar's "
+            "full range."
+        )
+        raise ValueError(msg)
+
+    for col in bracket.level_columns:
+        if col not in signals.columns:
+            msg = (
+                f"Bracket level column {col!r} not found in DataFrame columns: "
+                f"{sorted(signals.columns)}"
+            )
+            raise ValueError(msg)
+        stale = signals.select(
+            (pl.col(col).is_null() & pl.col("_entry")).any()
+        ).item()
+        if stale:
+            msg = (
+                f"Bracket level column {col!r} is null on at least one entry "
+                "signal bar. The level is latched at entry and forward-filled, "
+                "so a null there would silently carry the previous trade's "
+                "level into this one."
+            )
+            raise ValueError(msg)
+
+    legs: list[tuple[str, str]] = []
+    level_exprs: list[pl.Expr] = []
+    for spec, leg, level_col in (
+        (bracket.take_profit, TAKE_PROFIT, TP_LEVEL_COLUMN),
+        (bracket.stop_loss, STOP_LOSS, SL_LEVEL_COLUMN),
+    ):
+        if spec is None:
+            continue
+        legs.append((leg, level_col))
+        level_exprs.append(
+            level_expr(
+                spec,
+                leg=leg,
+                is_long=is_long,
+                entry_clean_col="_entry",
+                entry_fill_col=ENTRY_FILL_COLUMN,
+            ).alias(level_col)
+        )
+    signals = signals.with_columns(level_exprs)
+
+    hit_cols = {TAKE_PROFIT: TP_HIT_COLUMN, STOP_LOSS: SL_HIT_COLUMN}
+    signals = signals.with_columns(
+        [
+            trigger_expr(leg=leg, is_long=is_long, level_col=level_col)
+            .fill_null(False)
+            .alias(hit_cols[leg])
+            for leg, level_col in legs
+        ]
+    )
+    touch = pl.lit(False)
+    for leg, _level_col in legs:
+        touch = touch | pl.col(hit_cols[leg])
+    return signals.with_columns(touch.alias(TOUCH_COLUMN))
+
+
+def _apply_bracket_rearm(
+    signals: pl.DataFrame,
+    bracket: Bracket,
+    *,
+    is_long: bool,
+) -> pl.DataFrame:
+    """Attribute the bracket fill on the exit bars ``_position`` already found.
+
+    The counterpart to :func:`_apply_bracket`, and much smaller than it: under
+    re-arm the position state is *correct*, so ``_exit_clean`` already marks the
+    first touch in each position and nothing here has to rediscover it. No block
+    ids, no cumulative count, no ``_bracket_seen``.
+
+    ``_bracket_post`` covers exactly one bar. With a stale ``_position`` it had
+    to zero every bar to the end of the block; here the only bar needing it is
+    the one after a bracket exit, where ``_is_exit_bar`` would otherwise book a
+    second, next-open exit for a trade that already closed intrabar.
+    """
+    legs = [
+        (leg, level_col)
+        for leg, level_col, spec in (
+            (TAKE_PROFIT, TP_LEVEL_COLUMN, bracket.take_profit),
+            (STOP_LOSS, SL_LEVEL_COLUMN, bracket.stop_loss),
+        )
+        if spec is not None
+    ]
+    ordered = leg_priority(bracket, legs)
+    hit_cols = {TAKE_PROFIT: TP_HIT_COLUMN, STOP_LOSS: SL_HIT_COLUMN}
+
+    exit_bar = pl.col("_exit_clean") & pl.col(TOUCH_COLUMN)
+    signals = signals.with_columns(exit_bar.alias(BRACKET_EXIT_COLUMN))
+
+    kind = pl.lit(None, dtype=pl.String)
+    fill_price = pl.lit(None, dtype=pl.Float64)
+    for leg, level_col in reversed(ordered):
+        won = pl.col(BRACKET_EXIT_COLUMN) & pl.col(hit_cols[leg])
+        kind = pl.when(won).then(pl.lit(leg)).otherwise(kind)
+        fill_price = (
+            pl.when(won)
+            .then(fill_expr(leg=leg, is_long=is_long, level_col=level_col))
+            .otherwise(fill_price)
+        )
+    return signals.with_columns(
+        kind.alias(BRACKET_KIND_COLUMN),
+        fill_price.cast(pl.Float64).alias(BRACKET_LEVEL_COLUMN),
+        pl.col(BRACKET_EXIT_COLUMN)
+        .shift(1)
+        .fill_null(False)
+        .alias(BRACKET_POST_COLUMN),
+    )
+
+
 def _run_core(
     df: pl.DataFrame,
     strategy: Strategy,
@@ -443,6 +566,21 @@ def _run_core(
     _init = getattr(strategy, "init", None)
     if _init is not None:
         df = _init(df)
+
+    if bracket is not None and bracket.rearm and flatten_eod:
+        # flatten_eod defers entries across the session boundary and force-exits
+        # at the session-last bar's open, and _apply_bracket exempts that bar
+        # from the bracket entirely. Folding both of those into the re-arm
+        # recurrence is a separate piece of work; refuse rather than ship an
+        # untested interaction between two features that both rewrite _position.
+        msg = (
+            "bracket=Bracket(rearm=True) is not yet supported together with "
+            "flatten_eod=True. The session-last bar is exempt from the bracket "
+            "and entries are deferred across the boundary; neither is folded "
+            "into the re-arm recurrence yet. Use rearm=False, or run without "
+            "flatten_eod."
+        )
+        raise NotImplementedError(msg)
 
     entry_raw = strategy.entry()
     exit_raw = strategy.exit()
@@ -534,15 +672,21 @@ def _run_core(
             .alias("_position"),
         )
     else:
+        # The re-arm path has to fold the bracket touch into the position
+        # recurrence, so its levels are materialized here rather than after
+        # _position. `touch=lit(False)` makes held_expr identical to the plain
+        # recurrence, so both paths share one implementation — the one the
+        # oracle test pins.
+        _touch: pl.Expr = pl.lit(False)
+        if bracket is not None and bracket.rearm:
+            signals = _rearm_touch_columns(
+                signals, bracket, is_long=effective_side == 1
+            )
+            _touch = pl.col(TOUCH_COLUMN)
         signals = signals.with_columns(
-            pl.when(pl.col("_entry"))
-            .then(pl.lit(1))
-            .when(pl.col("_exit"))
-            .then(pl.lit(0))
-            .otherwise(pl.lit(None))
-            .forward_fill()
-            .fill_null(0)
-            .alias("_position"),
+            held_expr(entry_col="_entry", exit_col="_exit", touch=_touch).alias(
+                "_position"
+            ),
         )
 
     # Materialize shared shifted expressions once
@@ -564,7 +708,31 @@ def _run_core(
 
     # Bracket exits: resolved before costs so the bracket bar can be charged
     # like any other fill bar.
-    if bracket is not None:
+    if bracket is not None and bracket.rearm:
+        # The anchor check, now that _position is known. Levels were latched at
+        # every raw _entry; if one of those fired while a position was open it
+        # overwrote a live level, turning a fixed bracket into a trailing one.
+        # This raises rather than warns because the failure mode inflates
+        # results — measured at +2.92 bps/trade on a persistent entry condition.
+        reanchored = signals.select(
+            (pl.col("_entry") & (pl.col("_position").shift(1) == 1)).sum()
+        ).item()
+        if reanchored:
+            msg = (
+                f"Bracket(rearm=True): the entry condition fired on {reanchored} "
+                "bar(s) while a position was already open, which re-anchors the "
+                "bracket level mid-trade and silently turns it into a trailing "
+                "stop. Re-arm latches levels at every raw entry signal (the same "
+                "rule EntryRef uses), so it is only exact for an entry that "
+                "cannot re-fire while held — an edge-triggered entry paired with "
+                "its complement, for example. Either use an entry condition that "
+                "goes false while the position is open, or drop rearm=True."
+            )
+            raise ValueError(msg)
+        signals = _apply_bracket_rearm(
+            signals, bracket, is_long=effective_side == 1
+        )
+    elif bracket is not None:
         signals = _apply_bracket(
             signals,
             bracket,
@@ -750,6 +918,14 @@ def _run_core(
 
     # Build trade log from entry/exit transitions (before dropping internal cols)
     trades = _extract_trades(signals, flatten_eod=flatten_eod)
+
+    # Under re-arm ``_position`` is the true held state rather than the stale
+    # one the default bracket path leaves behind, so it is worth surfacing under
+    # its own name — a caller cannot tell the two apart from ``_position``.
+    if bracket is not None and bracket.rearm:
+        signals = signals.with_columns(
+            pl.col("_position").cast(pl.Int8).alias(HELD_COLUMN),
+        )
 
     # Drop internal columns before return
     _drop_cols = ["_pos_d1", "_pos_d2", "_close_prev", "_entry_clean", "_exit_clean"]
