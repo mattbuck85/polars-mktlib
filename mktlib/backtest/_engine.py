@@ -28,21 +28,11 @@ from mktlib.backtest._bracket import (
     level_expr,
     trigger_expr,
 )
+from mktlib.backtest._anchor import collect_entry_refs
 from mktlib.backtest._conditions import (
-    All,
-    Any_,
-    ColExpr,
     Condition,
     Custom,
-    EntryRef,
     Limit,
-    Not,
-    Pct,
-    ValueGT,
-    ValueGTE,
-    ValueLT,
-    ValueLTE,
-    _BinOp,
 )
 from mktlib.backtest._cost import (
     COST_COLUMN,
@@ -129,45 +119,6 @@ def _build_session_last_mask(
 
     last_bars = last_per_session["last_bar"].to_list()
     return dates.is_in(last_bars)
-
-
-# ---------------------------------------------------------------------------
-# EntryRef tree walker — collects column names needed for entry-bar snapshots
-# ---------------------------------------------------------------------------
-
-
-def _collect_entry_refs(cond: Condition) -> set[str]:
-    """Return all column names referenced by ``EntryRef`` nodes in *cond*."""
-    cols: set[str] = set()
-    _walk_cond(cond, cols)
-    return cols
-
-
-def _walk_cond(cond: Condition, cols: set[str]) -> None:
-    match cond:
-        case All(left, right, _) | Any_(left, right, _):
-            _walk_cond(left, cols)
-            _walk_cond(right, cols)
-        case Not(inner, _):
-            _walk_cond(inner, cols)
-        case ValueGT(a, b, _) | ValueGTE(a, b, _) | ValueLT(a, b, _) | ValueLTE(a, b, _):
-            _walk_expr(a, cols)
-            _walk_expr(b, cols)
-        case _:
-            pass
-
-
-def _walk_expr(node: str | float | ColExpr, cols: set[str]) -> None:
-    match node:
-        case EntryRef(col):
-            cols.add(col)
-        case Pct(base, _):
-            _walk_expr(base, cols)
-        case _BinOp(left, right, _):
-            _walk_expr(left, cols)
-            _walk_expr(right, cols)
-        case _:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +435,7 @@ def _run_core(
     signals = df.with_columns(entry_expr.alias("_entry"))
 
     # Create snapshot columns for any EntryRef nodes in exit condition
-    entry_refs = _collect_entry_refs(exit_cond)
+    entry_refs = collect_entry_refs(exit_cond)
     if entry_refs:
         signals = signals.with_columns(
             pl.when(pl.col("_entry")).then(pl.col(col)).otherwise(None)
