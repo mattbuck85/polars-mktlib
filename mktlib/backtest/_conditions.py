@@ -178,6 +178,17 @@ class EntryRef(ColExpr):
     detects ``EntryRef`` nodes in the exit condition tree.
 
     ``EntryRef("close")`` resolves to ``pl.col("_entry_close")``.
+
+    .. warning::
+
+        The snapshot is taken at **every** raw entry signal, including one that
+        fires while a position is already open. Position tracking suppresses
+        such a signal, but the snapshot does not — so the reference moves
+        mid-trade and the exit is measured against a bar the trade did not
+        begin on. Exact for an edge-triggered entry paired with its own
+        complement; not otherwise. :class:`~mktlib.backtest.Bracket` with
+        ``rearm=True`` shares this latching rule and raises when it detects the
+        case; ``EntryRef`` predates that check and stays silent.
     """
 
     col: str

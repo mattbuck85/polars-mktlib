@@ -400,7 +400,7 @@ reference doesn't work:
 
 The threshold needs to reference the entry bar's close, not the current bar's.
 ``EntryRef`` solves this by snapshotting a column at the entry signal bar and
-forward-filling it through the position's lifetime:
+forward-filling it:
 
 .. code-block:: python
 
@@ -419,6 +419,28 @@ Under the hood, the engine:
 3. Creates ``_entry_{col}`` snapshot columns: the column value where ``_entry``
    is true, ``null`` elsewhere, then ``forward_fill()``
 4. Resolves the exit condition against the snapshot columns (pass 2)
+
+.. warning::
+
+   The snapshot is taken at **every** raw ``_entry`` signal, including one that
+   fires while a position is already open. The engine's position tracking
+   suppresses such a signal — it cannot open a second position — but the
+   snapshot column does not, so the reference **moves mid-trade** and the exit
+   is then measured against a bar the trade did not begin on.
+
+   This bites whenever the entry condition can be true while held: a
+   level-style condition such as ``close > sma`` is the obvious case, but so is
+   an edge-triggered crossover whose exit is *not* its complement, because the
+   position can still be open when the next crossover arrives.
+
+   It does not arise for an edge-triggered entry paired with its own
+   complement — a ``Crossover``/``Crossunder`` pair — since the exit necessarily
+   fires before the entry can become true again.
+
+   :class:`~mktlib.backtest.Bracket` with ``rearm=True`` uses the same latching
+   rule and **raises** rather than returning a number when it detects this, on
+   the grounds that the failure inflates results. ``EntryRef`` predates that
+   check and currently stays silent; the two will be reconciled.
 
 ``EntryRef`` composes freely with other expressions:
 

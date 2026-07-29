@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.14.0
+
+### Added
+
+- **`Bracket(rearm=True)`** — a bracket exit now optionally releases the position so a later entry signal can open a new trade, instead of closing the block for good. The default (`rearm=False`) is unchanged, because turning this on changes results.
+
+  This fixes a hole rather than adding a flourish: by default a strategy whose *only* exit is the protective leg trades exactly **once** and then sits flat forever — measured at 1 trade against 10,023 over the same 500k bars. Writing entry + bracket with no signal exit is the natural thing to do, and it failed silently.
+
+  **Requires `str` level specs.** A `float` spec is a fraction of the entry *fill* price, which is not known until the position is known — and under re-arm the position depends on the levels. That circularity is refused with `NotImplementedError` rather than resolved by anchoring somewhere else quietly. A `str` spec names a column read at the entry *signal* bar, which is knowable beforehand, so the recurrence closes.
+
+  **The engine raises if the entry condition can fire while a position is open.** Re-arm latches levels at every raw entry signal — the same rule `EntryRef` already uses — which is exact only when an entry cannot re-fire mid-position. When it can, the level is re-anchored mid-trade and a fixed bracket silently becomes a *trailing* one: on a `close > sma` entry the level moved on 250,481 of 250,482 held bars, manufacturing +2.92 bps/trade of edge that is not there. This raises rather than warns because the failure inflates results. It is scoped to `rearm=True`; the default path anchors at the position transition, where there is no ambiguity to report.
+
+  Safety is a property of the entry/exit **pair**, not the entry alone. A `Crossover` paired with its own `Crossunder` is exact — the crossover cannot re-fire until the crossunder resets the edge. A `Crossover` paired with a percentage target is not, because the position can still be open when the next crossover arrives.
+
+  Under re-arm, `signals` gains `_held` (Int8): the true position state. It is not interchangeable with `_position`, which the default bracket path deliberately leaves stale.
+
+  Not yet supported together with `flatten_eod=True` — both rewrite the position state, and the session-last exemption and deferred entries are not folded into the recurrence yet. That combination raises.
+
+### Changed
+
+- **`EntryRef`'s re-anchoring is now documented.** The reference claimed the entry-bar snapshot was forward-filled "through the position's lifetime". It is not: the snapshot is taken at every raw entry signal, including ones the position machinery suppresses, so it moves mid-trade and the exit is measured against a bar the trade did not begin on. Behaviour is unchanged in this release and is now pinned by a test; the docs describe what actually happens, and when it does and does not bite.
+
+### Internal
+
+- Both bracket paths now share one position recurrence and one `both_touch` ordering, so the policy is stated once rather than mirrored where two copies could drift. The re-arm path needs no block ids, no cumulative count and no window: because the position state is correct rather than stale, the forward-fill already resolves "first trigger in the block wins".
+
 ## 0.13.1
 
 ### Fixed

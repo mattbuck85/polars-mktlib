@@ -234,8 +234,8 @@ def _apply_bracket(
             )
             raise ValueError(msg)
         # Projected rather than ``filter(...)[col]``: filtering materialises
-        # every column of the frame in order to null-check one of them, which at
-        # 491k rows x ~15 columns is most of a copy for a single boolean.
+        # every column of the frame in order to null-check one of them, which
+        # at 491k rows x ~15 columns is most of a copy for a single boolean.
         stale = signals.select(
             (pl.col(col).is_null() & pl.col("_entry_clean")).any()
         ).item()
@@ -375,10 +375,10 @@ def _apply_bracket(
     signals = signals.with_columns(
         (pl.col(_cum) - pl.col(_base)).alias(_count),
     )
-    # ``seen`` used to be a SECOND window over ``exit_bar``. It is algebraically
-    # the same series: ``exit_bar`` is true exactly once per block, on the first
-    # trigger, so ``cum_sum(exit_bar) >= 1`` and ``cum_sum(triggered) >= 1`` flip
-    # true on that same bar and stay true.
+    # ``seen`` used to be a SECOND window over ``exit_bar``. It is
+    # algebraically the same series: ``exit_bar`` is true exactly once per
+    # block, on the first trigger, so ``cum_sum(exit_bar) >= 1`` and
+    # ``cum_sum(triggered) >= 1`` flip true on that same bar and stay true.
     is_first_trigger = triggered & (pl.col(_count) == 1)
     signals = signals.with_columns(
         is_first_trigger.alias(BRACKET_EXIT_COLUMN),
@@ -568,11 +568,12 @@ def _run_core(
         df = _init(df)
 
     if bracket is not None and bracket.rearm and flatten_eod:
-        # flatten_eod defers entries across the session boundary and force-exits
-        # at the session-last bar's open, and _apply_bracket exempts that bar
-        # from the bracket entirely. Folding both of those into the re-arm
-        # recurrence is a separate piece of work; refuse rather than ship an
-        # untested interaction between two features that both rewrite _position.
+        # flatten_eod defers entries across the session boundary and
+        # force-exits at the session-last bar's open, and _apply_bracket
+        # exempts that bar from the bracket entirely. Folding both of those
+        # into the re-arm recurrence is a separate piece of work; refuse rather
+        # than ship an untested interaction between two features that both
+        # rewrite _position.
         msg = (
             "bracket=Bracket(rearm=True) is not yet supported together with "
             "flatten_eod=True. The session-last bar is exempt from the bracket "
@@ -713,7 +714,8 @@ def _run_core(
         # every raw _entry; if one of those fired while a position was open it
         # overwrote a live level, turning a fixed bracket into a trailing one.
         # This raises rather than warns because the failure mode inflates
-        # results — measured at +2.92 bps/trade on a persistent entry condition.
+        # results — measured at +2.92 bps/trade on a persistent entry
+        # condition.
         reanchored = signals.select(
             (pl.col("_entry") & (pl.col("_position").shift(1) == 1)).sum()
         ).item()
@@ -916,12 +918,14 @@ def _run_core(
 
     returns = signals.select("date", "return")
 
-    # Build trade log from entry/exit transitions (before dropping internal cols)
+    # Build trade log from entry/exit transitions (before dropping internal
+    # cols)
     trades = _extract_trades(signals, flatten_eod=flatten_eod)
 
     # Under re-arm ``_position`` is the true held state rather than the stale
-    # one the default bracket path leaves behind, so it is worth surfacing under
-    # its own name — a caller cannot tell the two apart from ``_position``.
+    # one the default bracket path leaves behind, so it is worth surfacing
+    # under its own name — a caller cannot tell the two apart from
+    # ``_position``.
     if bracket is not None and bracket.rearm:
         signals = signals.with_columns(
             pl.col("_position").cast(pl.Int8).alias(HELD_COLUMN),
