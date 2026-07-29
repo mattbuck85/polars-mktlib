@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.1
+
+### Fixed
+
+- **`trades.bars_held` counted calendar days, not bars.** It was computed as the difference between `exit_date` and `entry_date` cast to `Date`, so on intraday data every trade that opened and closed within a session reported `0`, and on daily data any trade held across a weekend was overstated by the two non-trading days. The documented contract has always been "number of bars the position was held". **Emitted values change.** `bars_held` is now the distance in bars between the entry fill and the exit fill: an entry always fills at the next bar's open, and an exit fills either inside its own bar (bracket, limit, or a session-forced flatten) or at the next bar's open. A bracket that closes the position on the bar the entry filled on is therefore `0` — a real same-bar round trip, not a degenerate one. On contiguous daily data with next-open exits the value is unchanged; same-bar exits drop by exactly one bar, and intraday values were previously `0`/`1` regardless of the true holding period.
+- **`mktlib.reports` is unaffected.** `TradeMetrics.avg_bars_held` is derived independently from `entry_date`/`exit_date` and never read this column; the HTML tearsheet already labels it "Avg Trade Duration (days)". The field name remains a misnomer and is left alone here rather than renamed in a patch.
+
+### Performance
+
+- **`Bracket` runs about 18% cheaper**, with byte-identical output. Two changes, both in `_apply_bracket`. First, the per-block "first trigger wins" count no longer uses a window: the block id is a `cum_sum` of a non-negative cast and so is contiguous and monotonically non-decreasing, which makes a per-block cumulative count equal to the global cumulative count minus a forward-filled per-block base. Second, the fill price is selected from the per-leg trigger booleans rather than by comparing a String column against a leg name once per leg, and `both_touch` is now expressed once as an ordering that both the candidate and the fill price read.
+
+  Measured at 491,400 one-minute bars, best of 41 interleaved rounds against a control arm running the unchanged code: `_apply_bracket` 27.3 ms → 20.0 ms (−26.7%), a full `run()` 50.5 ms → 44.5 ms (−11.9%), and the marginal cost of adding a bracket to a run 33.7 ms → 27.7 ms (−18%). The 54 frozen Parquet baselines covering the non-bracket path pass unmodified.
+
+### Testing
+
+- The per-block trigger count is now pinned directly against its windowed equivalent across block-boundary cases the whole-backtest fixtures are too small to produce reliably — single-row blocks, a block running to the end of the frame, a frame whose first row triggers, and ~50k rows over 2,000+ blocks.
+- `trades` output is now schema-validated for intraday input. The existing schema pins `Date` for the two date columns, so it had only ever covered daily input, even though `run()` passes the input frame's `date` dtype straight through.
+
 ## 0.13.0
 
 ### Added
@@ -7,7 +25,7 @@
 - **Per-fill transaction costs via `run(..., cost=Cost(...))`** — new `mktlib.backtest.Cost`, a frozen dataclass of primitives: `Cost(commission_bps=0.0, slippage_bps=0.0, slippage_col=None)`. Cost is stated in **basis points of notional, per side**, because the engine is share-count free — it composes price relatives only and never sees a quantity, so a per-share fee schedule (IB's `$0.005/share, $1.00 minimum`) is not expressible here. Convert at the call site: `bps = 1e4 * fee_per_share / expected_fill_price`. `slippage_col` names a column of *additional* per-bar slippage in bps (e.g. half the quoted spread), read on the fill bar and stacked on the two flat terms.
 - **Costs are charged at the fill, on both legs, in both artifacts.** The entry bar, the exit bar, the same-bar limit fill bar, the bracket fill bar and the session-forced-exit bar each pay; holding bars and flat bars do not. The charge lands in the `returns` series *and* in `trades.pnl`, with each leg reading the cost bar that matches the price that leg pays. Cost is never applied as a post-hoc transform on the returns series — such a transform cannot see trade boundaries and would charge holding bars too. Cost is **subtracted**, never multiplied by the trade side: a short pays the same haircut a long does.
 - **Protective TP/SL exits via `run(..., bracket=Bracket(...))`** — new `mktlib.backtest.Bracket(take_profit=None, stop_loss=None, both_touch="stop_first")`. Each leg takes either a `float` (a fraction of the entry fill price, signed in the trade's favour / against it) or a `str` naming a column of absolute price levels latched on the entry signal bar. Requires `high` / `low` columns. The bracket is armed on the **entry fill bar** and checked on every bar the position is live, including that first one, so a gap straight through the level fills on the entry bar.
-- **Bracket fill semantics mirror a conventional event-driven OHLC broker exactly.** Long side (short mirrors): take-profit triggers on `high >= tp` and fills `max(open, tp)`; stop-loss triggers on `low <= sl` and fills `min(open, sl)`. Verified trade-by-trade against an independent reference implementation of `OHLCFillChecker` across seeds, sides, level pairs and both `both_touch` policies.
+- **Bracket fill semantics mirror a conventional event-driven OHLC broker exactly.** Long side (short mirrors): take-profit triggers on `high >= tp` and fills `max(open, tp)`; stop-loss triggers on `low <= sl` and fills `min(open, sl)`. Verified trade-by-trade against an independent reference implementation of a conventional OHLC fill checker across seeds, sides, level pairs and both `both_touch` policies.
 
 ### Notes
 

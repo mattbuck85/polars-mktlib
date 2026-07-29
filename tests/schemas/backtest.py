@@ -23,6 +23,22 @@ class TradesSchema(pa.DataFrameModel):
     bars_held: int = pa.Field(ge=0)
 
 
+class IntradayTradesSchema(pa.DataFrameModel):
+    """``BacktestResult.trades`` for an intraday backtest.
+
+    Identical contract to :class:`TradesSchema`, but with ``Datetime`` dates.
+    ``run()`` passes the input frame's ``date`` dtype straight through, so an
+    intraday input emits ``Datetime`` here — which means ``TradesSchema``, which
+    pins ``pl.Date``, has only ever covered daily input.
+    """
+
+    entry_date: pl.Datetime
+    exit_date: pl.Datetime
+    side: pl.Int8 = pa.Field(isin=[-1, 1])
+    pnl: float
+    bars_held: int = pa.Field(ge=0)
+
+
 class SignalsSchemaBase(pa.DataFrameModel):
     """BacktestResult.signals schema (base columns only, strict=False)."""
 

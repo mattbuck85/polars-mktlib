@@ -1185,6 +1185,11 @@ def _extract_trades(
     # Pre-compute next bar's open for fill price
     signals_with_next = signals.with_columns(
         pl.col("open").shift(-1).alias("_next_open"),
+        # Row position, taken BEFORE the entry/exit filters. Taking it after
+        # would number the surviving rows 0,1,2,... — a trade ordinal, not a bar
+        # position — and the difference between two such ordinals is not a
+        # holding period.
+        pl.int_range(pl.len(), dtype=pl.Int64).alias("_bar_idx"),
     )
     if has_cost:
         signals_with_next = signals_with_next.with_columns(
@@ -1195,7 +1200,9 @@ def _extract_trades(
         pl.col("date").alias("entry_date"),
         pl.col("_next_open").alias("entry_price"),
         pl.col("_side").alias("_trade_side"),
-        pl.int_range(pl.len()).alias("_entry_idx"),
+        # An entry always fills at the next bar's open — the same bar
+        # ``entry_price`` is read from.
+        (pl.col("_bar_idx") + 1).alias("_entry_fill_idx"),
     ]
     if has_cost:
         # Entry fills at _next_open, so its cost is the *next* bar's cost.
@@ -1232,10 +1239,39 @@ def _extract_trades(
         )
     exit_price_expr = base_expr.alias("exit_price")
 
+    # The bar the exit FILLS on, mirroring the priority order directly above.
+    # Price, cost and index are three mirrors of one ordering: a bracket or a
+    # limit fills inside its own bar, a session-forced exit at that bar's open,
+    # and everything else at the next bar's open. Deliberately not factored into
+    # a shared helper — the branch *values* differ (a price, a cost, an index),
+    # only the branch *conditions* are common, and hiding three sequences behind
+    # one abstraction would make a future divergence harder to see, not easier.
+    if flatten_eod:
+        base_idx = (
+            pl.when(pl.col("_session_last"))
+            .then(pl.col("_bar_idx"))
+            .otherwise(pl.col("_bar_idx") + 1)
+        )
+    else:
+        base_idx = pl.col("_bar_idx") + 1
+
+    if has_limit:
+        base_idx = (
+            pl.when(pl.col("_limit_price").is_not_null())
+            .then(pl.col("_bar_idx"))
+            .otherwise(base_idx)
+        )
+    if has_bracket:
+        base_idx = (
+            pl.when(pl.col(BRACKET_LEVEL_COLUMN).is_not_null())
+            .then(pl.col("_bar_idx"))
+            .otherwise(base_idx)
+        )
+
     exit_selects = [
         pl.col("date").alias("exit_date"),
         exit_price_expr,
-        pl.int_range(pl.len()).alias("_exit_idx"),
+        base_idx.cast(pl.Int64).alias("_exit_fill_idx"),
     ]
     if has_cost:
         # Mirror the exit_price priority exactly — a same-bar fill pays this
@@ -1286,6 +1322,8 @@ def _extract_trades(
         "side": entries["_trade_side"],
         "entry_price": entries["entry_price"],
         "exit_price": exits["exit_price"],
+        "_entry_fill_idx": entries["_entry_fill_idx"],
+        "_exit_fill_idx": exits["_exit_fill_idx"],
     }
     if has_cost:
         trade_cols["_entry_cost_bps"] = entries["_entry_cost_bps"]
@@ -1300,9 +1338,11 @@ def _extract_trades(
 
     trades = trades.with_columns(
         pnl_expr.alias("pnl"),
-        (
-            (pl.col("exit_date").cast(pl.Date) - pl.col("entry_date").cast(pl.Date)).dt.total_days()
-        ).alias("bars_held"),
+        # Bars, not calendar days: the fill-to-fill distance in rows. Zero when
+        # a bracket or limit closes the position on the very bar the entry
+        # filled on, which is a real same-bar round trip rather than a
+        # degenerate one.
+        (pl.col("_exit_fill_idx") - pl.col("_entry_fill_idx")).alias("bars_held"),
     ).select("entry_date", "exit_date", "side", "pnl", "bars_held")
 
     return trades
