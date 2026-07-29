@@ -290,24 +290,27 @@ def _apply_bracket(
     if flatten_eod:
         live = live & ~pl.col("_session_last")
 
-    # Each leg's trigger is MATERIALIZED as a boolean column. It is read twice —
-    # once to build the candidate, once to pick the fill price — and a
+    # Each leg's trigger is MATERIALIZED as a boolean column. It is read
+    # twice — once to build the candidate, once to pick the fill price — and a
     # ``with_columns`` does not common-subexpression-eliminate a repeated
     # expression, so leaving it inline evaluates the comparison chain twice.
     _hit_cols = {leg: f"__bracket_hit_{leg}" for leg, _ in legs}
     signals = signals.with_columns(
         [
-            (live & trigger_expr(leg=leg, is_long=is_long, level_col=level_col))
+            (
+                live
+                & trigger_expr(leg=leg, is_long=is_long, level_col=level_col)
+            )
             .fill_null(False)
             .alias(_hit_cols[leg])
             for leg, level_col in legs
         ]
     )
 
-    # Resolution order for a bar that tags BOTH levels. The candidate string and
-    # the fill price are both built from this one list, so the ``both_touch``
-    # policy is expressed exactly once rather than mirrored in two places that
-    # could drift apart.
+    # Resolution order for a bar that tags BOTH levels. The candidate string
+    # and the fill price are both built from this one list, so the
+    # ``both_touch`` policy is expressed exactly once rather than mirrored in
+    # two places that could drift apart.
     _priority = (
         (STOP_LOSS, TAKE_PROFIT)
         if bracket.both_touch == "stop_first"
@@ -340,18 +343,19 @@ def _apply_bracket(
     # the first trigger, so ``cum_sum(exit_bar) >= 1`` and ``cum_sum(triggered)
     # >= 1`` both flip true on that same bar and stay true.
     #
-    # That count is computed WITHOUT a window. ``BLOCK_COLUMN`` is a ``cum_sum``
-    # of a non-negative cast, so it is contiguous and monotonically
-    # non-decreasing — and for that shape a per-block cumulative count is just
-    # the GLOBAL cumulative count minus its value on the row before the block
-    # began. The base is recovered by forward-filling from each block-start row,
-    # which costs a shift and a forward_fill in place of a ``.over()``.
+    # That count is computed WITHOUT a window. ``BLOCK_COLUMN`` is a
+    # ``cum_sum`` of a non-negative cast, so it is contiguous and
+    # monotonically non-decreasing — and for that shape a per-block
+    # cumulative count is just the GLOBAL cumulative count minus its value on
+    # the row before the block began. The base is recovered by forward-filling
+    # from each block-start row, which costs a shift and a forward_fill in
+    # place of a ``.over()``.
     #
     # The count is MATERIALIZED, then read three times as a plain column.
     # Inlining the expression into the three consumers instead is measurably
-    # slower (41.7ms vs 38.6ms per run at 491k rows): a ``with_columns`` does not
-    # common-subexpression-eliminate a repeated expression, so it evaluates it
-    # once per consumer.
+    # slower (41.7ms vs 38.6ms per run at 491k rows): a ``with_columns`` does
+    # not common-subexpression-eliminate a repeated expression, so it
+    # evaluates it once per consumer.
     _cum = "__bracket_trigger_cum"
     _base = "__bracket_block_base"
     _count = "__bracket_trigger_count"
@@ -359,9 +363,9 @@ def _apply_bracket(
     signals = signals.with_columns(
         triggered.cast(pl.UInt32).cum_sum().alias(_cum),
     )
-    # Row 0: ``shift(1)`` is null, so the ``!=`` is null, so ``when`` is false and
-    # the ``fill_null(0)`` supplies the base — which is correct, because the
-    # first block's base genuinely is 0. ``_base <= _cum`` everywhere by
+    # Row 0: ``shift(1)`` is null, so the ``!=`` is null, so ``when`` is false
+    # and the ``fill_null(0)`` supplies the base — which is correct, because
+    # the first block's base genuinely is 0. ``_base <= _cum`` everywhere by
     # construction (it is an earlier value of a non-decreasing series), so the
     # UInt32 subtraction below cannot underflow.
     signals = signals.with_columns(
@@ -391,9 +395,9 @@ def _apply_bracket(
 
     # Which leg fired is already known as a pair of booleans, so the fill price
     # is selected from those rather than by comparing the ``_bracket_kind``
-    # String against a leg name once per leg. Same ``ordered`` priority, so this
-    # picks exactly the leg ``_bracket_kind`` names; gating on the exit-bar mask
-    # reproduces its null-off-the-exit-bar pattern.
+    # String against a leg name once per leg. Same ``ordered`` priority, so
+    # this picks exactly the leg ``_bracket_kind`` names; gating on the
+    # exit-bar mask reproduces its null-off-the-exit-bar pattern.
     fill_price = pl.lit(None, dtype=pl.Float64)
     for leg, level_col in reversed(ordered):
         fill_price = (
@@ -1186,8 +1190,8 @@ def _extract_trades(
     signals_with_next = signals.with_columns(
         pl.col("open").shift(-1).alias("_next_open"),
         # Row position, taken BEFORE the entry/exit filters. Taking it after
-        # would number the surviving rows 0,1,2,... — a trade ordinal, not a bar
-        # position — and the difference between two such ordinals is not a
+        # would number the surviving rows 0,1,2,... — a trade ordinal, not a
+        # bar position — and the difference between two such ordinals is not a
         # holding period.
         pl.int_range(pl.len(), dtype=pl.Int64).alias("_bar_idx"),
     )
@@ -1242,10 +1246,11 @@ def _extract_trades(
     # The bar the exit FILLS on, mirroring the priority order directly above.
     # Price, cost and index are three mirrors of one ordering: a bracket or a
     # limit fills inside its own bar, a session-forced exit at that bar's open,
-    # and everything else at the next bar's open. Deliberately not factored into
-    # a shared helper — the branch *values* differ (a price, a cost, an index),
-    # only the branch *conditions* are common, and hiding three sequences behind
-    # one abstraction would make a future divergence harder to see, not easier.
+    # and everything else at the next bar's open. Deliberately not factored
+    # into a shared helper — the branch *values* differ (a price, a cost, an
+    # index), only the branch *conditions* are common, and hiding three
+    # sequences behind one abstraction would make a future divergence harder
+    # to see, not easier.
     if flatten_eod:
         base_idx = (
             pl.when(pl.col("_session_last"))
@@ -1342,7 +1347,9 @@ def _extract_trades(
         # a bracket or limit closes the position on the very bar the entry
         # filled on, which is a real same-bar round trip rather than a
         # degenerate one.
-        (pl.col("_exit_fill_idx") - pl.col("_entry_fill_idx")).alias("bars_held"),
+        (
+            pl.col("_exit_fill_idx") - pl.col("_entry_fill_idx")
+        ).alias("bars_held"),
     ).select("entry_date", "exit_date", "side", "pnl", "bars_held")
 
     return trades

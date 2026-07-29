@@ -58,8 +58,8 @@ class BacktestResult:
     ``entry_date`` / ``exit_date`` name the SIGNAL bars; ``bars_held`` counts
     bars between the two FILLS. An entry always fills at the next bar's open,
     and an exit fills either inside its own bar (bracket, limit, or a
-    session-forced flatten) or at the next bar's open — so a bracket that closes
-    the position on the bar the entry filled on is ``bars_held == 0``.
+    session-forced flatten) or at the next bar's open — so a bracket that
+    closes the position on the bar the entry filled on is ``bars_held == 0``.
     """
     signals: pl.DataFrame
     """Full frame with ``_entry``, ``_exit``, ``_position``, ``_side`` columns.
