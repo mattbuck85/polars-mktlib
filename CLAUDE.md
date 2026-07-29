@@ -112,4 +112,4 @@ When adding a new exchange:
    git push origin v{X.Y.Z}
    ```
 
-Consumer repos (tradesignalcore) pin to git tags: `mktlib[reports] @ git+...@v0.7.0`.
+Consumer repos pin to git tags: `mktlib[reports] @ git+...@v0.7.0`.
