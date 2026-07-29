@@ -28,7 +28,11 @@ from mktlib.backtest._bracket import (
     level_expr,
     trigger_expr,
 )
-from mktlib.backtest._anchor import collect_entry_refs
+from mktlib.backtest._anchor import (
+    ANCHOR_ENTRY_COLUMN,
+    collect_entry_refs,
+    realized_entries,
+)
 from mktlib.backtest._conditions import (
     Condition,
     Custom,
@@ -449,11 +453,27 @@ def _run_core(
             (pl.col("_entry") | _suppressed.shift(1).fill_null(False)).alias("_entry"),
         )
 
-    # Create snapshot columns for any EntryRef nodes in exit condition
+    # Create snapshot columns for any EntryRef nodes in exit condition.
+    #
+    # These latch on the entries that actually OPEN a position, not on every
+    # raw signal. A signal that fires while a position is already open is
+    # suppressed by the position machinery, and forward-filling from it would
+    # move the anchor mid-trade — measured at +26.9 bps/trade of inflation on
+    # the canonical take-profit / stop-loss idiom, worst in trending regimes,
+    # because a re-anchored level ratchets the target away and the stop up.
     entry_refs = collect_entry_refs(exit_cond)
     if entry_refs:
         signals = signals.with_columns(
-            pl.when(pl.col("_entry")).then(pl.col(col)).otherwise(None)
+            realized_entries(
+                signals,
+                entry_col="_entry",
+                exit_cond=exit_cond,
+                snapshot_cols=entry_refs,
+                session_last_col="_session_last" if flatten_eod else None,
+            ),
+        )
+        signals = signals.with_columns(
+            pl.when(pl.col(ANCHOR_ENTRY_COLUMN)).then(pl.col(col)).otherwise(None)
             .forward_fill().alias(f"_entry_{col}")
             for col in entry_refs
         )
@@ -704,6 +724,8 @@ def _run_core(
 
     # Drop internal columns before return
     _drop_cols = ["_pos_d1", "_pos_d2", "_close_prev", "_entry_clean", "_exit_clean"]
+    if ANCHOR_ENTRY_COLUMN in signals.columns:
+        _drop_cols.append(ANCHOR_ENTRY_COLUMN)
     if flatten_eod:
         _drop_cols.append("_session_last")
     if is_limit_exit:

@@ -311,3 +311,108 @@ def plan_exit(cond: Condition) -> ExitPlan:
     for extra in fixed:
         combined = extra if combined is None else combined | extra
     return ExitPlan(legs=tuple(legs), fixed=combined, eligible=True)
+
+
+#: Starting look-ahead when searching for a candidate's exit bar. Doubled until
+#: the exit is found, so a long-held position costs log(span) evaluations rather
+#: than a full-frame scan per candidate.
+_WINDOW = 256
+
+
+def _first_exit_after(
+    frame: pl.DataFrame,
+    candidate: int,
+    *,
+    exit_expr: pl.Expr,
+    snapshot_cols: set[str],
+    entry: list[bool],
+    session_last: list[bool] | None,
+) -> int | None:
+    """First bar after *candidate* where the exit fires and takes effect.
+
+    "Takes effect" is doing real work: the position recurrence gives ``entry``
+    priority, so an exit sharing a bar with an entry signal does not close the
+    position. Such a bar is skipped, and the trade continues on the same anchor.
+
+    The anchor is pinned by substituting each snapshot column with the constant
+    the candidate bar would have latched — which is what makes this evaluable
+    without knowing the position.
+    """
+    n = frame.height
+    anchors = {col: frame[col][candidate] for col in snapshot_cols}
+    start = candidate + 1
+    width = _WINDOW
+    while start < n:
+        stop = min(start + width, n)
+        window = frame.slice(start, stop - start).with_columns(
+            [
+                pl.lit(value).alias(f"_entry_{col}")
+                for col, value in anchors.items()
+            ]
+        )
+        fired = window.select(exit_expr.alias("_f"))["_f"].fill_null(False).to_list()
+        for offset, hit in enumerate(fired):
+            bar = start + offset
+            forced = session_last is not None and session_last[bar]
+            opens = entry[bar] and not forced
+            if (hit or forced) and not opens:
+                return bar
+        if stop >= n:
+            return None
+        width *= 2
+    return None
+
+
+def realized_entries(
+    frame: pl.DataFrame,
+    *,
+    entry_col: str,
+    exit_cond: Condition,
+    snapshot_cols: set[str],
+    session_last_col: str | None = None,
+) -> pl.Series:
+    """Which ``_entry`` signals actually open a position.
+
+    The orbit of the jump function described in the module docstring: the first
+    signal opens, its exit is resolved with the anchor pinned at that bar, and
+    the next signal after that exit is the next real entry.
+
+    This is the general resolver — correct for every exit tree, including ones
+    :func:`plan_exit` refuses. It evaluates the user's own expression, so it
+    cannot disagree with the engine about what the condition means.
+    """
+    n = frame.height
+    entry = frame[entry_col].fill_null(False).to_list()  # noqa: FBT003
+    session_last: list[bool] | None = (
+        frame[session_last_col].to_list() if session_last_col else None
+    )
+    realized = [False] * n
+    if not any(entry) or not snapshot_cols:
+        return pl.Series(ANCHOR_ENTRY_COLUMN, realized, dtype=pl.Boolean)
+
+    inner = exit_cond.inner if isinstance(exit_cond, Limit) else exit_cond
+    exit_expr = inner.resolve()
+    candidates = [i for i, fired in enumerate(entry) if fired]
+
+    cursor = 0
+    for candidate in candidates:
+        if candidate < cursor:
+            continue  # suppressed: a position is still open here
+        if session_last is not None and session_last[candidate]:
+            # Under flatten_eod a session-last entry opens nothing — it is
+            # deferred to the next session, where its own signal is waiting.
+            continue
+        realized[candidate] = True
+        closed = _first_exit_after(
+            frame,
+            candidate,
+            exit_expr=exit_expr,
+            snapshot_cols=snapshot_cols,
+            entry=entry,
+            session_last=session_last,
+        )
+        if closed is None:
+            break  # open at the end of the frame; nothing after it can realize
+        cursor = closed + 1
+
+    return pl.Series(ANCHOR_ENTRY_COLUMN, realized, dtype=pl.Boolean)

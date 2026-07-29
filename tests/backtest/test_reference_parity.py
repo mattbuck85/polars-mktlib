@@ -21,9 +21,10 @@ import polars as pl
 import pytest
 
 from tests.backtest._reference import (
-    RefBracket,
     RefBars,
+    RefBracket,
     RefConfig,
+    RefLeg,
     run_reference,
 )
 from tests.backtest.test_golden_baseline import GOLDEN_DIR, _daily_frame
@@ -175,3 +176,86 @@ def test_reference_is_sensitive_to_a_wrong_fill_rule() -> None:
         assert mismatch, "a one-bar-early exit slipped past the parity check"
     finally:
         ref._resolve_exit = original  # type: ignore[assignment]
+
+
+# --- adjudication -----------------------------------------------------------
+#
+# Only meaningful because everything above passed first. The bootstrap cases
+# establish that the reference reproduces artifacts produced by paths nobody
+# alleges are broken; this then uses it to judge the one that was.
+
+
+def _entry_ref_reference() -> tuple[list, list[float]]:
+    df = _daily_frame()
+    fast, slow = df["fast"].to_list(), df["slow"].to_list()
+    bars = RefBars(
+        open=df["open"].to_list(),
+        high=df["high"].to_list(),
+        low=df["low"].to_list(),
+        close=df["close"].to_list(),
+        entry=_crossover(fast, slow),
+        exit=[False] * len(fast),
+        cols={"close": df["close"].to_list()},
+    )
+    # _EntryRefTargetStrategy: exit at close >= entry_close * 1.0025.
+    cfg = RefConfig(
+        side=1,
+        legs=(RefLeg(source="close", mult=1.0025, direction="above", strict=False),),
+    )
+    result = run_reference(bars, cfg)
+    return result.trades, result.returns
+
+
+def test_engine_matches_the_reference_on_entry_ref() -> None:
+    """The gate that justifies the regenerated `entry_ref` baseline.
+
+    The engine is compared against the oracle directly rather than against a
+    frozen file, because the frozen file is the thing being replaced. Agreement
+    here — with a reference committed before the fix and never edited for it —
+    is what makes the new baseline evidence rather than a restatement.
+    """
+    from mktlib.backtest import run
+
+    from tests.backtest.test_golden_baseline import _EntryRefTargetStrategy
+
+    engine = run(_daily_frame(), _EntryRefTargetStrategy())
+    trades, returns = _entry_ref_reference()
+
+    assert len(trades) == engine.trades.height
+    assert len(trades) > 1, "fixture must produce several closed trades"
+    for got, want_pnl, want_held in zip(
+        trades,
+        engine.trades["pnl"].to_list(),
+        engine.trades["bars_held"].to_list(),
+        strict=True,
+    ):
+        assert got.pnl == pytest.approx(want_pnl, abs=_TOL)
+        assert got.bars_held == want_held
+    for i, (got, want) in enumerate(
+        zip(returns, engine.returns["return"].to_list(), strict=True)
+    ):
+        assert got == pytest.approx(want, abs=_TOL), f"bar {i}"
+
+
+def test_the_anchor_no_longer_moves_mid_trade() -> None:
+    """A baseline-free invariant: one anchor per position, by construction."""
+    from mktlib.backtest import run
+
+    from tests.backtest.test_golden_baseline import _EntryRefTargetStrategy
+
+    signals = run(_daily_frame(), _EntryRefTargetStrategy()).signals
+    # Block ids from the position transitions, so the comparison never straddles
+    # two different positions — the anchor is *supposed* to change between them.
+    blocks = signals.with_columns(
+        ((pl.col("_position") == 1) & (pl.col("_position").shift(1) != 1))
+        .cum_sum()
+        .alias("_block")
+    ).filter(pl.col("_position") == 1)
+
+    assert blocks["_block"].n_unique() > 1, "fixture must open several positions"
+    per_block = blocks.group_by("_block").agg(
+        pl.col("_entry_close").n_unique().alias("anchors")
+    )
+    assert per_block.select((pl.col("anchors") == 1).all()).item(), (
+        f"an anchor moved mid-position: {per_block.sort('_block').to_dicts()}"
+    )
