@@ -315,24 +315,46 @@ def _apply_bracket(
     # Only the first trigger in a block closes the position; later triggers
     # are noise against a position that is already flat.
     #
-    # ONE window serves both columns. ``seen`` was previously a second
+    # ONE count serves all three columns. ``seen`` was previously a second
     # ``cum_sum().over(BLOCK)`` taken over ``exit_bar``, but the two are
     # algebraically identical: ``exit_bar`` is true exactly once per block, on
     # the first trigger, so ``cum_sum(exit_bar) >= 1`` and ``cum_sum(triggered)
-    # >= 1`` both flip true on that same bar and stay true. Windowed cumulative
-    # sums are the dominant cost of this function, so computing one instead of
-    # two is the single largest saving available here.
-    # The count is MATERIALIZED first, then read three times as a plain column.
-    # Inlining the window expression into the three consumers instead is
-    # measurably slower (41.7ms vs 38.6ms per run at 491k rows): a
-    # ``with_columns`` does not common-subexpression-eliminate a repeated
-    # window, so it evaluates the ``cum_sum().over()`` once per consumer. One
-    # materialization plus three column reads beats both that and the original
-    # two windows.
+    # >= 1`` both flip true on that same bar and stay true.
+    #
+    # That count is computed WITHOUT a window. ``BLOCK_COLUMN`` is a ``cum_sum``
+    # of a non-negative cast, so it is contiguous and monotonically
+    # non-decreasing — and for that shape a per-block cumulative count is just
+    # the GLOBAL cumulative count minus its value on the row before the block
+    # began. The base is recovered by forward-filling from each block-start row,
+    # which costs a shift and a forward_fill in place of a ``.over()``.
+    #
+    # The count is MATERIALIZED, then read three times as a plain column.
+    # Inlining the expression into the three consumers instead is measurably
+    # slower (41.7ms vs 38.6ms per run at 491k rows): a ``with_columns`` does not
+    # common-subexpression-eliminate a repeated expression, so it evaluates it
+    # once per consumer.
+    _cum = "__bracket_trigger_cum"
+    _base = "__bracket_block_base"
     _count = "__bracket_trigger_count"
     triggered = pl.col(BRACKET_CANDIDATE_COLUMN).is_not_null()
     signals = signals.with_columns(
-        triggered.cast(pl.UInt32).cum_sum().over(BLOCK_COLUMN).alias(_count),
+        triggered.cast(pl.UInt32).cum_sum().alias(_cum),
+    )
+    # Row 0: ``shift(1)`` is null, so the ``!=`` is null, so ``when`` is false and
+    # the ``fill_null(0)`` supplies the base — which is correct, because the
+    # first block's base genuinely is 0. ``_base <= _cum`` everywhere by
+    # construction (it is an earlier value of a non-decreasing series), so the
+    # UInt32 subtraction below cannot underflow.
+    signals = signals.with_columns(
+        pl.when(pl.col(BLOCK_COLUMN) != pl.col(BLOCK_COLUMN).shift(1))
+        .then(pl.col(_cum).shift(1).fill_null(0))
+        .otherwise(None)
+        .forward_fill()
+        .fill_null(0)
+        .alias(_base),
+    )
+    signals = signals.with_columns(
+        (pl.col(_cum) - pl.col(_base)).alias(_count),
     )
     # ``seen`` used to be a SECOND window over ``exit_bar``. It is algebraically
     # the same series: ``exit_bar`` is true exactly once per block, on the first
@@ -346,7 +368,7 @@ def _apply_bracket(
         .otherwise(None)
         .alias(BRACKET_KIND_COLUMN),
         (pl.col(_count) >= 1).alias(BRACKET_SEEN_COLUMN),
-    ).drop(_count)
+    ).drop(_cum, _base, _count)
 
     fill_price = pl.lit(None, dtype=pl.Float64)
     for leg, level_col in legs:
