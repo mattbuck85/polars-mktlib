@@ -76,6 +76,12 @@ def _walk_cond(cond: Condition, cols: set[str]) -> None:
             _walk_cond(right, cols)
         case Not(inner, _):
             _walk_cond(inner, cols)
+        case Limit():
+            # Without this the engine creates no snapshot column for a
+            # Limit-wrapped EntryRef exit, and resolving it raises
+            # ColumnNotFoundError on `_entry_*`. Both are documented public API
+            # and the combination had no test.
+            _walk_cond(cond.inner, cols)
         case ValueGT(a, b, _) | ValueGTE(a, b, _) | ValueLT(a, b, _) | ValueLTE(a, b, _):
             _walk_expr(a, cols)
             _walk_expr(b, cols)
@@ -364,7 +370,7 @@ def _first_exit_after(
     return None
 
 
-def realized_entries(
+def _realized_entries_windowed(
     frame: pl.DataFrame,
     *,
     entry_col: str,
@@ -372,15 +378,16 @@ def realized_entries(
     snapshot_cols: set[str],
     session_last_col: str | None = None,
 ) -> pl.Series:
-    """Which ``_entry`` signals actually open a position.
+    """Which ``_entry`` signals actually open a position — the general path.
 
     The orbit of the jump function described in the module docstring: the first
     signal opens, its exit is resolved with the anchor pinned at that bar, and
     the next signal after that exit is the next real entry.
 
-    This is the general resolver — correct for every exit tree, including ones
-    :func:`plan_exit` refuses. It evaluates the user's own expression, so it
-    cannot disagree with the engine about what the condition means.
+    Correct for every exit tree, including ones :func:`plan_exit` refuses. It
+    evaluates the user's own expression, so it cannot disagree with the engine
+    about what the condition means — which is exactly why it stays as the
+    fallback rather than being replaced.
     """
     n = frame.height
     entry = frame[entry_col].fill_null(False).to_list()  # noqa: FBT003
@@ -512,3 +519,40 @@ def _realized_entries_fast(
         n=frame.height,
     )
     return pl.Series(ANCHOR_ENTRY_COLUMN, result.realized, dtype=pl.Boolean)
+
+
+def realized_entries(
+    frame: pl.DataFrame,
+    *,
+    entry_col: str,
+    exit_cond: Condition,
+    snapshot_cols: set[str],
+    session_last_col: str | None = None,
+) -> pl.Series:
+    """Which ``_entry`` signals actually open a position.
+
+    Two resolvers, one answer. When :func:`plan_exit` recognizes the exit tree
+    as a set of levels pinned at entry, the chain resolves in a single forward
+    pass; otherwise the user's own expression is evaluated over a doubling
+    window, which is slower but correct for anything.
+
+    The two paths are held to agreement by
+    ``tests/backtest/test_anchor_equivalence.py``, which partitions its corpus
+    using :func:`plan_arrays` — the same call dispatched on here — so widening
+    eligibility later cannot quietly move results.
+    """
+    arrays = plan_arrays(frame, plan_exit(exit_cond))
+    if arrays is not None:
+        return _realized_entries_fast(
+            frame,
+            entry_col=entry_col,
+            arrays=arrays,
+            session_last_col=session_last_col,
+        )
+    return _realized_entries_windowed(
+        frame,
+        entry_col=entry_col,
+        exit_cond=exit_cond,
+        snapshot_cols=snapshot_cols,
+        session_last_col=session_last_col,
+    )
