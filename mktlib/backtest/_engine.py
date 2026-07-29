@@ -245,7 +245,8 @@ def _apply_bracket(
     is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
 
     # Latch the entry fill price (the entry bar's own open) and give every
-    # position block an id, so "first trigger wins" is a windowed cum_sum.
+    # position block an id, so "first trigger wins" becomes a cumulative count
+    # that resets per block.
     signals = signals.with_columns(
         pl.when(is_entry_bar)
         .then(pl.col("open"))
@@ -289,26 +290,44 @@ def _apply_bracket(
     if flatten_eod:
         live = live & ~pl.col("_session_last")
 
-    hits = {
-        leg: (
-            live & trigger_expr(leg=leg, is_long=is_long, level_col=level_col)
-        ).fill_null(False)
-        for leg, level_col in legs
-    }
-    tp_hit = hits.get(TAKE_PROFIT, pl.lit(False))
-    sl_hit = hits.get(STOP_LOSS, pl.lit(False))
+    # Each leg's trigger is MATERIALIZED as a boolean column. It is read twice —
+    # once to build the candidate, once to pick the fill price — and a
+    # ``with_columns`` does not common-subexpression-eliminate a repeated
+    # expression, so leaving it inline evaluates the comparison chain twice.
+    _hit_cols = {leg: f"__bracket_hit_{leg}" for leg, _ in legs}
+    signals = signals.with_columns(
+        [
+            (live & trigger_expr(leg=leg, is_long=is_long, level_col=level_col))
+            .fill_null(False)
+            .alias(_hit_cols[leg])
+            for leg, level_col in legs
+        ]
+    )
 
-    if bracket.both_touch == "stop_first":
+    # Resolution order for a bar that tags BOTH levels. The candidate string and
+    # the fill price are both built from this one list, so the ``both_touch``
+    # policy is expressed exactly once rather than mirrored in two places that
+    # could drift apart.
+    _priority = (
+        (STOP_LOSS, TAKE_PROFIT)
+        if bracket.both_touch == "stop_first"
+        else (TAKE_PROFIT, STOP_LOSS)
+    )
+    ordered: list[tuple[str, str]] = [
+        (leg, level_col)
+        for leg in _priority
+        for present, level_col in legs
+        if present == leg
+    ]
+
+    # Built back to front so the first entry in ``ordered`` ends up outermost
+    # and therefore wins.
+    candidate = pl.lit(None, dtype=pl.String)
+    for leg, _ in reversed(ordered):
         candidate = (
-            pl.when(sl_hit).then(pl.lit(STOP_LOSS))
-            .when(tp_hit).then(pl.lit(TAKE_PROFIT))
-            .otherwise(None)
-        )
-    else:
-        candidate = (
-            pl.when(tp_hit).then(pl.lit(TAKE_PROFIT))
-            .when(sl_hit).then(pl.lit(STOP_LOSS))
-            .otherwise(None)
+            pl.when(pl.col(_hit_cols[leg]))
+            .then(pl.lit(leg))
+            .otherwise(candidate)
         )
     signals = signals.with_columns(candidate.alias(BRACKET_CANDIDATE_COLUMN))
 
@@ -370,10 +389,15 @@ def _apply_bracket(
         (pl.col(_count) >= 1).alias(BRACKET_SEEN_COLUMN),
     ).drop(_cum, _base, _count)
 
+    # Which leg fired is already known as a pair of booleans, so the fill price
+    # is selected from those rather than by comparing the ``_bracket_kind``
+    # String against a leg name once per leg. Same ``ordered`` priority, so this
+    # picks exactly the leg ``_bracket_kind`` names; gating on the exit-bar mask
+    # reproduces its null-off-the-exit-bar pattern.
     fill_price = pl.lit(None, dtype=pl.Float64)
-    for leg, level_col in legs:
+    for leg, level_col in reversed(ordered):
         fill_price = (
-            pl.when(pl.col(BRACKET_KIND_COLUMN) == leg)
+            pl.when(pl.col(BRACKET_EXIT_COLUMN) & pl.col(_hit_cols[leg]))
             .then(fill_expr(leg=leg, is_long=is_long, level_col=level_col))
             .otherwise(fill_price)
         )
@@ -390,7 +414,7 @@ def _apply_bracket(
             pl.col(BRACKET_EXIT_COLUMN)
             | (pl.col("_exit_clean") & ~pl.col(BRACKET_SEEN_COLUMN))
         ).alias("_exit_clean"),
-    )
+    ).drop(_hit_cols.values())
 
 
 def _run_core(
