@@ -265,7 +265,8 @@ The ``trades`` DataFrame must have these columns:
      - Per-trade profit/loss (return, not dollar amount)
    * - ``bars_held``
      - ``Int64``
-     - Number of bars the position was held
+     - Bars between the entry fill and the exit fill. ``0`` when a bracket or
+       limit closes the position on the same bar the entry filled on.
 
 This is the schema produced by ``run().trades``.
 
