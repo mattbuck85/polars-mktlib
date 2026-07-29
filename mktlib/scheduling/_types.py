@@ -6,7 +6,11 @@ from datetime import date, datetime
 
 @dataclass
 class MarketDailySchedule:
-    """Single-day market schedule — matches tradesignalcore's dataclass."""
+    """Single-day market schedule.
+
+    Field names and types are chosen to drop straight into a consumer's own
+    schedule dataclass without an adapter layer.
+    """
 
     date: date
     market_open: datetime
