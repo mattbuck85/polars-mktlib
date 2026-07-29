@@ -7,6 +7,8 @@ Signal-driven backtesting with fill-at-next-open semantics, exchange calendar in
 | Export | Source | Description |
 |-|-|-|
 | `run(df, strategy, *, trade_side, calendar, flatten_eod, instrument_col)` | `_engine.py:279` | Run vectorized backtest; returns `BacktestResult` or `MultiBacktestResult` |
+| `Cost` | `_cost.py:47` | Frozen dataclass: per-side transaction cost in basis points (`commission_bps`, `slippage_bps`, `slippage_col`) |
+| `Bracket` | `_bracket.py:105` | Frozen dataclass: protective TP/SL resting against every position (`take_profit`, `stop_loss`, `both_touch`) |
 | `Strategy` | `_types.py:28` | Protocol: `entry() -> Condition \| pl.Expr`, `exit() -> Condition \| pl.Expr` |
 | `BacktestResult` | `_types.py:43` | Dataclass: `returns`, `trades`, `signals` DataFrames |
 | `MultiBacktestResult` | `_types.py:54` | Dict-like container of per-symbol `BacktestResult`s with lazy-cached combined views |
@@ -45,8 +47,47 @@ Single-symbol backtest pipeline:
 4. Resolve exit condition to `_exit` column (pass 2 — snapshot columns now exist)
 5. Build `_position` (1=in, 0=out) with forward-fill
 6. Detect clean entry/exit transitions (`_entry_clean`, `_exit_clean`)
-7. Compute per-bar returns with fill-at-open adjustment
-8. Extract trade log via `_extract_trades`
+7. Apply `bracket=Bracket(...)` via `_apply_bracket` — levels, triggers, first-hit-per-block, `_exit_clean` redirect (all columns dropped before return)
+8. Materialize `_cost_bps` when `cost=Cost(...)` was passed (dropped before return)
+9. Compute per-bar returns with fill-at-open adjustment
+10. Extract trade log via `_extract_trades`
+
+### Transaction costs (`_cost.py`)
+
+| Symbol | Purpose |
+|-|-|
+| `Cost` | Frozen, `slots=True`, primitives only (no callables — a closure is invisible to a consumer's cache key). Validates non-negative + finite in `__post_init__` |
+| `COST_COLUMN` | `"_cost_bps"` — the internal per-bar column the engine materializes and drops |
+| `cost_bps_expr(cost)` | `lit(commission_bps + slippage_bps) [+ col(slippage_col)]` |
+
+Cost is folded into the three **fill-bar** return expressions (`_entry_ret`, `_exit_ret`, `_limit_ret`) via the local `_charge()` helper — never into the `when/then` chains, and never multiplied by `effective_side`. `_extract_trades` reads each leg's cost with the same alignment as the price that leg pays: the entry leg from `shift(-1)`, the exit leg mirroring `exit_price`'s limit / session-last / next-open priority.
+
+Backward compatibility: `cost=None` takes a byte-for-byte unchanged code path; `cost=Cost()` exercises the real arithmetic and is pinned against the frozen Parquet baselines in `tests/backtest/test_golden_baseline.py`.
+
+### Bracket exits (`_bracket.py`)
+
+| Symbol | Purpose |
+|-|-|
+| `Bracket` | Frozen, `slots=True`, primitives only. `take_profit`/`stop_loss` are a `float` (fraction of the entry fill) or a `str` (column of absolute levels, latched at the `_entry_clean` signal bar); `both_touch` picks the same-bar policy |
+| `level_expr` / `trigger_expr` / `fill_expr` | The decision table, emitted per compile-time-known side — never derived by multiplying a comparison through `effective_side` |
+| `BRACKET_COLUMNS` | The internal working columns the engine materializes and drops |
+
+Fill table (mirrors a conventional event-driven OHLC broker: a long bracket is a sell limit plus a sell stop):
+
+| Side | Leg | Trigger | Fill |
+|-|-|-|-|
+| long | TP | `high >= tp` | `max(open, tp)` |
+| long | SL | `low <= sl` | `min(open, sl)` |
+| short | TP | `low <= tp` | `min(open, tp)` |
+| short | SL | `high >= sl` | `max(open, sl)` |
+
+`_apply_bracket` (`_engine.py`) latches the entry fill price and a per-position `_bracket_block` id, computes both legs' levels, masks triggers to `_pos_d1 == 1` (so the bracket is armed **from the entry fill bar**, and — under `flatten_eod` — never on a session-last bar, where the engine already flattened at the open), keeps only the first trigger per block via `cum_sum().over(block) == 1`, and redirects `_exit_clean` to the bracket bar. `_position` is left inconsistent, exactly as the `Limit` path does; the return expression (`_with_bracket`) and `_extract_trades` carry the truth. Bars after the bracket bar in the same block return `0.0` — **a bracketed block never re-enters**, which is a deliberate divergence from live.
+
+`both_touch` defaults to `"stop_first"`, which **diverges from submission-order OCO on purpose**: a live bracket is commonly an OCO pair whose TP leg is submitted before the SL leg and filled in submission order, so the realized policy on a both-touch bar is `take_profit_first`. Pinned by `test_default_policy_diverges_from_submission_order_oco`.
+
+Unsupported combinations, both `NotImplementedError`: `bracket` + `short_strategy` (the dual merge would evaluate the long leg's levels against the short leg's position) and `bracket` + a `Limit(...)` exit (both claim the same-bar fill).
+
+Backward compatibility: `bracket=None` takes a byte-for-byte unchanged code path, pinned by `test_golden_baseline_no_bracket`.
 
 ### EntryRef tree walker — L87
 

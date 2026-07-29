@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+
+- **Per-fill transaction costs via `run(..., cost=Cost(...))`** — new `mktlib.backtest.Cost`, a frozen dataclass of primitives: `Cost(commission_bps=0.0, slippage_bps=0.0, slippage_col=None)`. Cost is stated in **basis points of notional, per side**, because the engine is share-count free — it composes price relatives only and never sees a quantity, so a per-share fee schedule (IB's `$0.005/share, $1.00 minimum`) is not expressible here. Convert at the call site: `bps = 1e4 * fee_per_share / expected_fill_price`. `slippage_col` names a column of *additional* per-bar slippage in bps (e.g. half the quoted spread), read on the fill bar and stacked on the two flat terms.
+- **Costs are charged at the fill, on both legs, in both artifacts.** The entry bar, the exit bar, the same-bar limit fill bar, the bracket fill bar and the session-forced-exit bar each pay; holding bars and flat bars do not. The charge lands in the `returns` series *and* in `trades.pnl`, with each leg reading the cost bar that matches the price that leg pays. Cost is never applied as a post-hoc transform on the returns series — such a transform cannot see trade boundaries and would charge holding bars too. Cost is **subtracted**, never multiplied by the trade side: a short pays the same haircut a long does.
+- **Protective TP/SL exits via `run(..., bracket=Bracket(...))`** — new `mktlib.backtest.Bracket(take_profit=None, stop_loss=None, both_touch="stop_first")`. Each leg takes either a `float` (a fraction of the entry fill price, signed in the trade's favour / against it) or a `str` naming a column of absolute price levels latched on the entry signal bar. Requires `high` / `low` columns. The bracket is armed on the **entry fill bar** and checked on every bar the position is live, including that first one, so a gap straight through the level fills on the entry bar.
+- **Bracket fill semantics mirror a conventional event-driven OHLC broker exactly.** Long side (short mirrors): take-profit triggers on `high >= tp` and fills `max(open, tp)`; stop-loss triggers on `low <= sl` and fills `min(open, sl)`. Verified trade-by-trade against an independent reference implementation of `OHLCFillChecker` across seeds, sides, level pairs and both `both_touch` policies.
+
+### Notes
+
+- **`Cost` takes primitives only — callables are deliberately not supported.** A closure has no stable identity, so a callable cost model is invisible to a consumer's optimizer cache key; two runs whose keys collide but whose cost transforms differ would silently serve each other's cached results. Floats and a column name are hashable and comparable, so a cache key can see them.
+- **Within-bar ordering is unknowable from OHLC.** A bar that tags both bracket legs records nothing about which came first — the same open/high/low/close is produced by a path that stopped out and by one that took profit. `both_touch` is a *stated assumption*, not a measurement, and no OHLC backtest can validate it. Re-run with both policies to bound the true result; a strategy whose edge lives inside that band has no edge this data can demonstrate.
+- **`both_touch` defaults to `"stop_first"`, which diverges from live on purpose.** A live bracket is commonly an OCO pair whose take-profit leg is submitted first and filled in submission order, so the realized policy on such a bar is `"take_profit_first"`. mktlib defaults to the conservative resolution because a backtest should not book the favourable side of an ambiguity it cannot observe. Pass `both_touch="take_profit_first"` to reproduce live behaviour.
+- **A bracket exit does not re-arm the entry signal.** The position stays closed for the remainder of the block the entry opened; the next trade needs the strategy's `exit()` condition to fire and a fresh entry signal after it.
+- `bracket=` is not supported together with a `Limit(...)` exit condition (both claim the same-bar fill and OHLC cannot order them), nor with `short_strategy=` dual runs. Both raise `NotImplementedError`.
+
+### Fixed
+
+- **A null in `slippage_col` on a fill bar silently zeroed that bar's return.** `flat + null` is null, the null propagated through the fill-bar return expression, and the engine's terminal `fill_null(0.0)` then replaced a *real* return with `0.0` while the trade's `pnl` went null. A single missing quote could rewrite the P&L of a whole run with no error. `slippage_col` is now validated on the fill bars — the only bars whose values are ever read — and rejects nulls, non-finite values, negative values (a negative slippage is a rebate that would pay the strategy for trading) and non-numeric dtypes. Values on non-fill bars remain unconstrained, so an indicator warm-up that leaves the column null is still fine.
+- **The returns series undercharged trades whose entry and exit filled on the same bar.** Two cases, both of which made `returns` and `trades.pnl` disagree on how many legs a trade paid for: a `Limit(...)` exit firing on the entry fill bar charged one side instead of two, and under `flatten_eod` an entry filling *on* the session-last bar (open and immediate forced flatten) charged nothing at all while `trades.pnl` charged both legs. Both now charge two sides, and the two artifacts reconcile leg-for-leg. Affects cost-adjusted results only — the uncosted return of those bars is unchanged.
+
+### Backward compatibility
+
+**Guaranteed byte-identical.** `cost` and `bracket` both default to `None`, and with `cost=Cost()` (all fields zero) or no cost model at all, and no bracket, every existing backtest produces **byte-for-byte identical** `returns`, `trades` and `signals` — including column order and dtypes. This is enforced by a golden-baseline suite (`tests/backtest/test_golden_baseline.py`) that pins all three artifacts of nine engine scenarios to frozen Parquet files and was verified bit-for-bit (`struct.pack`) across seeds and both trade sides. The zero case is a real `0.0` subtraction rather than a short-circuit, so the guarantee holds through the arithmetic and not merely around it. The internal `_cost_bps` / `_bracket_*` columns are appended last and dropped before the result is returned, leaving `signals` column order untouched. No existing signature, default or return schema changed; `polars` remains the only runtime dependency.
+
 ## 0.12.0
 
 ### Added

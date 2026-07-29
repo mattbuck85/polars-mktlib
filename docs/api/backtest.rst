@@ -32,6 +32,57 @@ Return Model
      - ``(open - prev_close) / prev_close``
    * - Session-forced exit (``flatten_eod``)
      - ``(open - prev_close) / prev_close`` for held positions; ``0`` for same-bar entry+exit
+   * - Bracket exit bar (``bracket=Bracket(...)``)
+     - ``(bracket_fill - prev_close) / prev_close``; ``(bracket_fill - open) / open`` when the bracket closes the position on the bar it opened
+   * - Bars after a bracket exit, up to the signal exit
+     - ``0`` — the position is closed and does not re-open within the block
+   * - Any fill bar, with ``cost=Cost(...)``
+     - the formula above, minus ``cost_bps / 1e4`` (holding bars unchanged; a bracket exit on the entry bar pays twice, since two fills land there)
+
+Transaction Costs
+~~~~~~~~~~~~~~~~~
+
+Pass ``cost=Cost(...)`` to :func:`run` to charge per-side transaction costs.
+Costs are stated in **basis points of notional** because the engine is
+share-count free — it composes price relatives only, so a per-share or
+per-order fee schedule cannot be expressed without a quantity. Convert at
+the call site: ``bps = 1e4 * fee_per_share / expected_fill_price``.
+
+.. code-block:: python
+
+   from mktlib.backtest import Cost, run
+
+   # 1 bp commission + 0.5 bp assumed slippage, each side
+   result = run(df, strategy, cost=Cost(commission_bps=1.0, slippage_bps=0.5))
+
+   # flat commission plus a per-bar slippage column the strategy computed
+   result = run(df, strategy, cost=Cost(commission_bps=1.0, slippage_col="half_spread_bps"))
+
+The charge is applied **at the fill** — on the entry bar, the exit bar, the
+limit-fill bar and the session-forced-exit bar — in both ``returns`` and
+``trades.pnl``. It is never applied as a post-hoc transform on the returns
+series, which cannot see trade boundaries, and never multiplied by the trade
+side: a short pays the same haircut a long does.
+
+``Cost()`` with its all-zero defaults is an exact no-op, so adding the
+parameter cannot move an existing backtest.
+
+.. note::
+
+   Costs are primitives only — floats and a column name, never a callable.
+   A closure has no stable identity, so a callable cost model would be
+   invisible to a caller's cache key and two runs with colliding keys could
+   serve each other's results.
+
+.. note::
+
+   Two known reconciliation gaps between ``returns`` and ``trades.pnl``:
+   a position still open on the final bar produces no trade row (pre-existing),
+   and where a limit exit fires on the entry-fill bar the returns series
+   charges one side while ``trades.pnl`` charges two.
+
+.. autoclass:: mktlib.backtest.Cost
+   :members:
 
 Engine
 ------
@@ -206,12 +257,96 @@ trailing stops or decoupled trigger/fill:
 
 .. note::
 
-   v1 scope: only the *top-level* ``Limit`` wrapper is recognized.
-   Nested use inside ``All`` / ``Any_`` / ``Not`` behaves as a plain
-   boolean. ``Any_(TP, SL)`` bracket patterns are planned for a later
-   release.
+   Only the *top-level* ``Limit`` wrapper is recognized. Nested use
+   inside ``All`` / ``Any_`` / ``Not`` behaves as a plain boolean.
+
+   ``Limit`` expresses **one** same-bar exit. For a *pair* of protective
+   levels resting against every position, use ``bracket=Bracket(...)``
+   below — it owns the position lifecycle rather than just the fill
+   price, and resolves the same-bar both-touch case explicitly. The two
+   cannot be combined; passing both raises ``NotImplementedError``.
 
 .. autoclass:: mktlib.backtest.Limit
+   :members:
+
+Bracket Exits
+~~~~~~~~~~~~~
+
+Pass ``bracket=Bracket(...)`` to :func:`run` to rest a take-profit and a
+stop-loss against every position from its **entry fill bar** onward. The
+first leg to be tagged closes the position *inside* that bar, ahead of
+whatever the strategy's ``exit()`` condition would have done at the next
+bar's open.
+
+.. code-block:: python
+
+   from mktlib.backtest import Bracket, run
+
+   # 2% target, 1% stop, both as fractions of the entry fill price
+   result = run(df, strategy, bracket=Bracket(take_profit=0.02, stop_loss=0.01))
+
+   # Absolute levels from a column the strategy computed, latched at the
+   # entry signal bar (e.g. close + atr * mult)
+   result = run(df, strategy, bracket=Bracket(stop_loss="atr_stop"))
+
+Requires ``high`` and ``low`` columns. The fill table mirrors a
+conventional event-driven OHLC broker exactly — a long bracket is a
+sell limit plus a sell stop, a short bracket the mirror:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Side
+     - Leg
+     - Trigger
+     - Fill price
+   * - long
+     - take-profit
+     - ``high >= tp``
+     - ``max(open, tp)``
+   * - long
+     - stop-loss
+     - ``low <= sl``
+     - ``min(open, sl)``
+   * - short
+     - take-profit
+     - ``low <= tp``
+     - ``min(open, tp)``
+   * - short
+     - stop-loss
+     - ``high >= sl``
+     - ``max(open, sl)``
+
+Clamping against the bar's own open is what makes a gap honest: a long
+stop at 95 on a bar that opens at 90 fills at 90, not at 95.
+
+.. warning::
+
+   **Within-bar ordering is unknowable from OHLC.** A bar that reaches
+   both levels records nothing about which came first. ``both_touch`` is
+   a stated assumption, not a measurement; re-run with both settings to
+   bound the true result.
+
+   The default ``both_touch="stop_first"`` **deliberately diverges from
+   submission-order OCO**: a live bracket is commonly an OCO pair whose
+   take-profit leg is submitted first and filled in submission order, so
+   the realized policy on such a bar is ``"take_profit_first"``. mktlib
+   defaults to the pessimistic resolution; pass
+   ``both_touch="take_profit_first"`` to reproduce it.
+
+.. note::
+
+   A bracket exit does **not** re-arm the entry signal. The position stays
+   closed for the rest of the block the entry opened; the next trade needs
+   the ``exit()`` condition to fire and a fresh entry signal after it.
+   Live, a still-true entry condition would re-enter on the following bar.
+
+   Not supported together with ``short_strategy=`` (the dual path merges
+   only ``_position`` and ``_side``, so the long leg's levels would be
+   evaluated against the short leg's position) or with a ``Limit(...)``
+   exit condition. Both raise ``NotImplementedError``.
+
+.. autoclass:: mktlib.backtest.Bracket
    :members:
 
 Column Expressions

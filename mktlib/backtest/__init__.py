@@ -25,6 +25,8 @@ from mktlib.backtest._conditions import (
     ValueLTE,
 )
 from mktlib.backtest._artifact import combined_strategy_artifact, register_alias, strategy_artifact
+from mktlib.backtest._bracket import Bracket
+from mktlib.backtest._cost import Cost
 from mktlib.backtest._engine import run
 from mktlib.backtest._types import BacktestResult, InitStrategy, MultiBacktestResult, Strategy, TradeSide
 from mktlib.backtest._weights import (
@@ -39,10 +41,12 @@ __all__ = [
     "All",
     "Any_",
     "BacktestResult",
+    "Bracket",
     "Col",
     "combined_strategy_artifact",
     "ColExpr",
     "Condition",
+    "Cost",
     "Crossover",
     "Crossunder",
     "Custom",
