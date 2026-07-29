@@ -167,6 +167,37 @@ def test_unknown_both_touch_policy_rejected() -> None:
         Bracket(take_profit=0.02, both_touch="whichever")  # type: ignore[arg-type]
 
 
+def test_rearm_defaults_off() -> None:
+    """Turning it on changes results, so it cannot be the default."""
+    assert Bracket(take_profit="tp").rearm is False
+
+
+def test_rearm_must_be_bool() -> None:
+    with pytest.raises(TypeError, match="rearm must be a bool"):
+        Bracket(take_profit="tp", rearm="yes")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"take_profit": 0.02},
+        {"stop_loss": 0.01},
+        {"take_profit": 0.02, "stop_loss": "sl"},
+        {"take_profit": "tp", "stop_loss": 0.01},
+    ],
+)
+def test_rearm_rejects_fractional_levels(kwargs: dict[str, object]) -> None:
+    """A fraction scales the entry FILL price, which under re-arm depends on
+    the position, which depends on the levels. Circular — so it is refused
+    rather than silently anchored somewhere else."""
+    with pytest.raises(NotImplementedError, match="requires column-name levels"):
+        Bracket(rearm=True, **kwargs)  # type: ignore[arg-type]
+
+
+def test_rearm_accepts_column_levels() -> None:
+    assert Bracket(take_profit="tp", stop_loss="sl", rearm=True).rearm is True
+
+
 def test_level_columns_lists_only_string_specs() -> None:
     assert Bracket(take_profit="tp", stop_loss=0.01).level_columns == ("tp",)
     assert Bracket(take_profit=0.02, stop_loss=0.01).level_columns == ()
@@ -672,3 +703,20 @@ def test_limit_exit_with_bracket_raises(flat: pl.DataFrame) -> None:
 def test_missing_range_column_raises(flat: pl.DataFrame, dropped: str) -> None:
     with pytest.raises(ValueError, match=f"Bracket requires \\['{dropped}'\\]"):
         run(flat.drop(dropped), CrossStrategy(), bracket=Bracket(take_profit=0.02))
+
+
+def test_rearm_is_not_silently_ignored_by_the_engine(flat: pl.DataFrame) -> None:
+    """Until the re-arm path is wired, asking for it must fail loudly.
+
+    A dropped ``rearm=True`` would return the no-rearm result — a different,
+    entirely plausible-looking number.
+    """
+    with pytest.raises(NotImplementedError, match="rearm=True"):
+        run(
+            flat.with_columns(
+                (pl.col("close") * 1.01).alias("tp"),
+                (pl.col("close") * 0.99).alias("sl"),
+            ),
+            CrossStrategy(),
+            bracket=Bracket(take_profit="tp", stop_loss="sl", rearm=True),
+        )

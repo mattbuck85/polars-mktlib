@@ -211,6 +211,13 @@ def _apply_bracket(
     extractor carry the truth; recomputing ``_position`` would require a
     sequential scan for no gain, since a bracketed block cannot re-enter.
     """
+    if bracket.rearm:
+        # Wired in a later commit. Raising rather than ignoring: a silently
+        # dropped rearm=True would return the no-rearm result, which differs and
+        # looks perfectly plausible.
+        msg = "Bracket(rearm=True) is not yet supported by the engine."
+        raise NotImplementedError(msg)
+
     missing_ohlc = [col for col in ("high", "low") if col not in signals.columns]
     if missing_ohlc:
         msg = (

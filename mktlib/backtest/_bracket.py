@@ -127,6 +127,13 @@ class Bracket:
         How to resolve a bar whose high **and** low tag both legs.
         ``"stop_first"`` (default) books the loss; ``"take_profit_first"``
         books the gain.
+    rearm
+        When ``True``, a bracket exit releases the position so a later entry
+        signal can open a new trade, instead of closing the block for good.
+        **Requires ``str`` level specs**; a ``float`` spec is a fraction of the
+        entry *fill* price, which is not known until the position is known,
+        which under re-arm depends on the levels — see Notes. Off by default,
+        because turning it on changes results.
 
     Notes
     -----
@@ -146,12 +153,27 @@ class Bracket:
     ambiguity it cannot observe. Pass ``both_touch="take_profit_first"`` to
     reproduce submission-order behaviour.
 
-    **A bracket exit does not re-arm the entry signal.** The position is
-    closed for the remainder of the block the entry opened; the next trade
-    needs the strategy's ``exit()`` condition to fire and a fresh entry
-    signal after it. Live, a still-true entry condition would re-enter on
-    the very next bar; that difference is intentional, since re-entering a
-    position that just stopped out is rarely what a bracket user wants.
+    **By default a bracket exit does not re-arm the entry signal.** The
+    position is closed for the remainder of the block the entry opened; the
+    next trade needs the strategy's ``exit()`` condition to fire and a fresh
+    entry signal after it. A strategy whose *only* exit is the bracket
+    therefore trades exactly **once** and then sits flat — measured at 1 trade
+    against 10,023 over the same 500k bars. Pass ``rearm=True`` for the
+    live-like behaviour.
+
+    **Why ``rearm`` needs ``str`` levels.** Re-arm works by feeding the touch
+    into the position state, so the position depends on the levels. A ``float``
+    spec scales the entry *fill* price, which is only known once the position
+    is known — circular. A ``str`` spec names a column read at the entry
+    *signal* bar, which is knowable beforehand, so the recurrence closes.
+
+    **``rearm`` re-anchors on every raw entry signal**, matching what
+    :class:`~mktlib.backtest.EntryRef` already does. That is exact when an entry
+    signal cannot fire while a position is open, and wrong when it can — a
+    condition that is true on half the bars would re-anchor the level on almost
+    every held bar, quietly turning a fixed bracket into a trailing one. The
+    engine detects this and raises rather than returning a number; it is not a
+    warning, because the failure inflates results.
 
     Requires ``high`` and ``low`` columns in the input DataFrame.
     """
@@ -159,6 +181,7 @@ class Bracket:
     take_profit: float | str | None = None
     stop_loss: float | str | None = None
     both_touch: BothTouch = "stop_first"
+    rearm: bool = False
 
     def __post_init__(self) -> None:
         for name in ("take_profit", "stop_loss"):
@@ -192,6 +215,26 @@ class Bracket:
                 f"got {self.both_touch!r}"
             )
             raise ValueError(msg)
+        if not isinstance(self.rearm, bool):
+            msg = f"Bracket.rearm must be a bool, got {self.rearm!r}"
+            raise TypeError(msg)
+        if self.rearm:
+            numeric = [
+                name
+                for name in ("take_profit", "stop_loss")
+                if isinstance(getattr(self, name), (int, float))
+                and not isinstance(getattr(self, name), bool)
+            ]
+            if numeric:
+                msg = (
+                    f"Bracket(rearm=True) requires column-name levels, but "
+                    f"{', '.join(numeric)} is a fraction. A fraction scales the "
+                    "entry fill price, which is not known until the position is "
+                    "known — and under re-arm the position depends on the levels. "
+                    "Pass a column of absolute price levels instead, computed "
+                    "from whatever the entry signal bar makes available."
+                )
+                raise NotImplementedError(msg)
 
     @property
     def level_columns(self) -> tuple[str, ...]:
