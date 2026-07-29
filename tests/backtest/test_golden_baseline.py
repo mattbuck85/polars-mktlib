@@ -198,6 +198,32 @@ def _intraday_frame(seed: int = 20260729) -> pl.DataFrame:
     return _frame(_intraday_dates(), seed=seed)
 
 
+def _rearm_frame() -> pl.DataFrame:
+    """Daily frame plus the columns the re-arm scenarios need.
+
+    A separate helper on purpose: adding these to ``_frame`` would change the
+    ``signals`` artifact of every existing scenario and force a full
+    regeneration, which is exactly the large-diff-hides-a-real-change failure
+    the ``--only`` flag exists to avoid.
+
+    Levels are deliberately TIGHT (10 bps) so the bracket actually fires on
+    most positions rather than pinning a run where it never triggers.
+
+    The strategy is the complementary crossover/crossunder pair, which is the
+    shape ``rearm`` is *valid* for: a crossover cannot re-fire until a
+    crossunder resets the edge, and the crossunder is the exit, so no entry
+    signal can land while a position is open. Anything looser — a rarely-firing
+    exit, say — lets a second crossover arrive mid-position, which the engine
+    refuses outright, so it cannot be a re-arm fixture at all. These baselines
+    therefore pin that the re-arm path reproduces the default path where it must,
+    permanently and in frozen artifacts, plus the ``_held`` column it adds.
+    """
+    return _daily_frame().with_columns(
+        (pl.col("open") * 1.001).round(6).alias("rearm_tp"),
+        (pl.col("open") * 0.999).round(6).alias("rearm_sl"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixture strategies (frozen + slots, matching tests/backtest conventions)
 # ---------------------------------------------------------------------------
@@ -444,6 +470,30 @@ def _scenario_bracket_entry_bar_gap(**kw: object) -> dict[str, pl.DataFrame]:
     )
 
 
+def _scenario_bracket_rearm_col_tp(**kw: object) -> dict[str, pl.DataFrame]:
+    return _artifacts(
+        run(
+            _rearm_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(take_profit="rearm_tp", rearm=True),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_rearm_col_both(**kw: object) -> dict[str, pl.DataFrame]:
+    return _artifacts(
+        run(
+            _rearm_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(
+                take_profit="rearm_tp", stop_loss="rearm_sl", rearm=True
+            ),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
 def _scenario_bracket_flatten_eod(**kw: object) -> dict[str, pl.DataFrame]:
     """Bracket alongside session-forced exits — the two exit paths interacting."""
     return _artifacts(
@@ -498,6 +548,8 @@ BRACKET_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     "bracket_entry_bar_gap": _scenario_bracket_entry_bar_gap,
     "bracket_flatten_eod": _scenario_bracket_flatten_eod,
     "bracket_cost": _scenario_bracket_cost,
+    "bracket_rearm_col_tp": _scenario_bracket_rearm_col_tp,
+    "bracket_rearm_col_both": _scenario_bracket_rearm_col_both,
 }
 
 SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
@@ -527,6 +579,8 @@ EXPECTED_SCENARIOS = frozenset(
         "bracket_entry_bar_gap",
         "bracket_flatten_eod",
         "bracket_cost",
+        "bracket_rearm_col_tp",
+        "bracket_rearm_col_both",
     }
 )
 
@@ -580,6 +634,49 @@ def test_bracket_scenario_actually_brackets(scenario: str) -> None:
         f"{scenario}: trades are identical to the un-bracketed run — "
         f"the bracket never fired, so this baseline pins nothing"
     )
+
+
+REARM_SCENARIOS = ("bracket_rearm_col_tp", "bracket_rearm_col_both")
+
+
+@pytest.mark.parametrize("scenario", REARM_SCENARIOS)
+def test_rearm_scenario_matches_the_default_path(scenario: str) -> None:
+    """Re-arm must change nothing when nothing can re-arm — frozen, not argued.
+
+    The fixture's entry cannot fire while a position is open, so releasing the
+    position early has nothing to release into. Any divergence here means the
+    re-arm path altered a result it had no business altering.
+
+    ``_held`` is the one permitted difference: it is the re-arm path's own view
+    of the position, which the default path does not emit.
+    """
+    produced = SCENARIOS[scenario]()
+    bracket_kwargs: dict[str, str] = {"take_profit": "rearm_tp"}
+    if scenario.endswith("both"):
+        bracket_kwargs["stop_loss"] = "rearm_sl"
+    plain = _artifacts(
+        run(
+            _rearm_frame(),
+            _CrossStrategy(),
+            bracket=Bracket(**bracket_kwargs),  # type: ignore[arg-type]
+        )
+    )
+
+    assert produced["trades"].height > 1, f"{scenario}: fixture must trade"
+    assert_frame_equal(plain["returns"], produced["returns"], check_exact=True)
+    assert_frame_equal(plain["trades"], produced["trades"], check_exact=True)
+    assert set(produced["signals"].columns) - set(plain["signals"].columns) == {
+        "_held"
+    }
+
+
+@pytest.mark.parametrize("scenario", REARM_SCENARIOS)
+def test_rearm_scenario_held_column_oscillates(scenario: str) -> None:
+    """A ``_held`` stuck at one value would pin a baseline that proves nothing."""
+    held = SCENARIOS[scenario]()["signals"]["_held"]
+    assert set(held.unique().to_list()) <= {0, 1}
+    values = held.to_list()
+    assert values.count(0) > 1 and values.count(1) > 1
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
