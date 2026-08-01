@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.2
+
+### Data
+
+- Monthly bundled Treasury yield-curve data refresh from Treasury.gov.
+
 ## 0.13.1
 
 ### Fixed
