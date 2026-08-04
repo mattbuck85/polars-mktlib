@@ -19,6 +19,12 @@ Polars Plugins (mktlib dependencies)
    Used by :mod:`mktlib.data` generators and ``ticks_to_ohlcv`` volume
    synthesis.
 
+`mktlib-scan <https://github.com/mattbuck85/mktlib-scan>`_
+   Compiled implementation of mktlib's own ``EntryRef`` chain resolver, via
+   ``pyo3-polars``. Installed with ``pip install mktlib[fast]``; output is
+   bit-identical to the pure-Python resolver, so it changes speed and nothing
+   else. See :doc:`installation`.
+
 Technical Analysis
 ------------------
 
