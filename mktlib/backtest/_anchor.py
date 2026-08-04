@@ -431,19 +431,47 @@ def _realized_entries_windowed(
 _NAN = float("nan")
 
 
-def plan_arrays(
-    frame: pl.DataFrame, plan: ExitPlan
-) -> tuple[tuple[ScanLeg, ...], list[bool] | None] | None:
-    """Materialize an :class:`ExitPlan` into arrays the scan kernel can walk.
+@dataclass(frozen=True, slots=True)
+class PlannedColumns:
+    """An :class:`ExitPlan` evaluated over the frame, still as polars Series.
 
-    Returns ``None`` when the fast path does not apply — which is also the
-    predicate the equivalence tests partition on, so production dispatch and the
-    test corpus cannot drift apart.
+    The split from :func:`plan_arrays` exists because **eligibility and
+    materialization are different jobs**, and only the second one is expensive.
+    Everything that can refuse the fast path happens here; converting to Python
+    lists happens afterwards and cannot change the answer. A resolver that walks
+    the Series directly therefore accepts exactly the trees the list-walking one
+    does, which is what ``test_plan_columns_decides_eligibility_alone`` pins.
 
-    Every expression is evaluated **once over the whole frame**. That is sound
-    because a leg's threshold reads only snapshots and literals, so its value at
-    row *j* is exactly the constant the windowed resolver pins for a candidate
-    entering at *j*.
+    ``value_ids[i]`` identifies which value column leg *i* reads. Legs sharing an
+    id read the same column — a take-profit and a stop-loss are usually both
+    written against ``close`` — and the kernel's specialized pair loop uses that
+    to halve its per-bar reads. In :func:`plan_arrays` the sharing is carried by
+    Python object identity (one list handed to both legs); an id is the same fact
+    stated explicitly, so it survives being handed to a resolver that cannot see
+    object identity.
+    """
+
+    values: tuple[pl.Series, ...]
+    thresholds: tuple[pl.Series, ...]
+    value_ids: tuple[int, ...]
+    directions: tuple[Literal["above", "below"], ...]
+    stricts: tuple[bool, ...]
+    fixed: pl.Series | None
+
+
+def _plan_columns(frame: pl.DataFrame, plan: ExitPlan) -> PlannedColumns | None:
+    """Evaluate an :class:`ExitPlan` over *frame*, or refuse the fast path.
+
+    **This function alone decides eligibility.** Every expression is evaluated
+    once over the whole frame, which is sound because a leg's threshold reads
+    only snapshots and literals, so its value at row *j* is exactly the constant
+    the windowed resolver pins for a candidate entering at *j*.
+
+    Nulls and NaNs are normalized to NaN here rather than at the point of use.
+    NaN is the "never fires" sentinel: every comparison against it is false in
+    both directions and at both strictness settings, with no per-bar branch.
+    (Infinity would not do — ``+inf >= +inf`` is true, so a real infinity in the
+    data would tie against the sentinel.)
     """
     if not plan.eligible or not plan.legs:
         return None
@@ -467,34 +495,70 @@ def plan_arrays(
             if not out[f"{prefix}{i}"].dtype.is_float():
                 return None
 
-    # Legs that read the same column share ONE list. A take-profit and a
-    # stop-loss are both written against `close`, and the kernel's specialized
-    # loop keys on that identity to halve its per-bar reads — handing it two
-    # equal-but-distinct lists would silently cost the optimization.
-    value_cache: dict[str, list[float]] = {}
+    # Legs reading the same value column get the same id. Keyed on the rendered
+    # expression, which is what makes two legs written against `close` share.
+    seen: dict[str, int] = {}
+    value_ids: list[int] = []
+    values: list[pl.Series] = []
+    for i, leg in enumerate(plan.legs):
+        key = str(leg.value)
+        index = seen.get(key)
+        if index is None:
+            index = len(values)
+            seen[key] = index
+            values.append(
+                out[f"__scan_v{i}"].fill_null(_NAN).fill_nan(_NAN)
+            )
+        value_ids.append(index)
 
-    def _values(index: int, expr: pl.Expr) -> list[float]:
-        key = str(expr)
-        cached = value_cache.get(key)
-        if cached is None:
-            cached = out[f"__scan_v{index}"].fill_null(_NAN).fill_nan(_NAN).to_list()
-            value_cache[key] = cached
-        return cached
+    return PlannedColumns(
+        values=tuple(values),
+        thresholds=tuple(
+            out[f"__scan_t{i}"].fill_null(_NAN).fill_nan(_NAN)
+            for i in range(len(plan.legs))
+        ),
+        value_ids=tuple(value_ids),
+        directions=tuple(leg.direction for leg in plan.legs),
+        stricts=tuple(leg.strict for leg in plan.legs),
+        fixed=(
+            out["__scan_fixed"].fill_null(False)  # noqa: FBT003
+            if plan.fixed is not None
+            else None
+        ),
+    )
 
+
+def plan_arrays(
+    frame: pl.DataFrame, plan: ExitPlan
+) -> tuple[tuple[ScanLeg, ...], list[bool] | None] | None:
+    """Materialize an :class:`ExitPlan` into arrays the scan kernel can walk.
+
+    Returns ``None`` when the fast path does not apply — which is also the
+    predicate the equivalence tests partition on, so production dispatch and the
+    test corpus cannot drift apart. The refusal is entirely
+    :func:`_plan_columns`'s; this function only converts.
+
+    Legs that read the same column share **one list object**, because the
+    kernel's specialized pair loop keys on that identity to halve its per-bar
+    reads — handing it two equal-but-distinct lists would silently cost the
+    optimization. ``PlannedColumns.value_ids`` is the same fact stated without
+    relying on identity.
+    """
+    columns = _plan_columns(frame, plan)
+    if columns is None:
+        return None
+
+    shared = [series.to_list() for series in columns.values]
     legs = tuple(
         ScanLeg(
-            value=_values(i, leg.value),
-            threshold=out[f"__scan_t{i}"].fill_null(_NAN).fill_nan(_NAN).to_list(),
-            direction=leg.direction,
-            strict=leg.strict,
+            value=shared[columns.value_ids[i]],
+            threshold=columns.thresholds[i].to_list(),
+            direction=columns.directions[i],
+            strict=columns.stricts[i],
         )
-        for i, leg in enumerate(plan.legs)
+        for i in range(len(columns.thresholds))
     )
-    fixed = (
-        out["__scan_fixed"].fill_null(False).to_list()  # noqa: FBT003
-        if plan.fixed is not None
-        else None
-    )
+    fixed = columns.fixed.to_list() if columns.fixed is not None else None
     return legs, fixed
 
 
@@ -508,8 +572,15 @@ def _realized_entries_fast(
     """Resolve the chain with one forward pass. See :mod:`._scan`."""
     legs, fixed = arrays
     entry = frame[entry_col].fill_null(False).to_list()  # noqa: FBT003
+    # `fill_null` here matches `entry` and `fixed`. Without it a null arrives as
+    # `None`, which Python happens to treat as falsy — the right answer, reached
+    # by accident. Stated explicitly, the "null means not a session boundary"
+    # rule holds for any resolver, including one that cannot rely on Python
+    # truthiness.
     session_last = (
-        frame[session_last_col].to_list() if session_last_col else None
+        frame[session_last_col].fill_null(False).to_list()  # noqa: FBT003
+        if session_last_col
+        else None
     )
     result = scan_realized(
         entry=entry,
