@@ -584,13 +584,22 @@ def test_bracket_scenario_actually_brackets(scenario: str) -> None:
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
 @pytest.mark.parametrize("scenario", sorted(SCENARIOS))
-def test_golden_baseline(scenario: str, artifact: str) -> None:
+def test_golden_baseline(scenario: str, artifact: str, scan_backend: str) -> None:
     """Engine output must be byte-identical to the frozen baseline.
 
     A failure here means the return-expression chain, the trade extractor,
     or the signals schema changed.  If the change is intended, regenerate
     with ``python tests/backtest/test_golden_baseline.py --regenerate`` and
     review the Parquet diff.
+
+    Run against **every** resolver backend. These baselines were frozen before
+    the compiled resolver existed, so this is the strongest statement available
+    that it changed nothing: not "the two backends agree with each other", which
+    two equally-wrong implementations would also satisfy, but "each agrees with
+    output committed before either of them was written".
+
+    **Never regenerate to make a backend pass.** A moved baseline here means the
+    accelerator is wrong.
     """
     path = _baseline_path(scenario, artifact)
     assert path.exists(), (

@@ -46,8 +46,15 @@ jobs:
     if: always() && !failure()
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.14"]
+        # The chain resolver has two implementations that must agree bit for
+        # bit. `native` proves the compiled one does; `without-accelerator`
+        # proves mktlib is still a complete, working, pure-Python library when
+        # `mktlib-scan` is not installed at all — which is the supported default,
+        # since `[fast]` is opt-in.
+        backend: [native, without-accelerator]
     steps:
     - uses: actions/checkout@v4
       with:
@@ -62,9 +69,18 @@ jobs:
         else
           pip install -e ".[dev]"
         fi
+    - name: Remove the accelerator
+      if: matrix.backend == 'without-accelerator'
+      run: pip uninstall -y mktlib-scan
     - run: flake8 mktlib --count --select=E9,F63,F7,F82 --show-source --statistics
     - run: pyright mktlib
     - name: Unit tests (fast)
+      # MKTLIB_SCAN_BACKEND=native makes the guard in test_backend.py assert the
+      # wheel really installed. Without it, a missing wheel would make every
+      # native-parameterized test skip and the run would go green having
+      # exercised no compiled code at all.
+      env:
+        MKTLIB_SCAN_BACKEND: ${{ matrix.backend == 'native' && 'native' || 'python' }}
       run: pytest -m "not integration"
     # NOTE: --no-cov on integration so we don't double-collect coverage
     # over the unit run. Side effect: any code path exercised *only* by

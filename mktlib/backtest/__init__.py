@@ -24,6 +24,11 @@ from mktlib.backtest._conditions import (
     ValueLT,
     ValueLTE,
 )
+from mktlib.backtest._backend import (
+    active_scan_backend,
+    get_scan_backend,
+    set_scan_backend,
+)
 from mktlib.backtest._artifact import combined_strategy_artifact, register_alias, strategy_artifact
 from mktlib.backtest._bracket import Bracket
 from mktlib.backtest._cost import Cost
@@ -38,6 +43,7 @@ from mktlib.backtest._weights import (
 )
 
 __all__ = [
+    "active_scan_backend",
     "All",
     "Any_",
     "BacktestResult",
@@ -52,6 +58,7 @@ __all__ = [
     "Custom",
     "EntryRef",
     "INSTRUMENT_COLUMN",
+    "get_scan_backend",
     "InitStrategy",
     "InvalidPortfolioWeights",
     "IsFalling",
@@ -65,6 +72,7 @@ __all__ = [
     "PriceExpr",
     "PriceIsAbove",
     "PriceIsBelow",
+    "set_scan_backend",
     "Strategy",
     "TradeSide",
     "ValueGT",

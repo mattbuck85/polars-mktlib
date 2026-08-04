@@ -34,6 +34,7 @@ from typing import Literal
 
 import polars as pl
 
+from mktlib.backtest._backend import active_scan_backend, native_module
 from mktlib.backtest._scan import ScanLeg, scan_realized
 from mktlib.backtest._conditions import (
     All,
@@ -547,7 +548,20 @@ def plan_arrays(
     columns = _plan_columns(frame, plan)
     if columns is None:
         return None
+    return _arrays_from_columns(columns)
 
+
+def _arrays_from_columns(
+    columns: PlannedColumns,
+) -> tuple[tuple[ScanLeg, ...], list[bool] | None]:
+    """Box every column into Python lists for the pure-Python kernel.
+
+    This is the expensive half of the old ``plan_arrays`` — measured at 71.0 ms
+    of a 108.9 ms resolver at 500k bars, against 0.4 ms for the polars evaluation
+    that produced the columns. The native backend skips this entirely and hands
+    the Series across the FFI instead, which is where nearly all of its advantage
+    comes from.
+    """
     shared = [series.to_list() for series in columns.values]
     legs = tuple(
         ScanLeg(
@@ -592,6 +606,41 @@ def _realized_entries_fast(
     return pl.Series(ANCHOR_ENTRY_COLUMN, result.realized, dtype=pl.Boolean)
 
 
+def _realized_entries_native(
+    frame: pl.DataFrame,
+    *,
+    entry_col: str,
+    columns: PlannedColumns,
+    session_last_col: str | None,
+) -> pl.Series:
+    """Resolve the chain in the compiled kernel, with no Python list of floats.
+
+    Deliberately the same shape as :func:`_realized_entries_fast` minus the
+    boxing: the Series go straight across the FFI, which is where the speedup
+    lives. ``value_ids`` carries the column sharing that the pure-Python kernel
+    expresses as object identity and an FFI cannot.
+
+    Output is required to be **bit-identical** to the Python path, not merely
+    close — see ``tests/backtest/test_anchor_equivalence.py``, which runs the
+    whole corpus and every frozen golden baseline against both.
+    """
+    module = native_module()
+    realized, _entries, _exits, _winners = module.scan_realized(
+        frame[entry_col].fill_null(False),  # noqa: FBT003
+        list(columns.values),
+        list(columns.thresholds),
+        list(columns.value_ids),
+        [d == "above" for d in columns.directions],
+        list(columns.stricts),
+        columns.fixed,
+        frame[session_last_col].fill_null(False)  # noqa: FBT003
+        if session_last_col
+        else None,
+        frame.height,
+    )
+    return pl.Series(ANCHOR_ENTRY_COLUMN, realized, dtype=pl.Boolean)
+
+
 def realized_entries(
     frame: pl.DataFrame,
     *,
@@ -609,15 +658,27 @@ def realized_entries(
 
     The two paths are held to agreement by
     ``tests/backtest/test_anchor_equivalence.py``, which partitions its corpus
-    using :func:`plan_arrays` — the same call dispatched on here — so widening
+    using :func:`_plan_columns` — the same call dispatched on here — so widening
     eligibility later cannot quietly move results.
+
+    When ``mktlib-scan`` is installed the single pass runs in a compiled kernel
+    instead, on the same eligibility decision and with output required to be
+    bit-identical. Pin either implementation with
+    :func:`~mktlib.backtest.set_scan_backend`.
     """
-    arrays = plan_arrays(frame, plan_exit(exit_cond))
-    if arrays is not None:
+    columns = _plan_columns(frame, plan_exit(exit_cond))
+    if columns is not None:
+        if active_scan_backend() == "native":
+            return _realized_entries_native(
+                frame,
+                entry_col=entry_col,
+                columns=columns,
+                session_last_col=session_last_col,
+            )
         return _realized_entries_fast(
             frame,
             entry_col=entry_col,
-            arrays=arrays,
+            arrays=_arrays_from_columns(columns),
             session_last_col=session_last_col,
         )
     return _realized_entries_windowed(
