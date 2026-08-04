@@ -34,6 +34,7 @@ from typing import Literal
 
 import polars as pl
 
+from mktlib.backtest._scan import ScanLeg, scan_realized
 from mktlib.backtest._conditions import (
     All,
     Any_,
@@ -75,6 +76,12 @@ def _walk_cond(cond: Condition, cols: set[str]) -> None:
             _walk_cond(right, cols)
         case Not(inner, _):
             _walk_cond(inner, cols)
+        case Limit():
+            # Without this the engine creates no snapshot column for a
+            # Limit-wrapped EntryRef exit, and resolving it raises
+            # ColumnNotFoundError on `_entry_*`. Both are documented public API
+            # and the combination had no test.
+            _walk_cond(cond.inner, cols)
         case ValueGT(a, b, _) | ValueGTE(a, b, _) | ValueLT(a, b, _) | ValueLTE(a, b, _):
             _walk_expr(a, cols)
             _walk_expr(b, cols)
@@ -363,7 +370,7 @@ def _first_exit_after(
     return None
 
 
-def realized_entries(
+def _realized_entries_windowed(
     frame: pl.DataFrame,
     *,
     entry_col: str,
@@ -371,15 +378,16 @@ def realized_entries(
     snapshot_cols: set[str],
     session_last_col: str | None = None,
 ) -> pl.Series:
-    """Which ``_entry`` signals actually open a position.
+    """Which ``_entry`` signals actually open a position — the general path.
 
     The orbit of the jump function described in the module docstring: the first
     signal opens, its exit is resolved with the anchor pinned at that bar, and
     the next signal after that exit is the next real entry.
 
-    This is the general resolver — correct for every exit tree, including ones
-    :func:`plan_exit` refuses. It evaluates the user's own expression, so it
-    cannot disagree with the engine about what the condition means.
+    Correct for every exit tree, including ones :func:`plan_exit` refuses. It
+    evaluates the user's own expression, so it cannot disagree with the engine
+    about what the condition means — which is exactly why it stays as the
+    fallback rather than being replaced.
     """
     n = frame.height
     entry = frame[entry_col].fill_null(False).to_list()  # noqa: FBT003
@@ -416,3 +424,135 @@ def realized_entries(
         cursor = closed + 1
 
     return pl.Series(ANCHOR_ENTRY_COLUMN, realized, dtype=pl.Boolean)
+
+
+#: Nulls become NaN on the way into the scan kernel: every NaN comparison is
+#: false, which is exactly "this bar never fires", with no extra branch.
+_NAN = float("nan")
+
+
+def plan_arrays(
+    frame: pl.DataFrame, plan: ExitPlan
+) -> tuple[tuple[ScanLeg, ...], list[bool] | None] | None:
+    """Materialize an :class:`ExitPlan` into arrays the scan kernel can walk.
+
+    Returns ``None`` when the fast path does not apply — which is also the
+    predicate the equivalence tests partition on, so production dispatch and the
+    test corpus cannot drift apart.
+
+    Every expression is evaluated **once over the whole frame**. That is sound
+    because a leg's threshold reads only snapshots and literals, so its value at
+    row *j* is exactly the constant the windowed resolver pins for a candidate
+    entering at *j*.
+    """
+    if not plan.eligible or not plan.legs:
+        return None
+
+    exprs: list[pl.Expr] = []
+    for i, leg in enumerate(plan.legs):
+        exprs.append(leg.value.alias(f"__scan_v{i}"))
+        exprs.append(leg.threshold.alias(f"__scan_t{i}"))
+    if plan.fixed is not None:
+        exprs.append(plan.fixed.alias("__scan_fixed"))
+
+    try:
+        out = frame.select(exprs)
+    except pl.exceptions.PolarsError:
+        return None
+
+    # Integers above 2**53 do not survive the cast to float, so refuse rather
+    # than resolve a level that is quietly off by one.
+    for i in range(len(plan.legs)):
+        for prefix in ("__scan_v", "__scan_t"):
+            if not out[f"{prefix}{i}"].dtype.is_float():
+                return None
+
+    # Legs that read the same column share ONE list. A take-profit and a
+    # stop-loss are both written against `close`, and the kernel's specialized
+    # loop keys on that identity to halve its per-bar reads — handing it two
+    # equal-but-distinct lists would silently cost the optimization.
+    value_cache: dict[str, list[float]] = {}
+
+    def _values(index: int, expr: pl.Expr) -> list[float]:
+        key = str(expr)
+        cached = value_cache.get(key)
+        if cached is None:
+            cached = out[f"__scan_v{index}"].fill_null(_NAN).fill_nan(_NAN).to_list()
+            value_cache[key] = cached
+        return cached
+
+    legs = tuple(
+        ScanLeg(
+            value=_values(i, leg.value),
+            threshold=out[f"__scan_t{i}"].fill_null(_NAN).fill_nan(_NAN).to_list(),
+            direction=leg.direction,
+            strict=leg.strict,
+        )
+        for i, leg in enumerate(plan.legs)
+    )
+    fixed = (
+        out["__scan_fixed"].fill_null(False).to_list()  # noqa: FBT003
+        if plan.fixed is not None
+        else None
+    )
+    return legs, fixed
+
+
+def _realized_entries_fast(
+    frame: pl.DataFrame,
+    *,
+    entry_col: str,
+    arrays: tuple[tuple[ScanLeg, ...], list[bool] | None],
+    session_last_col: str | None,
+) -> pl.Series:
+    """Resolve the chain with one forward pass. See :mod:`._scan`."""
+    legs, fixed = arrays
+    entry = frame[entry_col].fill_null(False).to_list()  # noqa: FBT003
+    session_last = (
+        frame[session_last_col].to_list() if session_last_col else None
+    )
+    result = scan_realized(
+        entry=entry,
+        legs=legs,
+        fixed=fixed,
+        session_last=session_last,
+        n=frame.height,
+    )
+    return pl.Series(ANCHOR_ENTRY_COLUMN, result.realized, dtype=pl.Boolean)
+
+
+def realized_entries(
+    frame: pl.DataFrame,
+    *,
+    entry_col: str,
+    exit_cond: Condition,
+    snapshot_cols: set[str],
+    session_last_col: str | None = None,
+) -> pl.Series:
+    """Which ``_entry`` signals actually open a position.
+
+    Two resolvers, one answer. When :func:`plan_exit` recognizes the exit tree
+    as a set of levels pinned at entry, the chain resolves in a single forward
+    pass; otherwise the user's own expression is evaluated over a doubling
+    window, which is slower but correct for anything.
+
+    The two paths are held to agreement by
+    ``tests/backtest/test_anchor_equivalence.py``, which partitions its corpus
+    using :func:`plan_arrays` — the same call dispatched on here — so widening
+    eligibility later cannot quietly move results.
+    """
+    arrays = plan_arrays(frame, plan_exit(exit_cond))
+    if arrays is not None:
+        return _realized_entries_fast(
+            frame,
+            entry_col=entry_col,
+            arrays=arrays,
+            session_last_col=session_last_col,
+        )
+    return _realized_entries_windowed(
+        frame,
+        entry_col=entry_col,
+        exit_cond=exit_cond,
+        snapshot_cols=snapshot_cols,
+        session_last_col=session_last_col,
+    )

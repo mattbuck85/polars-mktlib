@@ -20,6 +20,27 @@
 
 - **`EntryRef` under `flatten_eod` anchored on the wrong bar.** The snapshot was built before `flatten_eod` defers a session-last entry to the next session, so it latched on the bar the deferral moved away from. No test combined the two features. It now anchors on the bar the position actually opens on.
 
+- **`Limit(...)` wrapping an `EntryRef` exit raised `ColumnNotFoundError`.** The walker that decides which snapshot columns to create had no `Limit` case, so no `_entry_*` column was materialized and resolving the condition failed on the missing column. Both are documented public API; nothing combined them. Found by the resolver equivalence gate below, because the fast path unwraps `Limit` and the fallback did not.
+
+### Performance
+
+- **Resolving the `EntryRef` chain is 28–34× cheaper.** The correct anchoring above requires knowing which entry signals actually open a position, which the first implementation answered by evaluating the user's exit expression over a window once per candidate. It is now a single forward pass: the realized chain only queries the exit bar at entries it actually reaches, and those queries partition the timeline, so one scan touches each bar exactly once.
+
+  Measured with the two resolvers timed in isolation at a constant 3.2% entry density, median of 15 trials:
+
+  | bars | windowed | single pass | speedup |
+  |-|-|-|-|
+  | 10,000 | 18.0 ms | 0.6 ms | 28.2× |
+  | 100,000 | 206.1 ms | 6.1 ms | 33.7× |
+  | 500,000 | 1002.4 ms | 31.7 ms | 31.6× |
+
+  Output is unchanged — this is an optimization, not a semantics change, and no frozen baseline moves. Exit trees the fast path does not recognize (a threshold that re-reads the current bar, such as `EntryRef("close") - Col("atr") * 2`, which is a *trailing* stop rather than a fixed one) keep using the general resolver and stay correct. `scripts/bench_entryref_resolver.py` reproduces the table.
+
+### Internal
+
+- Anchoring logic moved to `mktlib/backtest/_anchor.py`, with the scan kernel in `_scan.py` deliberately free of polars and of `mktlib.backtest` types — that boundary is the contract a compiled accelerator would implement, should the resolver ever need one.
+- The two resolvers are held to agreement by a test corpus partitioned at runtime by the same predicate production dispatches on, so widening the fast path later cannot quietly change results without a test noticing.
+
 ## 0.13.2
 
 ### Data
