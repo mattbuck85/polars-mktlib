@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0
+
+### Internal
+
+- **Eligibility and materialization are now separate steps in the fast-path planner.** `plan_arrays` decided whether the fast path applies *and* converted the frame into Python lists, but only the conversion is expensive — measured at 71.0 ms of a 108.9 ms resolver at 500k bars, against 0.4 ms for the polars evaluation it wraps. The decision moved into `_plan_columns`, which returns polars Series; `plan_arrays` now only converts and cannot reach a different verdict. That matters because eligibility is also the predicate production dispatch and every equivalence corpus partitions on, so a second materializer that disagreed about *which* trees it accepts would silently drift dispatch away from the tests. `test_anchor_plan_columns.py` pins the agreement, including over the `>2**53` dtype refusal — the one rejection that happens after the frame is evaluated.
+- **Legs reading the same value column now carry an explicit shared id.** `_scan.py`'s specialized pair loop keys on `legs[0].value is legs[1].value` to halve its per-bar reads, and `plan_arrays` preserved that by handing both legs one list object. Object identity cannot survive a boundary that does not hand over Python objects, so `PlannedColumns.value_ids` states the same fact directly. Both representations are asserted to agree.
+- **`session_last` is null-normalized at the boundary**, matching `entry` and `fixed`. A null previously arrived as `None` and was read as falsy — the correct answer, reached by accident of Python truthiness rather than by a stated rule. No behaviour changes; `_build_session_last_mask` does not produce nulls.
+
 ## 0.14.0
 
 ### Fixed
