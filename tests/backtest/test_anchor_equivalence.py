@@ -20,11 +20,11 @@ import polars as pl
 import pytest
 
 from mktlib.backtest._anchor import (
-    _realized_entries_fast,
     _realized_entries_windowed,
     collect_entry_refs,
     plan_arrays,
     plan_exit,
+    realized_entries,
 )
 from tests.backtest.test_anchor_plan import _ELIGIBLE, _INELIGIBLE
 
@@ -94,17 +94,22 @@ CASES = [
 )
 @pytest.mark.parametrize("session", [None, "_session_last"])
 def test_fast_and_windowed_agree(
-    frame_label: str, cond_index: int, session: str | None
+    frame_label: str, cond_index: int, session: str | None, scan_backend: str
 ) -> None:
     frame = FRAMES[frame_label]
     cond = _ELIGIBLE[cond_index]
 
-    arrays = plan_arrays(frame, plan_exit(cond))
-    if arrays is None:
+    if plan_arrays(frame, plan_exit(cond)) is None:
         pytest.skip("dispatch would not take the fast path for this pairing")
 
-    fast = _realized_entries_fast(
-        frame, entry_col="_entry", arrays=arrays, session_last_col=session
+    # Through the real dispatcher, so the backend under test is the one
+    # production would pick — not a hand-picked inner function.
+    fast = realized_entries(
+        frame,
+        entry_col="_entry",
+        exit_cond=cond,
+        snapshot_cols=collect_entry_refs(cond),
+        session_last_col=session,
     )
     windowed = _realized_entries_windowed(
         frame,
@@ -114,8 +119,9 @@ def test_fast_and_windowed_agree(
         session_last_col=session,
     )
     assert fast.equals(windowed), (
-        f"{frame_label} / condition {cond_index} / session={session}: "
-        f"fast realized {fast.sum()} entries, windowed realized {windowed.sum()}"
+        f"{frame_label} / condition {cond_index} / session={session} / "
+        f"backend={scan_backend}: fast realized {fast.sum()} entries, "
+        f"windowed realized {windowed.sum()}"
     )
 
 
@@ -145,28 +151,53 @@ def test_both_partitions_are_non_empty() -> None:
     assert ineligible > 0, "no condition reaches the fallback"
 
 
-def test_the_gate_would_catch_a_divergent_fast_path() -> None:
+def test_the_gate_would_catch_a_divergent_fast_path(scan_backend: str) -> None:
     """Non-vacuity: perturb the scan and the comparison must fail.
 
     A gate that cannot fail is decoration. Shifting the latched level by one
     percent is a plausible-looking bug — the levels are still monotone, the
     trades still look sane — and it must not survive.
+
+    Both backends are perturbed, by different means, because "the gate can
+    fail" has to be true of whichever implementation is actually running. The
+    Python kernel is monkeypatched at ``_latch``; compiled code cannot be, so
+    the accelerator exports a test-only perturbed kernel for exactly this, and
+    asserts on its own side that the perturbation still moves a trade.
     """
-    from mktlib.backtest import _scan
+    from mktlib.backtest import _anchor, _scan
 
     frame = FRAMES["ordinary"]
     cond = _ELIGIBLE[1]  # take-profit OR stop-loss
-    arrays = plan_arrays(frame, plan_exit(cond))
-    assert arrays is not None
+    assert plan_arrays(frame, plan_exit(cond)) is not None
 
-    original = _scan._latch
-    _scan._latch = lambda leg, bar: original(leg, bar) * 1.01  # type: ignore[assignment]
-    try:
-        perturbed = _realized_entries_fast(
-            frame, entry_col="_entry", arrays=arrays, session_last_col=None
+    def resolve() -> pl.Series:
+        return realized_entries(
+            frame,
+            entry_col="_entry",
+            exit_cond=cond,
+            snapshot_cols=collect_entry_refs(cond),
+            session_last_col=None,
         )
-    finally:
-        _scan._latch = original  # type: ignore[assignment]
+
+    if scan_backend == "python":
+        original = _scan._latch
+        _scan._latch = lambda leg, bar: original(leg, bar) * 1.01  # type: ignore[assignment]
+        try:
+            perturbed = resolve()
+        finally:
+            _scan._latch = original  # type: ignore[assignment]
+    else:
+        from mktlib_scan import _mktlib_scan
+
+        class _PerturbedModule:
+            scan_realized = staticmethod(_mktlib_scan._perturbed_scan_realized)
+
+        original_loader = _anchor.native_module
+        _anchor.native_module = lambda: _PerturbedModule  # type: ignore[assignment,return-value]
+        try:
+            perturbed = resolve()
+        finally:
+            _anchor.native_module = original_loader  # type: ignore[assignment]
 
     windowed = _realized_entries_windowed(
         frame,
@@ -175,7 +206,9 @@ def test_the_gate_would_catch_a_divergent_fast_path() -> None:
         snapshot_cols=collect_entry_refs(cond),
         session_last_col=None,
     )
-    assert not perturbed.equals(windowed), "a shifted level slipped past the gate"
+    assert not perturbed.equals(windowed), (
+        f"a shifted level slipped past the gate on the {scan_backend} backend"
+    )
 
 
 def test_limit_wrapped_entry_ref_creates_its_snapshot() -> None:

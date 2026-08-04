@@ -30,11 +30,11 @@ from mktlib.backtest import (
     ValueLTE,
 )
 from mktlib.backtest._anchor import (
-    _realized_entries_fast,
     _realized_entries_windowed,
     collect_entry_refs,
     plan_arrays,
     plan_exit,
+    realized_entries,
 )
 
 _N = 140
@@ -104,15 +104,19 @@ CORPUS = _corpus()
 @pytest.mark.parametrize("name,cond", CORPUS, ids=[n for n, _ in CORPUS])
 @pytest.mark.parametrize("frame_index", range(len(FRAMES)))
 def test_generated_tree_resolves_identically(
-    name: str, cond: Condition, frame_index: int
+    name: str, cond: Condition, frame_index: int, scan_backend: str
 ) -> None:
     frame = FRAMES[frame_index]
     arrays = plan_arrays(frame, plan_exit(cond))
     if arrays is None:
         return  # fallback partition: nothing to compare, by construction
 
-    fast = _realized_entries_fast(
-        frame, entry_col="_entry", arrays=arrays, session_last_col=None
+    fast = realized_entries(
+        frame,
+        entry_col="_entry",
+        exit_cond=cond,
+        snapshot_cols=collect_entry_refs(cond),
+        session_last_col=None,
     )
     windowed = _realized_entries_windowed(
         frame,
@@ -121,7 +125,7 @@ def test_generated_tree_resolves_identically(
         snapshot_cols=collect_entry_refs(cond),
         session_last_col=None,
     )
-    assert fast.equals(windowed), name
+    assert fast.equals(windowed), f"{name} / backend={scan_backend}"
 
 
 def test_the_corpus_reaches_both_partitions() -> None:
