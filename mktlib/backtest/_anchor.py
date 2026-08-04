@@ -508,8 +508,15 @@ def _realized_entries_fast(
     """Resolve the chain with one forward pass. See :mod:`._scan`."""
     legs, fixed = arrays
     entry = frame[entry_col].fill_null(False).to_list()  # noqa: FBT003
+    # `fill_null` here matches `entry` and `fixed`. Without it a null arrives as
+    # `None`, which Python happens to treat as falsy — the right answer, reached
+    # by accident. Stated explicitly, the "null means not a session boundary"
+    # rule holds for any resolver, including one that cannot rely on Python
+    # truthiness.
     session_last = (
-        frame[session_last_col].to_list() if session_last_col else None
+        frame[session_last_col].fill_null(False).to_list()  # noqa: FBT003
+        if session_last_col
+        else None
     )
     result = scan_realized(
         entry=entry,
