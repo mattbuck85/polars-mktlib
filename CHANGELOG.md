@@ -2,6 +2,24 @@
 
 ## 0.15.0
 
+### Added
+
+- **`pip install mktlib[fast]`** — an optional compiled implementation of the `EntryRef` chain resolver, published separately as [`mktlib-scan`](https://github.com/mattbuck85/mktlib-scan). It changes **speed and nothing else**: output is required to be bit-identical to the pure-Python resolver, and mktlib's full equivalence corpus plus all 18 frozen golden baselines run against **both** backends in CI. Those baselines were frozen before the accelerator existed, so agreement with them is a stronger statement than the two backends merely agreeing with each other.
+
+  Measured on a KVO crossover strategy with a 5% / -3% `EntryRef` band, whole-run:
+
+  | bars | pure Python | `[fast]` | speedup |
+  |-|-|-|-|
+  | 500,000 | 127.0 ms | 28.4 ms | **4.5×** |
+  | 1,000,000 | 240.8 ms | 58.0 ms | **4.2×** |
+  | 2,000,000 | 492.0 ms | 128.0 ms | **3.8×** |
+
+  Nearly all of that is the elimination of `Series.to_list()` boxing, not a faster loop: marshalling was 71.0 ms of a 108.9 ms resolver at 500k bars, against 0.4 ms for the polars evaluation it wrapped. The FFI boundary is therefore a `polars.Series`, never a `list[float]` — an FFI taking lists would re-pay that cost and capture almost nothing. An `EntryRef` take-profit / stop-loss now costs about the same as a plain crossover/crossunder exit, which previously cost 5.4× less.
+
+- **`set_scan_backend()`, `get_scan_backend()`, `active_scan_backend()`**, and the `MKTLIB_SCAN_BACKEND` environment variable. The default is `"auto"` — use the accelerator when it is importable — which is only defensible because bit-identity is enforced rather than assumed. Asking for `"native"` explicitly when it is unavailable **raises**; `"auto"` falls back silently. That asymmetry is deliberate: a benchmark or CI job that meant to exercise the accelerator and quietly did not produces numbers that look fine and mean nothing. `active_scan_backend()` exists so callers can assert rather than assume.
+
+  Strategies whose exit condition contains no `EntryRef` never call the resolver, so the extra makes no difference to them. Wheels are published for linux (x86_64, aarch64), macOS (x86_64, arm64) and Windows (x86_64); anywhere else falls back to the pure-Python resolver. `import mktlib` never imports the accelerator — the lookup is cached behind the first resolution — so it costs nothing when unused.
+
 ### Internal
 
 - **Eligibility and materialization are now separate steps in the fast-path planner.** `plan_arrays` decided whether the fast path applies *and* converted the frame into Python lists, but only the conversion is expensive — measured at 71.0 ms of a 108.9 ms resolver at 500k bars, against 0.4 ms for the polars evaluation it wraps. The decision moved into `_plan_columns`, which returns polars Series; `plan_arrays` now only converts and cannot reach a different verdict. That matters because eligibility is also the predicate production dispatch and every equivalence corpus partitions on, so a second materializer that disagreed about *which* trees it accepts would silently drift dispatch away from the tests. `test_anchor_plan_columns.py` pins the agreement, including over the `>2**53` dtype refusal — the one rejection that happens after the frame is evaluated.
