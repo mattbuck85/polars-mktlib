@@ -7,7 +7,17 @@ from dataclasses import dataclass
 import polars as pl
 import pytest
 
-from mktlib.backtest import Bracket, Cost, Crossover, Crossunder, run
+from mktlib.backtest import (
+    Bracket,
+    Col,
+    Condition,
+    Cost,
+    Crossover,
+    Crossunder,
+    Lit,
+    ValueGTE,
+    run,
+)
 
 from tests.schemas.backtest import (
     IntradayTradesSchema,
@@ -218,6 +228,92 @@ class TestBracketLeavesSchemasUnchanged:
         result = run(
             ohlcv,
             SimpleCrossStrategy(),
+            bracket=self.BRACKET,
+            cost=Cost(commission_bps=5.0),
+        )
+        SignalsSchemaBase.validate(result.signals)
+        assert result.signals.schema == base.signals.schema
+
+
+@dataclass(frozen=True, slots=True)
+class SignalColumnStrategy:
+    """Entry and exit read plain 0/1 columns.
+
+    ``SimpleCrossStrategy`` cannot express this test's precondition: a
+    crossover and its complementary crossunder can never leave an entry
+    signal firing while a position is held, so ``anchor="signal"`` would
+    have nothing to act on and the schema check would be vacuous.
+    """
+
+    def entry(self) -> Condition:
+        return ValueGTE(Col("entry_sig"), Lit(0.5))
+
+    def exit(self) -> Condition:
+        return ValueGTE(Col("exit_sig"), Lit(0.5))
+
+
+@pytest.fixture()
+def reanchor_ohlcv() -> pl.DataFrame:
+    """Entry at bar 2, a second entry signal at bar 4 while still held.
+
+    Bar 5 gaps to 110 and tags both re-anchored legs, so the bracket fires
+    off a level the position-anchored policy would never have had.
+    """
+    return pl.DataFrame(
+        {
+            "date": pl.date_range(pl.date(2024, 1, 1), pl.date(2024, 1, 8), eager=True),
+            "open": [100.0] * 5 + [110.0] + [100.0] * 2,
+            "high": [100.0] * 5 + [113.0] + [100.0] * 2,
+            "low": [100.0] * 5 + [108.0] + [100.0] * 2,
+            "close": [100.0] * 8,
+            "entry_sig": [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            "exit_sig": [0.0] * 8,
+        }
+    )
+
+
+class TestBracketAnchorSignalLeavesSchemasUnchanged:
+    """``anchor="signal"`` must not add, drop or retype a single column.
+
+    The two working columns it materializes — ``_bracket_resignal`` and
+    ``_bracket_anchor_fill`` — are members of ``BRACKET_COLUMNS``, so the
+    engine drops them by membership. This is what pins that they are, and
+    keeps a future column from leaking into public output.
+    """
+
+    BRACKET = Bracket(take_profit=0.02, stop_loss=0.01, anchor="signal")
+
+    def test_the_fixture_actually_re_anchors(self, reanchor_ohlcv: pl.DataFrame):
+        """Otherwise every assertion below holds for the boring reason."""
+        held = run(
+            reanchor_ohlcv,
+            SignalColumnStrategy(),
+            bracket=Bracket(take_profit=0.02, stop_loss=0.01),
+        )
+        moved = run(reanchor_ohlcv, SignalColumnStrategy(), bracket=self.BRACKET)
+        assert moved.trades.height > 0
+        assert not moved.trades.equals(held.trades)
+
+    def test_returns(self, reanchor_ohlcv: pl.DataFrame):
+        result = run(reanchor_ohlcv, SignalColumnStrategy(), bracket=self.BRACKET)
+        ReturnsSchema.validate(result.returns)
+
+    def test_trades(self, reanchor_ohlcv: pl.DataFrame):
+        result = run(reanchor_ohlcv, SignalColumnStrategy(), bracket=self.BRACKET)
+        TradesSchema.validate(result.trades)
+
+    def test_signals(self, reanchor_ohlcv: pl.DataFrame):
+        base = run(reanchor_ohlcv, SignalColumnStrategy())
+        result = run(reanchor_ohlcv, SignalColumnStrategy(), bracket=self.BRACKET)
+        SignalsSchemaBase.validate(result.signals)
+        assert result.signals.schema == base.signals.schema
+        assert not [c for c in result.signals.columns if c.startswith("_bracket")]
+
+    def test_signals_with_cost(self, reanchor_ohlcv: pl.DataFrame):
+        base = run(reanchor_ohlcv, SignalColumnStrategy())
+        result = run(
+            reanchor_ohlcv,
+            SignalColumnStrategy(),
             bracket=self.BRACKET,
             cost=Cost(commission_bps=5.0),
         )
