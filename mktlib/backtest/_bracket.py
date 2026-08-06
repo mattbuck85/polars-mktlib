@@ -43,9 +43,9 @@ Both legs accept either a ``float`` or a ``str``:
     levels from the position's average fill price.
 
 ``str``
-    A column of **absolute price levels**, latched at the entry *signal*
-    bar — the same bar :class:`~mktlib.backtest.EntryRef` snapshots, one
-    bar before the fill.  Use this for levels the strategy derived from
+    A column of **absolute price levels**, latched on the bar the position
+    *opens* — the same bar :class:`~mktlib.backtest.EntryRef` snapshots,
+    one bar before the fill.  Use this for levels the strategy derived from
     data it had at signal time, e.g. ``close + atr * mult``.
 
 Examples
@@ -257,9 +257,13 @@ def level_expr(
 ) -> pl.Expr:
     """Per-bar bracket level for one leg, held for the life of the position.
 
-    A ``str`` *spec* snapshots that column on the entry signal bar; a
-    ``float`` scales the latched entry fill price by the side-appropriate
-    multiplier.
+    A ``str`` *spec* snapshots that column on the bar the position
+    **opens** — the realized entry transition *entry_clean_col*, not every
+    bar the entry condition fires on. The two coincide for the signal that
+    opened the position and nowhere else: a signal that fires while the
+    position is already held is suppressed by the position machinery and
+    latches nothing. A ``float`` scales the latched entry fill price by the
+    side-appropriate multiplier.
     """
     if isinstance(spec, str):
         return (

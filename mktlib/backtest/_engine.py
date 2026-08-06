@@ -446,8 +446,13 @@ def _run_core(
     if flatten_eod:
         _session_last = _build_session_last_mask(signals["date"], calendar)  # type: ignore[arg-type]
         signals = signals.with_columns(_session_last.alias("_session_last"))
-        # Defer entries on session-last bars to the first bar of the next
-        # session (e.g. crossover on 15:59 → enter at next day's 09:30).
+        # Defer entry SIGNALS on session-last bars to the first bar of the
+        # next session — the signal moves, not the fill. A crossover on
+        # 15:59 rewrites ``_entry`` onto the next session's 09:30 bar; the
+        # recurrence below then opens the position there, and the usual
+        # fill-at-next-open rule puts the entry fill on the bar AFTER 09:30.
+        # (``is_entry_bar`` in ``_apply_bracket`` is ``_pos_d1 == 1 &
+        # _pos_d2 == 0``, one bar later than ``_entry_clean``.)
         _suppressed = pl.col("_entry") & pl.col("_session_last")
         signals = signals.with_columns(
             (pl.col("_entry") | _suppressed.shift(1).fill_null(False)).alias("_entry"),
