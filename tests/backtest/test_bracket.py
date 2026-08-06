@@ -717,7 +717,7 @@ def test_dual_guard_is_defended_at_the_dual_path_too(flat: pl.DataFrame) -> None
             CrossStrategy(),
             CrossStrategy(),
             calendar=None,
-            flatten_eod=False,
+            flatten=None,
             bracket=Bracket(take_profit=0.02),
         )
 

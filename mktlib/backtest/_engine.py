@@ -47,7 +47,10 @@ from mktlib.backtest._cost import (
 )
 from mktlib.backtest._flatten import (
     FLATTEN_BAR_COLUMN,
+    Flatten,
+    FlattenSchedule,
     build_flatten_mask,
+    resolve_flatten,
 )
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
 from mktlib.backtest._weights import (
@@ -78,7 +81,7 @@ def _apply_bracket(
     bracket: Bracket,
     *,
     is_long: bool,
-    flatten_eod: bool,
+    flatten_active: bool,
 ) -> pl.DataFrame:
     """Materialize the bracket columns and truncate bracketed position blocks.
 
@@ -240,7 +243,7 @@ def _apply_bracket(
     # engine flattens at that bar's *open*, so the position is already gone
     # before any intra-bar level could be tagged.
     live = pl.col("_pos_d1") == 1
-    if flatten_eod:
+    if flatten_active:
         live = live & ~pl.col(FLATTEN_BAR_COLUMN)
 
     # Each leg's trigger is MATERIALIZED as a boolean column. It is read
@@ -415,7 +418,7 @@ def _run_core(
     *,
     trade_side: TradeSide,
     calendar: ExchangeCalendar | None,
-    flatten_eod: bool,
+    flatten: FlattenSchedule | None,
     cost: Cost | None = None,
     bracket: Bracket | None = None,
 ) -> BacktestResult:
@@ -471,13 +474,19 @@ def _run_core(
     # Pass 1: compute _entry
     signals = df.with_columns(entry_expr.alias("_entry"))
 
-    # flatten_eod rewrites _entry (deferring a session-last signal to the next
-    # session's first bar) and that rewrite must land BEFORE anything reads
-    # _entry. It used to run after the EntryRef snapshot, which latched the
-    # anchor on the session-last bar the deferral then moved away from — the
-    # trade opened on one bar and was measured against another.
-    if flatten_eod:
-        _flatten_mask = build_flatten_mask(signals["date"], calendar)  # type: ignore[arg-type]
+    # Flattening rewrites _entry (deferring a flatten-bar signal to the next
+    # bar) and that rewrite must land BEFORE anything reads _entry. It used to
+    # run after the EntryRef snapshot, which latched the anchor on the bar the
+    # deferral then moved away from — the trade opened on one bar and was
+    # measured against another.
+    if flatten is not None:
+        if calendar is None:
+            # run() refuses this combination up front; this guard covers the
+            # private entry points, where a caller could otherwise get a
+            # schedule silently ignored rather than an error.
+            msg = "a flatten schedule requires a calendar"
+            raise ValueError(msg)
+        _flatten_mask = build_flatten_mask(signals["date"], calendar, flatten)
         signals = signals.with_columns(_flatten_mask.alias(FLATTEN_BAR_COLUMN))
         # Defer entry SIGNALS on flatten bars to the next bar — the signal
         # moves, not the fill. At the default offset the flatten bar is the
@@ -509,7 +518,9 @@ def _run_core(
                 entry_col="_entry",
                 exit_cond=exit_cond,
                 snapshot_cols=entry_refs,
-                session_last_col=FLATTEN_BAR_COLUMN if flatten_eod else None,
+                session_last_col=(
+                    FLATTEN_BAR_COLUMN if flatten is not None else None
+                ),
             ),
         )
         signals = signals.with_columns(
@@ -531,7 +542,7 @@ def _run_core(
         )
 
     # Position tracking: 1 on entry, 0 on exit, forward-fill
-    if flatten_eod:
+    if flatten is not None:
         # Suppress entries on session-last bars (position opens and immediately
         # force-closes in the same bar — not a valid trade).
         signals = signals.with_columns(
@@ -580,7 +591,7 @@ def _run_core(
             signals,
             bracket,
             is_long=effective_side == 1,
-            flatten_eod=flatten_eod,
+            flatten_active=flatten is not None,
         )
 
     # Detect transition bars (after the 1-bar delay for fill). Defined here,
@@ -630,7 +641,7 @@ def _run_core(
             _fill_bar = _fill_bar | _is_limit_exit_bar
         if bracket is not None:
             _fill_bar = _fill_bar | pl.col(BRACKET_EXIT_COLUMN)
-        if flatten_eod:
+        if flatten is not None:
             _fill_bar = _fill_bar | (
                 pl.col(FLATTEN_BAR_COLUMN) & (pl.col("_pos_d1") == 1)
             )
@@ -731,7 +742,7 @@ def _run_core(
         )
 
     # Compute returns + flatten_eod overrides in minimal with_columns calls
-    if flatten_eod:
+    if flatten is not None:
         # Base returns + session-last override in one pass. When limits
         # are active they win against session-last on the same bar
         # (intra-bar fill precedes the session-close flatten).
@@ -805,13 +816,13 @@ def _run_core(
     returns = signals.select("date", "return")
 
     # Build trade log from entry/exit transitions (before dropping internal cols)
-    trades = _extract_trades(signals, flatten_eod=flatten_eod)
+    trades = _extract_trades(signals, flatten_active=flatten is not None)
 
     # Drop internal columns before return
     _drop_cols = ["_pos_d1", "_pos_d2", "_close_prev", "_entry_clean", "_exit_clean"]
     if ANCHOR_ENTRY_COLUMN in signals.columns:
         _drop_cols.append(ANCHOR_ENTRY_COLUMN)
-    if flatten_eod:
+    if flatten is not None:
         _drop_cols.append(FLATTEN_BAR_COLUMN)
     if is_limit_exit:
         _drop_cols.append("_limit_price")
@@ -831,7 +842,7 @@ def _run_dual(
     short_strategy: Strategy,
     *,
     calendar: ExchangeCalendar | None,
-    flatten_eod: bool,
+    flatten: FlattenSchedule | None,
     cost: Cost | None = None,
     bracket: Bracket | None = None,
 ) -> BacktestResult:
@@ -849,11 +860,11 @@ def _run_dual(
     with ThreadPoolExecutor(max_workers=2) as pool:
         long_future = pool.submit(
             _run_core, df, long_strategy, trade_side=TradeSide.LONG,
-            calendar=calendar, flatten_eod=flatten_eod, cost=cost,
+            calendar=calendar, flatten=flatten, cost=cost,
         )
         short_future = pool.submit(
             _run_core, df, short_strategy, trade_side=TradeSide.SHORT,
-            calendar=calendar, flatten_eod=flatten_eod, cost=cost,
+            calendar=calendar, flatten=flatten, cost=cost,
         )
         long = long_future.result()
         short = short_future.result()
@@ -892,7 +903,7 @@ def _run_multi(
     instrument_col: str,
     trade_side: TradeSide,
     calendar: ExchangeCalendar | None,
-    flatten_eod: bool,
+    flatten: FlattenSchedule | None,
     weights: pl.DataFrame | None = None,
     cost: Cost | None = None,
     bracket: Bracket | None = None,
@@ -916,7 +927,7 @@ def _run_multi(
                 strategy,
                 short_strategy,
                 calendar=calendar,
-                flatten_eod=flatten_eod,
+                flatten=flatten,
                 cost=cost,
                 bracket=bracket,
             )
@@ -926,7 +937,7 @@ def _run_multi(
                 strategy,
                 trade_side=trade_side,
                 calendar=calendar,
-                flatten_eod=flatten_eod,
+                flatten=flatten,
                 cost=cost,
                 bracket=bracket,
             )
@@ -977,6 +988,7 @@ def run(
     *,
     short_strategy: Strategy,
     calendar: ExchangeCalendar | None = ...,
+    flatten: Flatten = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
@@ -992,6 +1004,7 @@ def run(
     *,
     short_strategy: Strategy,
     calendar: ExchangeCalendar | None = ...,
+    flatten: Flatten = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
@@ -1006,6 +1019,7 @@ def run(
     *,
     trade_side: TradeSide = ...,
     calendar: ExchangeCalendar | None = ...,
+    flatten: Flatten = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
@@ -1021,6 +1035,7 @@ def run(
     *,
     trade_side: TradeSide = ...,
     calendar: ExchangeCalendar | None = ...,
+    flatten: Flatten = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
@@ -1035,6 +1050,7 @@ def run(
     *,
     trade_side: TradeSide = ...,
     calendar: ExchangeCalendar | None = ...,
+    flatten: Flatten = ...,
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
@@ -1050,6 +1066,7 @@ def run(
     short_strategy: Strategy | None = None,
     trade_side: TradeSide = TradeSide.LONG,
     calendar: ExchangeCalendar | None = None,
+    flatten: Flatten = None,
     flatten_eod: bool = False,
     cost: Cost | None = None,
     bracket: Bracket | None = None,
@@ -1079,9 +1096,17 @@ def run(
     calendar
         Exchange calendar for market-hours filtering. When provided, the
         DataFrame is filtered to market hours before signal computation.
+    flatten
+        When and how open positions are force-closed. Accepts
+        ``"eod"`` (every session's last bar), ``"eow"`` (the last session
+        of each week), ``True``/``False``, or a
+        :class:`~mktlib.backtest.FlattenSchedule` for full control.
+        Requires *calendar*.
     flatten_eod
-        Force-close positions at each session's last bar, eliminating
-        overnight exposure. Requires *calendar*.
+        Legacy spelling of ``flatten="eod"``. Force-close positions at each
+        session's last bar, eliminating overnight exposure. Requires
+        *calendar*. Fully supported; prefer *flatten* in new code. Setting
+        both *flatten* and ``flatten_eod=True`` raises.
     cost
         Optional :class:`~mktlib.backtest.Cost` describing per-side
         transaction costs in **basis points of notional**. Charged at the
@@ -1151,8 +1176,16 @@ def run(
 
         result.returns.group_by("date").agg(pl.col("return").mean())
     """
-    if flatten_eod and calendar is None:
-        msg = "flatten_eod=True requires a calendar"
+    flatten_schedule = resolve_flatten(flatten, flatten_eod=flatten_eod)
+    if flatten_schedule is not None and calendar is None:
+        # Name the spelling the caller actually used — being told that
+        # "flatten requires a calendar" when you wrote flatten_eod=True sends
+        # you looking for a parameter you never passed.
+        used = "flatten_eod=True" if flatten is None else "flatten=..."
+        msg = (
+            f"{used} requires a calendar: sessions, and therefore session "
+            "closes, are defined by the calendar"
+        )
         raise ValueError(msg)
 
     if instrument_weights is not None and instrument_col is None:
@@ -1181,7 +1214,7 @@ def run(
                 instrument_col=instrument_col,
                 trade_side=TradeSide.LONG,
                 calendar=calendar,
-                flatten_eod=flatten_eod,
+                flatten=flatten_schedule,
                 weights=weights_df,
                 cost=cost,
                 bracket=bracket,
@@ -1193,7 +1226,7 @@ def run(
             strategy,
             short_strategy,
             calendar=calendar,
-            flatten_eod=flatten_eod,
+            flatten=flatten_schedule,
             cost=cost,
             bracket=bracket,
         )
@@ -1205,7 +1238,7 @@ def run(
             instrument_col=instrument_col,
             trade_side=trade_side,
             calendar=calendar,
-            flatten_eod=flatten_eod,
+            flatten=flatten_schedule,
             weights=weights_df,
             cost=cost,
             bracket=bracket,
@@ -1220,7 +1253,7 @@ def run(
         strategy,
         trade_side=trade_side,
         calendar=calendar,
-        flatten_eod=flatten_eod,
+        flatten=flatten_schedule,
         cost=cost,
         bracket=bracket,
     )
@@ -1229,7 +1262,7 @@ def run(
 def _extract_trades(
     signals: pl.DataFrame,
     *,
-    flatten_eod: bool = False,
+    flatten_active: bool = False,
 ) -> pl.DataFrame:
     """Extract per-trade PnL from position transitions.
 
@@ -1285,7 +1318,7 @@ def _extract_trades(
     #   4. next bar's open (default fill-at-next-open)
     has_limit = "_limit_price" in signals.columns
     has_bracket = BRACKET_LEVEL_COLUMN in signals.columns
-    if flatten_eod:
+    if flatten_active:
         base_expr = (
             pl.when(pl.col(FLATTEN_BAR_COLUMN))
             .then(pl.col("open"))
@@ -1316,7 +1349,7 @@ def _extract_trades(
     # index), only the branch *conditions* are common, and hiding three
     # sequences behind one abstraction would make a future divergence harder
     # to see, not easier.
-    if flatten_eod:
+    if flatten_active:
         base_idx = (
             pl.when(pl.col(FLATTEN_BAR_COLUMN))
             .then(pl.col("_bar_idx"))
@@ -1346,7 +1379,7 @@ def _extract_trades(
     if has_cost:
         # Mirror the exit_price priority exactly — a same-bar fill pays this
         # bar's cost, a next-open fill pays the next bar's.
-        if flatten_eod:
+        if flatten_active:
             base_cost = (
                 pl.when(pl.col(FLATTEN_BAR_COLUMN))
                 .then(pl.col(COST_COLUMN))
