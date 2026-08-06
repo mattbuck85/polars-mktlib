@@ -556,6 +556,27 @@ def _run_core(
     if is_limit_exit:
         _is_limit_exit_bar = pl.col("_exit") & (pl.col("_pos_d1") == 1)
         _is_post_limit_bar = _is_limit_exit_bar.shift(1).fill_null(False)
+        # Narrow ``_limit_price`` to the bars the limit actually FILLS on.
+        #
+        # It is materialized unconditionally further up, because the level is
+        # an expression over the whole frame and ``_pos_d1`` does not exist
+        # yet. That left a non-null level on every bar, and
+        # :func:`_extract_trades` reads it through
+        # ``_limit_price.is_not_null()`` — so any exit the *session flatten*
+        # forced was booked at a take-profit the tape never traded, while
+        # ``returns`` correctly used the flatten bar's open. The two views of
+        # one run disagreed, and because ``mktlib.reports`` reads
+        # ``trades["pnl"]``, a losing strategy could report a 100% win rate.
+        #
+        # Narrowing here, from the same predicate the return expression uses,
+        # makes ``is_not_null()`` mean exactly "the limit filled on this bar"
+        # for every downstream reader, rather than each having to re-derive it.
+        signals = signals.with_columns(
+            pl.when(_is_limit_exit_bar)
+            .then(pl.col("_limit_price"))
+            .otherwise(None)
+            .alias("_limit_price"),
+        )
 
     # Transaction costs: one per-bar basis-point column, materialized once and
     # read *unshifted on the fill bar* by every branch that pays a fill. It is
@@ -608,14 +629,27 @@ def _run_core(
     # exit both land inside that one bar, so it owes *two* sides — the same
     # accounting ``_bracket_entry_ret`` does, and the same two legs
     # ``trades.pnl`` charges for that trade.
+    # The two shapes also differ in the BASE the return is measured against,
+    # which is the part that was wrong. A limit firing on a bar the position
+    # was already holding is measured from the previous close. A limit firing
+    # on the bar the entry itself filled was never held across that close —
+    # the position opened at this bar's ``open`` — so measuring it from
+    # ``_close_prev`` credits a gap that was never carried. On a bar that gaps
+    # 100.0 -> 110.0 and fills a 115.0 limit, that is +15.0% booked against a
+    # position that earned +4.55%. ``_bracket_entry_ret`` below already gets
+    # this right and uses ``open``; these two are the same accounting and must
+    # agree.
     _limit_ret: pl.Expr = pl.lit(0.0)
     _limit_entry_ret: pl.Expr = pl.lit(0.0)
     if is_limit_exit:
-        _limit_raw = (
+        _limit_held_raw = (
             (pl.col("_limit_price") - pl.col("_close_prev")) / pl.col("_close_prev")
         ) * effective_side
-        _limit_ret = _charge(_limit_raw)
-        _limit_entry_ret = _charge(_limit_raw, sides=2)
+        _limit_opened_raw = (
+            (pl.col("_limit_price") - pl.col("open")) / pl.col("open")
+        ) * effective_side
+        _limit_ret = _charge(_limit_held_raw)
+        _limit_entry_ret = _charge(_limit_opened_raw, sides=2)
 
     # Under flatten_eod an entry fill can land on the session-last bar: the
     # position opens at that bar's open and is force-flattened at the same
