@@ -49,7 +49,7 @@ from mktlib.backtest._flatten import (
     FLATTEN_BAR_COLUMN,
     Flatten,
     FlattenSchedule,
-    build_flatten_mask,
+    build_flatten_masks,
     resolve_flatten,
 )
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult, Strategy, TradeSide
@@ -486,7 +486,9 @@ def _run_core(
             # schedule silently ignored rather than an error.
             msg = "a flatten schedule requires a calendar"
             raise ValueError(msg)
-        _flatten_mask = build_flatten_mask(signals["date"], calendar, flatten)
+        _flatten_mask, _blocked_mask = build_flatten_masks(
+            signals["date"], calendar, flatten
+        )
         signals = signals.with_columns(_flatten_mask.alias(FLATTEN_BAR_COLUMN))
         # Defer entry SIGNALS on flatten bars to the next bar — the signal
         # moves, not the fill. At the default offset the flatten bar is the
@@ -501,6 +503,21 @@ def _run_core(
         signals = signals.with_columns(
             (pl.col("_entry") | _suppressed.shift(1).fill_null(False)).alias("_entry"),
         )
+        # The block window has the LAST say, deliberately after the deferral.
+        #
+        # The flatten bar is not necessarily inside the block window: with a
+        # bar grid that does not divide the two cutoffs evenly, the flatten bar
+        # can start strictly before `close - block_minutes` while the next bar
+        # starts after it. Blocking first would then let the deferral write an
+        # entry into the very window it had just cleared. Blocking last cannot,
+        # so no precedence rule is needed between the two.
+        #
+        # Gated so that block == 0 does not even build the expression: the
+        # default path stays byte-identical by construction, not by argument.
+        if flatten.block_entry_minutes_before_close:
+            signals = signals.with_columns(
+                (pl.col("_entry") & ~pl.lit(_blocked_mask)).alias("_entry"),
+            )
 
     # Create snapshot columns for any EntryRef nodes in exit condition.
     #

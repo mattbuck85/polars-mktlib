@@ -18,7 +18,7 @@ from mktlib.backtest._engine import run
 from mktlib.backtest._flatten import (
     FlattenSchedule,
     Weekday,
-    build_flatten_mask,
+    build_flatten_masks,
     resolve_flatten,
 )
 from mktlib.scheduling import get_calendar
@@ -82,7 +82,7 @@ def _frame(
 
 def _flatten_dates(df: pl.DataFrame, schedule: FlattenSchedule) -> list[datetime.datetime]:
     """The bar timestamps this schedule force-closes on."""
-    mask = build_flatten_mask(df["date"], get_calendar("XNYS"), schedule).to_list()
+    mask = build_flatten_masks(df["date"], get_calendar("XNYS"), schedule)[0].to_list()
     return [d for d, m in zip(df["date"].to_list(), mask, strict=True) if m]
 
 
@@ -108,7 +108,7 @@ class TestFlattenBarInvariant:
         df = _frame(_TWO_SESSIONS, entry_signal_bar=2)
         result = run(df, _Cross(), calendar=cal, flatten_eod=True)
 
-        mask = build_flatten_mask(df["date"], cal, FlattenSchedule()).to_list()
+        mask = build_flatten_masks(df["date"], cal, FlattenSchedule())[0].to_list()
         positions = result.signals["_position"].to_list()
 
         flatten_idx = [i for i, m in enumerate(mask) if m]

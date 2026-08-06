@@ -80,12 +80,56 @@ class FlattenSchedule:
     ``flatten_eod=True``.
 
     After construction ``days`` is always ``"daily"``, ``"weekly"``, or a
-    ``frozenset[Weekday]`` — see :data:`FlattenDays`.
+    ``frozenset[Weekday]`` — see :data:`FlattenDays` — and
+    ``block_entry_minutes_before_close`` is always an ``int``.
+
+    Parameters
+    ----------
+    days
+        Which sessions get a forced close. See :data:`FlattenDays`.
+    minutes_before_close
+        Force-close this many minutes before the session close. ``0``
+        (default) closes on the session's last bar.
+
+        This is a **wall-clock** offset, not a bar count: it selects the last
+        bar starting at or before ``close - minutes_before_close``. On a
+        15-minute grid whose final bar starts at 15:45 against a 16:00 close,
+        any value below 15 resolves to that same bar.
+
+        Measured against each session's *own* close, so early closes work
+        without special-casing — 30 minutes before a 13:00 half-day close is
+        12:30.
+    block_entry_minutes_before_close
+        Open no new position within this many minutes of the session close.
+        Defaults to *minutes_before_close*, which is the only setting that
+        makes the flatten airtight: every in-session bar after the flatten bar
+        is then blocked, so nothing can re-open and carry overnight.
+
+        Set it explicitly to ``0`` to allow re-entry after the flatten — a
+        coherent choice ("close the day trade at 15:00, take a fresh swing
+        entry at 15:45"), but one that reintroduces overnight exposure and so
+        has to be asked for rather than defaulted into.
+
+        A signal landing inside the window is **dropped**, not deferred. A
+        deferred signal would fill on the next session's open, hours stale.
     """
 
     days: FlattenDaysArg = "daily"
+    minutes_before_close: int = 0
+    block_entry_minutes_before_close: int | None = None
 
     def __post_init__(self) -> None:
+        self._validate_minutes("minutes_before_close", self.minutes_before_close)
+        block = self.block_entry_minutes_before_close
+        if block is None:
+            block = self.minutes_before_close
+        else:
+            self._validate_minutes("block_entry_minutes_before_close", block)
+        # Canonicalize so two spellings of one configuration -- the default and
+        # the explicit restatement of it -- compare and hash identically. The
+        # consumer's cache key is built from these fields.
+        object.__setattr__(self, "block_entry_minutes_before_close", int(block))
+
         days = self.days
         if isinstance(days, str):
             if days not in _VALID_DAY_STRINGS:
@@ -114,6 +158,17 @@ class FlattenSchedule:
             )
             raise ValueError(msg)
         object.__setattr__(self, "days", normalized)
+
+    @staticmethod
+    def _validate_minutes(name: str, value: object) -> None:
+        # bool before int: isinstance(True, int) is True, so an unguarded check
+        # would read minutes_before_close=True as "1 minute".
+        if isinstance(value, bool) or not isinstance(value, int):
+            msg = f"{name} must be a non-negative int, got {value!r}"
+            raise TypeError(msg)
+        if value < 0:
+            msg = f"{name} must be non-negative, got {value}"
+            raise ValueError(msg)
 
 
 #: What ``run(flatten=...)`` accepts.
@@ -238,16 +293,35 @@ def _flatten_sessions(joined: pl.DataFrame, schedule: FlattenSchedule) -> pl.Dat
     )
 
 
-def build_flatten_mask(
+def _mask_from_indices(indices: Iterable[int], n: int) -> pl.Series:
+    """Boolean series of length *n*, True at each row position in *indices*."""
+    hit = set(indices)
+    return pl.Series([i in hit for i in range(n)], dtype=pl.Boolean)
+
+
+def build_flatten_masks(
     dates: pl.Series,
     calendar: ExchangeCalendar,
     schedule: FlattenSchedule,
-) -> pl.Series:
-    """Boolean series: True on every bar that force-closes an open position.
+) -> tuple[pl.Series, pl.Series]:
+    """``(flatten_bar, entry_blocked)`` boolean masks aligned to *dates*.
 
-    Finds the actual last bar per session from the data rather than assuming
-    a fixed offset, so this works for any candle size (1min, 5min, 15min, …).
+    ``flatten_bar``
+        True on every bar that force-closes an open position: the last bar
+        starting at or before ``close - minutes_before_close``, in each session
+        the schedule selects. Found from the data rather than from an assumed
+        offset, so any candle size works (1min, 5min, 15min, …).
+    ``entry_blocked``
+        True on every bar that may not open a position: those starting at or
+        after ``close - block_entry_minutes_before_close``, in those same
+        sessions.
+
+    Both are plain booleans by design. The compiled resolver takes the flatten
+    mask as ``Option<&[bool]>`` and has no concept of a session, so *when* a
+    position is force-closed never reaches the FFI contract. Entry blocking
+    never reaches it either — the engine zeroes ``_entry`` upstream.
     """
+    n = dates.len()
     sched = _get_schedule(calendar, dates)
     open_times = _align_tz(sched["market_open"], dates)
     close_times = _align_tz(sched["market_close"], dates)
@@ -267,6 +341,7 @@ def build_flatten_mask(
     joined = joined.filter(pl.col("date") < pl.col("market_close"))
     joined = _flatten_sessions(joined, schedule)
 
+    empty = pl.Series([False] * n, dtype=pl.Boolean)
     if joined.height == 0:
         logger.warning(
             "flatten schedule %r selects no session in the data range "
@@ -275,11 +350,48 @@ def build_flatten_mask(
             dates.min(),
             dates.max(),
         )
-        return pl.Series([False] * dates.len(), dtype=pl.Boolean)
+        return empty, empty
 
-    last_per_session = joined.group_by("market_open").agg(
-        pl.col("date").max().alias("last_bar"),
+    # --- flatten bar -------------------------------------------------------
+    # At minutes_before_close == 0 the cutoff clause is `date <= close`, and
+    # `(date < close) & (date <= close)` is `date < close` — provably the
+    # unoffset filter, so the default path is unchanged by construction.
+    eligible = joined.filter(
+        pl.col("date")
+        <= pl.col("market_close")
+        - pl.duration(minutes=schedule.minutes_before_close)
     )
+    if eligible.height == 0:
+        logger.warning(
+            "minutes_before_close=%d is longer than every selected session in "
+            "%s … %s — nothing will be force-closed",
+            schedule.minutes_before_close,
+            dates.min(),
+            dates.max(),
+        )
+        flatten_mask = empty
+    else:
+        no_flatten = joined["market_open"].n_unique() - eligible["market_open"].n_unique()
+        if no_flatten:
+            logger.warning(
+                "minutes_before_close=%d leaves %d selected session(s) with no "
+                "bar at or before the cutoff; those sessions are not flattened",
+                schedule.minutes_before_close,
+                no_flatten,
+            )
+        last_idx = eligible.group_by("market_open").agg(
+            pl.col("_idx").sort_by("date").last().alias("_idx"),
+        )
+        flatten_mask = _mask_from_indices(last_idx["_idx"].to_list(), n)
 
-    last_bars = last_per_session["last_bar"].to_list()
-    return dates.is_in(last_bars)
+    # --- entry block window ------------------------------------------------
+    # At block == 0 this is `date >= close`, which is empty by construction —
+    # session membership already required `date < close`. A provable no-op.
+    block_minutes = schedule.block_entry_minutes_before_close
+    if not block_minutes:
+        return flatten_mask, empty
+    blocked = joined.filter(
+        pl.col("date")
+        >= pl.col("market_close") - pl.duration(minutes=block_minutes)
+    )
+    return flatten_mask, _mask_from_indices(blocked["_idx"].to_list(), n)
