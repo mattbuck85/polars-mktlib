@@ -1741,7 +1741,7 @@ class TestNoInternalColumnLeakage:
         assert leaked == set(), f"Internal columns leaked into signals: {leaked}"
 
     def test_no_leaked_internal_columns_flatten_eod(self) -> None:
-        """flatten_eod path should not leak _session_last or other internals."""
+        """flatten_eod path should not leak _flatten_bar or other internals."""
         cal = get_calendar("XNYS")
         df = _make_two_session_df()
         result = run(df, AlwaysInStrategy(), calendar=cal, flatten_eod=True)
