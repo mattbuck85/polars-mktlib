@@ -289,6 +289,11 @@ bar's open.
    # entry signal bar (e.g. close + atr * mult)
    result = run(df, strategy, bracket=Bracket(stop_loss="atr_stop"))
 
+   # Re-latch both legs on every entry signal that fires while held
+   result = run(
+       df, strategy, bracket=Bracket(take_profit=0.02, anchor="signal")
+   )
+
 Requires ``high`` and ``low`` columns. The fill table mirrors a
 conventional event-driven OHLC broker exactly — a long bracket is a
 sell limit plus a sell stop, a short bracket the mirror:
@@ -345,6 +350,60 @@ stop at 95 on a bar that opens at 90 fills at 90, not at 95.
    only ``_position`` and ``_side``, so the long leg's levels would be
    evaluated against the short leg's position) or with a ``Limit(...)``
    exit condition. Both raise ``NotImplementedError``.
+
+Level Anchoring
+^^^^^^^^^^^^^^^
+
+``anchor`` states which entry signal the levels are measured from. It is a
+property of the bracket, not of the position machinery: both policies open,
+hold and close exactly the same positions, and only the protective levels
+differ.
+
+``anchor="position"`` (the default)
+   Both legs are latched once, on the entry that opened the position, and
+   hold for the life of the trade. An entry signal that fires while the
+   position is already open is suppressed by the position machinery and
+   does not move them.
+
+``anchor="signal"``
+   Every later entry signal that fires while the position is still open
+   re-latches both legs.
+
+.. code-block:: python
+
+   Bracket(take_profit=0.02, stop_loss=0.01, anchor="signal")
+
+A re-signal on bar *k* is observed at that bar's close, so the level in force
+*during* bar *k* is still the previous one and the new level applies from
+*k + 1*. A ``float`` leg re-anchors to ``open[k + 1]`` — the price a fresh
+entry on that signal would have filled at, by the engine's own
+fill-at-next-open rule — and a ``str`` leg re-reads its column on bar *k*.
+A leg tagged on bar *k* therefore closes the position before the re-anchor
+takes effect.
+
+Re-anchoring moves the levels and nothing else. The position opened once, so
+trade P&L still measures from the **original** entry fill, and a re-signal
+never re-opens or extends a block — block boundaries are fixed before the
+bracket is applied.
+
+.. note::
+
+   Under ``flatten_eod``, a re-signal on a session-last bar does not
+   re-anchor: the engine has already flattened the position at that bar's
+   open. With ``flatten_eod=False`` a re-signal on a session's last bar
+   anchors a ``float`` leg to the next session's opening price, so an
+   overnight gap carries the levels with it.
+
+   An entry condition that is **level**-triggered rather than edge-triggered
+   stays true on consecutive bars, so under ``anchor="signal"`` it re-latches
+   on every one of them and the bracket becomes a trailing one.
+   ``Crossover`` / ``Crossunder`` are edge-triggered; ``ValueGT`` and its
+   siblings are not. This is the same edge-versus-level distinction that
+   governs whether an ``EntryRef`` level is fixed or trailing.
+
+   ``anchor`` governs bracket levels only. ``EntryRef`` snapshots are
+   unaffected and continue to latch at the entry that opened the position,
+   under either policy.
 
 .. autoclass:: mktlib.backtest.Bracket
    :members:

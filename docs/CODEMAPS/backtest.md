@@ -8,7 +8,7 @@ Signal-driven backtesting with fill-at-next-open semantics, exchange calendar in
 |-|-|-|
 | `run(df, strategy, *, trade_side, calendar, flatten_eod, instrument_col)` | `_engine.py:279` | Run vectorized backtest; returns `BacktestResult` or `MultiBacktestResult` |
 | `Cost` | `_cost.py:47` | Frozen dataclass: per-side transaction cost in basis points (`commission_bps`, `slippage_bps`, `slippage_col`) |
-| `Bracket` | `_bracket.py:105` | Frozen dataclass: protective TP/SL resting against every position (`take_profit`, `stop_loss`, `both_touch`) |
+| `Bracket` | `_bracket.py:117` | Frozen dataclass: protective TP/SL resting against every position (`take_profit`, `stop_loss`, `both_touch`, `anchor`) |
 | `Strategy` | `_types.py:28` | Protocol: `entry() -> Condition \| pl.Expr`, `exit() -> Condition \| pl.Expr` |
 | `BacktestResult` | `_types.py:43` | Dataclass: `returns`, `trades`, `signals` DataFrames |
 | `MultiBacktestResult` | `_types.py:54` | Dict-like container of per-symbol `BacktestResult`s with lazy-cached combined views |
@@ -68,9 +68,10 @@ Backward compatibility: `cost=None` takes a byte-for-byte unchanged code path; `
 
 | Symbol | Purpose |
 |-|-|
-| `Bracket` | Frozen, `slots=True`, primitives only. `take_profit`/`stop_loss` are a `float` (fraction of the entry fill) or a `str` (column of absolute levels, latched at the `_entry_clean` signal bar); `both_touch` picks the same-bar policy |
-| `level_expr` / `trigger_expr` / `fill_expr` | The decision table, emitted per compile-time-known side — never derived by multiplying a comparison through `effective_side` |
-| `BRACKET_COLUMNS` | The internal working columns the engine materializes and drops |
+| `Bracket` | Frozen, `slots=True`, primitives only. `take_profit`/`stop_loss` are a `float` (fraction of the entry fill) or a `str` (column of absolute levels, latched at the `_entry_clean` signal bar); `both_touch` picks the same-bar policy; `anchor` picks the level-anchoring policy |
+| `Anchor` / `_ANCHOR_POLICIES` | `Literal["position", "signal"]` and its membership set — validated in `__post_init__`, mirroring `BothTouch`. Not exported; `__init__.py` exports only `Bracket` |
+| `level_expr` / `trigger_expr` / `fill_expr` | The decision table, emitted per compile-time-known side — never derived by multiplying a comparison through `effective_side`. `level_expr` takes `resignal_col` (`None` under `anchor="position"`, and then emits the same expression tree as before) |
+| `BRACKET_COLUMNS` | The internal working columns the engine materializes and drops — includes `ANCHOR_FILL_COLUMN` / `RESIGNAL_COLUMN`, which are materialized only under `anchor="signal"` |
 
 Fill table (mirrors a conventional event-driven OHLC broker: a long bracket is a sell limit plus a sell stop):
 
@@ -87,7 +88,16 @@ Fill table (mirrors a conventional event-driven OHLC broker: a long bracket is a
 
 Unsupported combinations, both `NotImplementedError`: `bracket` + `short_strategy` (the dual merge would evaluate the long leg's levels against the short leg's position) and `bracket` + a `Limit(...)` exit (both claim the same-bar fill).
 
-Backward compatibility: `bracket=None` takes a byte-for-byte unchanged code path, pinned by `test_golden_baseline_no_bracket`.
+**Level anchoring (`anchor`).** `"position"` (default) latches both legs once, on the entry that opened the position. `"signal"` re-latches them on every later `_entry` that fires while `_pos_d1 == 1` — and, under `flatten_eod`, not on a session-last bar, where the position is already flattened at the open. `_apply_bracket` emits two extra columns for it, both dropped by `BRACKET_COLUMNS` membership and **neither materialized under `"position"`**, so default byte-identity is structural rather than asserted:
+
+| Column | Contents |
+|-|-|
+| `RESIGNAL_COLUMN` (`_bracket_resignal`) | `_entry & (_pos_d1 == 1)`, masked by `~_session_last` under `flatten_eod`, `fill_null(False)` |
+| `ANCHOR_FILL_COLUMN` (`_bracket_anchor_fill`) | The open of each entry-fill *or* post-re-signal bar, forward-filled. `float` legs read this instead of `ENTRY_FILL_COLUMN`; `ENTRY_FILL_COLUMN` is untouched, so trade P&L still measures from the true entry fill |
+
+The `.shift(1)` on both the `str` re-latch and the anchor fill is the arming convention, not cosmetic: a re-signal at bar `k` is observed at `k`'s close, so the new level is in force from `k+1` and a leg tagged at `k` closes the position first. A second, post-hoc null guard runs after `BRACKET_SEEN_COLUMN` exists — a null level on a re-latch bar in a block that has not yet fired raises; at or after the block's first trigger, that block is dead and it does not.
+
+Backward compatibility: `bracket=None` takes a byte-for-byte unchanged code path, pinned by `test_golden_baseline_no_bracket`. `anchor="position"` is byte-identical to omitting the keyword, pinned by `test_golden_baseline_explicit_position_anchor` against the frozen baselines.
 
 ### EntryRef tree walker — L87
 
