@@ -422,6 +422,11 @@ def test_the_anchor_fixture_discriminates(
     )
 
 
+# Reachability, stated where it is true so `grep -rn 'anchor="signal"' tests/`
+# lands on it: this reaches `_apply_bracket` with anchor="signal" through the
+# PUBLIC `run()`. A test that called `level_expr` or `_apply_bracket` directly
+# would prove the expression is right and say nothing about whether the engine
+# ever builds it — which is the failure mode this codebase keeps shipping.
 @pytest.mark.parametrize("anchor", ["position", "signal"])
 @_ANCHOR_GRID
 def test_engine_matches_the_reference_on_bracket_anchor(
