@@ -140,7 +140,9 @@ The engine consumes two boolean masks and never mentions a calendar concept. Tha
 | `FlattenSchedule` | `:76` | `__post_init__` normalizes `days` to `frozenset[Weekday]` (a bare `set` would leave the frozen dataclass unhashable) and canonicalizes `block_entry_minutes_before_close` to an int |
 | `resolve_flatten()` | `:188` | `flatten=` / `flatten_eod=` → one schedule or `None` |
 | `_WEEK_KEY` | `:262` | ISO Monday as an epoch-day int: `date.cast(Int32) - (weekday - 1)`. Not `year*100+week` (wrong every Dec/Jan) and not `dt.truncate("1w")` (epoch-anchored on a Thursday) |
-| `_flatten_sessions()` | `:272` | Restricts to the sessions the schedule flattens. Selection runs over sessions that **have bars**, which is what makes `"weekly"` holiday-aware for free |
+| `_week_closing_sessions()` | `:319` | `calendar.valid_days()` over whole ISO weeks -> the session the exchange closes each week on. Cached per calendar identity |
+| `_flatten_sessions()` | `:346` | Restricts to the sessions the schedule flattens. Every branch selects on a property of the session **alone**, so slicing the frame cannot relocate a flatten bar |
+| `_warn_weekly_gaps()` | `:371` | Reports an *interior* week whose closing session has no bars. A trailing one is indistinguishable from data legitimately ending mid-week, so it is not reported |
 | `build_flatten_masks()` | `:302` | Returns `(flatten_bar, entry_blocked)`. Both offsets are provable no-ops at 0: `date <= close - 0` collapses into the existing `date < close`, and `date >= close - 0` is empty by construction |
 
 Day selection keys off `calendar.schedule()`'s own `date` column — the *trading day* — not off `market_open`, which lands on the previous calendar date on any exchange with a negative open offset (CME Globex, FX).

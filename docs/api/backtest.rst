@@ -85,11 +85,21 @@ exposure, so it has to be asked for.
 would fill on the next session's open, hours stale. For an edge condition such
 as :class:`Crossover`, which fires once, that means the signal is gone.
 
-``days="weekly"`` selects the last session of each ISO week *that has bars*,
-which makes it holiday-aware for free: when Friday is a holiday, Thursday
-takes the flatten. An explicit ``days={Weekday.FRI}`` is deliberately literal
-— that same week does not flatten at all. Choose ``"weekly"`` when you mean
-"end of week" and the weekday set when you mean a particular weekday.
+``days="weekly"`` selects the session on which the **exchange calendar** closes
+each ISO week, which makes it holiday-aware for free: when Friday is a holiday,
+Thursday is the week's closing session and takes the flatten. An explicit
+``days={Weekday.FRI}`` is deliberately literal — that same week does not flatten
+at all. Choose ``"weekly"`` when you mean "end of week" and the weekday set when
+you mean a particular weekday.
+
+The distinction that matters for walk-forward work is that selection asks the
+*calendar*, not the data. If a week's closing session carries no bars, that week
+is not flattened — the flatten does not fall back to whatever bar happens to be
+last. Otherwise a fold ending on a Wednesday would flatten there while the
+pooled run over the same bars would not, and the two would disagree over
+identical inputs. An interior gap of that kind is logged at ``WARNING``; a frame
+that simply ends mid-week is not, because from inside the engine the two cases
+are indistinguishable.
 
 .. autoclass:: mktlib.backtest.FlattenSchedule
    :members:

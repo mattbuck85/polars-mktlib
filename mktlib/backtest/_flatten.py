@@ -55,8 +55,16 @@ class Weekday(enum.IntEnum):
 #: ``"daily"``
 #:     Every session.
 #: ``"weekly"``
-#:     The last session of each ISO week *that has bars*. Holiday-aware for
-#:     free: when Friday is a holiday, Thursday is that week's last session.
+#:     The session on which the **exchange calendar** closes each ISO week.
+#:     Holiday-aware for free: when Friday is a holiday, Thursday is the
+#:     week's closing session, so that is where the flatten lands.
+#:
+#:     Asked of the calendar, not of the data. A week whose closing session
+#:     carries no bars is not flattened at all, rather than the flatten moving
+#:     back to whatever bar happens to be last — which would mean a
+#:     walk-forward slice and a full-range run disagreed over identical bars.
+#:     An interior gap of that kind is logged; a frame that simply ends
+#:     mid-week is not, because the two are indistinguishable from here.
 #: An explicit set of :class:`Weekday`
 #:     Deliberately literal. ``{Weekday.FRI}`` means Friday and nothing else,
 #:     so a week whose Friday is a holiday does not flatten at all. That is the
@@ -310,28 +318,106 @@ _WEEK_KEY = pl.col("_session_date").cast(pl.Int32) - (
 )
 
 
-def _flatten_sessions(joined: pl.DataFrame, schedule: FlattenSchedule) -> pl.DataFrame:
+_week_last_cache: dict[
+    tuple[int, datetime.date, datetime.date], list[datetime.date]
+] = {}
+
+
+def _week_closing_sessions(
+    calendar: ExchangeCalendar, dates: pl.Series
+) -> list[datetime.date]:
+    """The last **calendar** trading day of each ISO week spanned by *dates*.
+
+    Asked of the calendar over whole ISO weeks, not of the bars. That is the
+    difference between a *local* property — "does the exchange close the week
+    on this session?" — and a non-local one — "is there a later bar for this
+    week anywhere in the frame?".
+
+    The non-local form is what made a slice disagree with the full-range run
+    over identical bars: a slice ending Wednesday treated Wednesday as the
+    week's close and flattened there, while the full run did not. Selection
+    now depends only on ``(calendar, does this session have bars)``, so
+    cutting whole sessions off either end cannot relocate a flatten bar.
+
+    Holiday-awareness never needed the non-locality and is unaffected:
+    ``valid_days`` already drops holidays, so the week of Good Friday closes
+    on Thursday as a matter of calendar fact.
+    """
+    first = _to_date(dates.min())  # type: ignore[arg-type]
+    last = _to_date(dates.max())  # type: ignore[arg-type]
+    # Widen to whole ISO weeks. Without the forward extension the calendar is
+    # truncated at the data's end and cannot tell "Friday is a holiday" from
+    # "Friday is a trading day this frame has no bars for" — the exact
+    # confusion this function exists to remove.
+    start = first - datetime.timedelta(days=first.isoweekday() - 1)
+    end = last + datetime.timedelta(days=7 - last.isoweekday())
+    key = (id(calendar), start, end)
+    cached = _week_last_cache.get(key)
+    if cached is None:
+        sessions = calendar.valid_days(start, end).alias("_session_date")
+        cached = (
+            sessions.to_frame()
+            .group_by(_WEEK_KEY.alias("_wk"))
+            .agg(pl.col("_session_date").max())
+            .get_column("_session_date")
+            .to_list()
+        )
+        _week_last_cache[key] = cached
+        _schedule_cache_pins.append(calendar)
+    return cached
+
+
+def _flatten_sessions(
+    joined: pl.DataFrame,
+    schedule: FlattenSchedule,
+    week_closings: list[datetime.date],
+) -> pl.DataFrame:
     """Restrict *joined* to the bars of sessions this schedule flattens.
 
-    Selection runs over sessions that actually carry bars, not over the raw
-    calendar. That is what makes ``"weekly"`` holiday-aware without a holiday
-    table of its own: if Friday has no bars, Thursday is the week's last
-    session and takes the flatten.
+    Every branch selects on a property of the session alone — its weekday, or
+    whether the exchange closes that ISO week on it. No branch consults which
+    *other* sessions are present, so slicing the frame cannot move a flatten
+    bar.
     """
     days = schedule.resolved_days
     if days == "daily":
         return joined
     if days == "weekly":
-        last_per_week = (
-            joined.group_by(_WEEK_KEY.alias("_wk"))
-            .agg(pl.col("_session_date").max().alias("_session_date"))
-            .get_column("_session_date")
-            .to_list()
-        )
-        return joined.filter(pl.col("_session_date").is_in(last_per_week))
+        # Explicit dtype: a bare empty list infers Null and makes ``is_in``
+        # against a Date column misbehave. ``implode`` because ``is_in`` against
+        # a flat Series of the same dtype is ambiguous and deprecated.
+        closing = pl.Series("_closing", week_closings, dtype=pl.Date)
+        return joined.filter(pl.col("_session_date").is_in(closing.implode()))
     return joined.filter(
         pl.col("_session_date").dt.weekday().is_in([int(d) for d in days])
     )
+
+
+def _warn_weekly_gaps(
+    joined: pl.DataFrame, week_closings: list[datetime.date]
+) -> None:
+    """Warn where a week's closing session is missing from the data.
+
+    Only the *interior* case is reported. A closing session after the last bar
+    in the frame is indistinguishable from "the data legitimately ends
+    mid-week", and claiming otherwise is how a warning becomes noise.
+    """
+    present = set(joined["_session_date"].to_list())
+    if not present:
+        return
+    last_present = max(present)
+    missing = sorted(
+        d for d in week_closings if d not in present and d < last_present
+    )
+    if missing:
+        logger.warning(
+            "days='weekly': the exchange closes %d week(s) on a session with "
+            "no bars in this data — %s. Those weeks are not flattened. This is "
+            "a gap in the data, not a holiday; holidays are already excluded "
+            "by the calendar",
+            len(missing),
+            ", ".join(str(d) for d in missing[:5]),
+        )
 
 
 def _mask_from_indices(indices: Iterable[int], n: int) -> pl.Series:
@@ -380,7 +466,11 @@ def build_flatten_masks(
     joined = bar_df.join_asof(sessions, left_on="date", right_on="market_open")
 
     joined = joined.filter(pl.col("date") < pl.col("market_close"))
-    joined = _flatten_sessions(joined, schedule)
+    week_closings: list[datetime.date] = []
+    if schedule.resolved_days == "weekly":
+        week_closings = _week_closing_sessions(calendar, dates)
+        _warn_weekly_gaps(joined, week_closings)
+    joined = _flatten_sessions(joined, schedule, week_closings)
 
     empty = pl.Series([False] * n, dtype=pl.Boolean)
     if joined.height == 0:

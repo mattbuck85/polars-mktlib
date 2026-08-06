@@ -216,13 +216,22 @@ class TestDaySelection:
             datetime.datetime(2024, 1, 12, 15, 45),  # Friday, week 2
         ]
 
-    def test_weekly_falls_back_to_thursday_when_friday_is_a_holiday(self) -> None:
-        """Good Friday 2024-03-29. ``weekly`` is holiday-aware for free."""
+    def test_weekly_falls_back_to_thursday_when_friday_is_a_holiday(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Good Friday 2024-03-29. ``weekly`` is holiday-aware for free.
+
+        The ``caplog`` assertion is the does-it-accept-what-it-should half: an
+        implementation that warns whenever the calendar Friday lacks bars would
+        pass every other test in this class and fail this one.
+        """
         days = _sessions(datetime.date(2024, 3, 25), datetime.date(2024, 3, 29))
         assert datetime.date(2024, 3, 29) not in days, "fixture: Good Friday is closed"
         df = _frame(days)
-        marks = _flatten_dates(df, FlattenSchedule(days="weekly"))
+        with caplog.at_level(logging.WARNING, logger="mktlib.backtest._flatten"):
+            marks = _flatten_dates(df, FlattenSchedule(days="weekly"))
         assert marks == [datetime.datetime(2024, 3, 28, 15, 45)]
+        assert caplog.text == "", "a holiday is not a data gap and must not warn"
 
     def test_explicit_friday_set_does_not_flatten_a_friday_holiday_week(self) -> None:
         """The documented literal-vs-aware split, pinned side by side with the above."""
@@ -241,7 +250,11 @@ class TestDaySelection:
 
     def test_iso_week_rollover_does_not_merge_december_into_january(self) -> None:
         """The classic ``year * 100 + week`` bug: Dec 29 - Jan 3 spans a year."""
-        days = _sessions(datetime.date(2026, 12, 28), datetime.date(2027, 1, 6))
+        # Extended to 2027-01-08 (a Friday) rather than 2027-01-06: under
+        # calendar-driven selection a frame ending mid-week has no closing
+        # session for that week, so a Wednesday end would drop the second mark
+        # for a reason unrelated to what this test is about.
+        days = _sessions(datetime.date(2026, 12, 28), datetime.date(2027, 1, 8))
         df = _frame(days)
         marks = _flatten_dates(df, FlattenSchedule(days="weekly"))
         # Week of Mon 2026-12-28 ends on its last *trading* day; the following
@@ -251,12 +264,63 @@ class TestDaySelection:
         assert marks[0].date() <= datetime.date(2027, 1, 1)
         assert marks[1].date() >= datetime.date(2027, 1, 4)
 
-    def test_weekly_flattens_on_a_final_partial_week(self) -> None:
-        # Mon 2024-01-08 … Wed 2024-01-10 — the week never reaches Friday.
+    def test_weekly_does_not_flatten_a_week_that_never_reaches_its_close(self) -> None:
+        """Data ending mid-week does not turn the last bar into a week close.
+
+        This previously flattened on the Wednesday. That is the behaviour the
+        slice/full-range invariant below forbids: the same Wednesday bar was a
+        flatten bar in a truncated frame and an ordinary bar in a longer one.
+        """
+        # Mon 2024-01-08 … Wed 2024-01-10 — the week never reaches its Friday.
         days = _sessions(datetime.date(2024, 1, 8), datetime.date(2024, 1, 10))
         df = _frame(days)
-        marks = _flatten_dates(df, FlattenSchedule(days="weekly"))
-        assert marks == [datetime.datetime(2024, 1, 10, 15, 45)]
+        assert _flatten_dates(df, FlattenSchedule(days="weekly")) == []
+
+    def test_weekly_does_not_relocate_the_flatten_when_friday_has_no_bars(self) -> None:
+        """A vendor gap on the closing session is not a holiday."""
+        days = _sessions(datetime.date(2024, 1, 8), datetime.date(2024, 1, 12))
+        full = _frame(days)
+        assert _flatten_dates(full, FlattenSchedule(days="weekly")) == [
+            datetime.datetime(2024, 1, 12, 15, 45)
+        ]
+        gapped = full.filter(
+            pl.col("date").dt.date() != datetime.date(2024, 1, 12)
+        )
+        assert _flatten_dates(gapped, FlattenSchedule(days="weekly")) == [], (
+            "Friday's absence relocated the flatten to Thursday"
+        )
+
+    def test_weekly_warns_when_an_interior_closing_session_is_missing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An interior gap IS distinguishable, so it is reported."""
+        days = _sessions(datetime.date(2024, 1, 8), datetime.date(2024, 1, 19))
+        gapped = _frame(days).filter(
+            pl.col("date").dt.date() != datetime.date(2024, 1, 12)
+        )
+        with caplog.at_level(logging.WARNING, logger="mktlib.backtest._flatten"):
+            marks = _flatten_dates(gapped, FlattenSchedule(days="weekly"))
+        assert marks == [datetime.datetime(2024, 1, 19, 15, 45)]
+        assert "2024-01-12" in caplog.text
+        assert "not a holiday" in caplog.text
+
+    def test_a_slice_flattens_the_same_bars_as_the_full_range_run(self) -> None:
+        """The invariant, not an instance of it.
+
+        Any prefix formed by cutting whole sessions off the end must flatten
+        exactly the bars the full run flattens, restricted to the bars it kept.
+        """
+        days = _sessions(datetime.date(2024, 1, 8), datetime.date(2024, 1, 19))
+        full_marks = set(_flatten_dates(_frame(days), FlattenSchedule(days="weekly")))
+        assert full_marks, "fixture flattens nothing; the property is vacuous"
+        for cut in range(1, len(days) + 1):
+            sliced = _frame(days[:cut])
+            kept = set(sliced["date"].to_list())
+            assert set(
+                _flatten_dates(sliced, FlattenSchedule(days="weekly"))
+            ) == (full_marks & kept), (
+                f"slice ending {days[cut - 1]} disagrees with the full-range run"
+            )
 
     def test_schedule_selecting_no_session_warns(
         self, caplog: pytest.LogCaptureFixture
@@ -326,6 +390,16 @@ class TestNoInternalColumnLeak:
         self, flatten: str | None
     ) -> None:
         cal = get_calendar("XNYS")
-        df = _frame(_TWO_SESSIONS)
+        # A full Tue-Fri week, not the two-session fixture: under calendar-driven
+        # weekly selection a Tue/Wed frame has no closing session, so the "eow"
+        # case would materialize an all-False mask and check nothing.
+        df = _frame(_sessions(datetime.date(2024, 1, 2), datetime.date(2024, 1, 5)))
         result = run(df, _Cross(), calendar=cal, flatten=flatten)  # type: ignore[arg-type]
         assert "_flatten_bar" not in result.signals.columns
+
+    def test_the_eow_case_actually_flattens_something(self) -> None:
+        """Without this the leak check above passes on an empty mask."""
+        df = _frame(_sessions(datetime.date(2024, 1, 2), datetime.date(2024, 1, 5)))
+        assert _flatten_dates(df, FlattenSchedule(days="weekly")) == [
+            datetime.datetime(2024, 1, 5, 15, 45)
+        ]

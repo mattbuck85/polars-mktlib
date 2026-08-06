@@ -24,7 +24,9 @@
 
 - **`Weekday`** — ISO `IntEnum`, `MON=1` … `SUN=7`, matching `pl.Expr.dt.weekday()` and `date.isoweekday()` rather than the 0-based `date.weekday()`.
 
-  `days="weekly"` selects the last session of each ISO week *that has bars*, making it holiday-aware for free: when Friday is a holiday, Thursday takes the flatten. An explicit `days={Weekday.FRI}` is deliberately literal — that same week does not flatten at all. Both forms exist because both intents are real; they are documented and tested side by side.
+  `days="weekly"` selects the session on which the **exchange calendar** closes each ISO week, making it holiday-aware for free: when Friday is a holiday, Thursday is the week's closing session and takes the flatten. An explicit `days={Weekday.FRI}` is deliberately literal — that same week does not flatten at all. Both forms exist because both intents are real; they are documented and tested side by side.
+
+  Selection asks the calendar, not the data. A week whose closing session carries no bars is not flattened, rather than the flatten falling back to whatever bar happens to be last. That fallback is non-local — it depends on whether a later bar exists anywhere in the frame — so it made a walk-forward slice ending on a Wednesday flatten there while the pooled run over identical bars did not. An interior gap is logged at `WARNING`; a frame that simply ends mid-week is not, since the two are indistinguishable from inside the engine.
 
   The offsets are **wall-clock, not bar counts**: `minutes_before_close=N` selects the last bar starting at or before `close - N`, so on a 15-minute grid any `N` below 15 resolves to the same bar as `N=0`. Both are measured against each session's own close, so an early-closing half-day flattens 30 minutes before *its* 13:00 close with no special-casing.
 
@@ -53,6 +55,12 @@
 - **Deleted a tautological guard in the post-flatten return zeroing.** `_position` is structurally 0 on every flatten bar (the entry branch is gated on `~flatten_bar`, the exit branch is satisfied by `flatten_bar` alone), so at flatten+1 `_pos_d1 == 0` and `_is_entry_bar` — which requires `_pos_d1 == 1` — cannot be true. The `& ~_is_entry_bar` term guarding that branch never once changed a result. It is removed rather than tested around, because a guard that cannot fire reads as protection that is not there; `test_position_is_always_zero_on_the_flatten_bar` pins the invariant the deletion rests on, and was revert-checked against a deliberately broken `_position`.
 
 - **The block window is applied after the entry deferral, not before.** The flatten bar is not necessarily inside the block window: on a grid that does not divide the two cutoffs evenly (`N = M = 7` against a 16:00 close on a 5-minute grid gives flatten bar 15:50 and window `{15:55}`), it starts strictly before `close - M`. Blocking first would let the deferral write an entry into the window it had just cleared. Blocking last cannot, so the two compose with no precedence rule.
+
+- **A flatten bar that is itself inside the block window drops its signal rather than deferring it.** The two compose from both sides now: blocking runs after the deferral so the deferral cannot write *into* the window, and the deferral refuses to fire *from* a blocked bar. Without the second half, a signal on a bar that was both — which happens whenever the last bar starts exactly at `close - N` — was carried to the next session's open, which no window covers, and filled hours later.
+
+- **A block window covering an entire session now warns.** `block_entry_minutes_before_close=390` — a whole NYSE session, or seconds passed where minutes were meant — blocked every bar and returned zero trades and a flat equity curve with no diagnostic at all. Counted per session, and the message names units, since that is the likely cause.
+
+- **The schedule cache is keyed on calendar identity, not name.** Two `ExchangeCalendar` objects sharing a name and differing in `close_time` collided, and the second silently reused the first's schedule. Pre-existing, but sharper now that `market_close` sets the `minutes_before_close` cutoff and the block window as well as the session-last bar.
 
 - **`docs/CODEMAPS/backtest.md` line references refreshed.** Several were 200+ lines stale — `run()` was listed at `_engine.py:279` against an actual `:939`.
 
