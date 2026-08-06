@@ -77,6 +77,10 @@ STOP_LOSS = "stop_loss"
 BothTouch = Literal["stop_first", "take_profit_first"]
 _BOTH_TOUCH_POLICIES: frozenset[str] = frozenset({"stop_first", "take_profit_first"})
 
+#: Level-anchoring policies for :attr:`Bracket.anchor`.
+Anchor = Literal["position", "signal"]
+_ANCHOR_POLICIES: frozenset[str] = frozenset({"position", "signal"})
+
 # Internal columns materialized by the engine and dropped before the
 # BacktestResult is handed back.
 BRACKET_LEVEL_COLUMN = "_bracket_level"
@@ -127,6 +131,12 @@ class Bracket:
         How to resolve a bar whose high **and** low tag both legs.
         ``"stop_first"`` (default) books the loss; ``"take_profit_first"``
         books the gain.
+    anchor
+        Which entry signal the levels are measured from. ``"position"``
+        (default) latches both legs once, on the entry that opened the
+        position, and holds them for the life of the trade. ``"signal"``
+        re-latches them on every later entry signal that fires while the
+        position is still open.
 
     Notes
     -----
@@ -153,12 +163,42 @@ class Bracket:
     the very next bar; that difference is intentional, since re-entering a
     position that just stopped out is rarely what a bracket user wants.
 
+    **A re-anchor is armed on the following bar.** Under
+    ``anchor="signal"`` an entry signal on bar ``k`` that fires while the
+    position is held is observed at that bar's close, so the level in force
+    *during* bar ``k`` is still the previous one and the new level applies
+    from ``k + 1``. A ``float`` leg re-anchors to ``open[k + 1]`` — the
+    price a fresh entry on that signal would have filled at — and a ``str``
+    leg re-reads its column on bar ``k``. A leg tagged on bar ``k``
+    therefore closes the position before the re-anchor takes effect.
+
+    Re-anchoring moves the protective levels only. The position opened
+    once, trade P&L still measures from the original entry fill, and a
+    re-signal never re-opens or extends a block: block boundaries are fixed
+    before the bracket is applied.
+
+    Under ``flatten_eod`` a re-signal on a session-last bar does not
+    re-anchor, since the position is flattened at that bar's open. With
+    ``flatten_eod=False`` a re-signal on a session's last bar anchors a
+    ``float`` leg to the next session's opening price, so an overnight gap
+    carries the levels with it.
+
+    An entry condition that is **level**-triggered rather than
+    edge-triggered stays true on consecutive bars, so under
+    ``anchor="signal"`` it re-latches on every one of them and the bracket
+    becomes a trailing one.
+
+    *anchor* governs bracket levels only.
+    :class:`~mktlib.backtest.EntryRef` snapshots are unaffected and
+    continue to latch at the entry that opened the position.
+
     Requires ``high`` and ``low`` columns in the input DataFrame.
     """
 
     take_profit: float | str | None = None
     stop_loss: float | str | None = None
     both_touch: BothTouch = "stop_first"
+    anchor: Anchor = "position"
 
     def __post_init__(self) -> None:
         for name in ("take_profit", "stop_loss"):
@@ -190,6 +230,12 @@ class Bracket:
             msg = (
                 f"Bracket.both_touch must be one of {sorted(_BOTH_TOUCH_POLICIES)}, "
                 f"got {self.both_touch!r}"
+            )
+            raise ValueError(msg)
+        if self.anchor not in _ANCHOR_POLICIES:
+            msg = (
+                f"Bracket.anchor must be one of {sorted(_ANCHOR_POLICIES)}, "
+                f"got {self.anchor!r}"
             )
             raise ValueError(msg)
 

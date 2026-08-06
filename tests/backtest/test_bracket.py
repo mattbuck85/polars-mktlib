@@ -167,6 +167,54 @@ def test_unknown_both_touch_policy_rejected() -> None:
         Bracket(take_profit=0.02, both_touch="whichever")  # type: ignore[arg-type]
 
 
+def test_unknown_anchor_policy_rejected() -> None:
+    with pytest.raises(ValueError, match="anchor must be one of"):
+        Bracket(take_profit=0.02, anchor="entry")  # type: ignore[arg-type]
+
+
+def test_anchor_defaults_to_position() -> None:
+    assert Bracket(take_profit=0.02).anchor == "position"
+
+
+@pytest.mark.parametrize("anchor", ["position", "signal"])
+def test_both_anchor_values_are_accepted(anchor: str) -> None:
+    """The guard must not over-refuse: both documented policies construct.
+
+    A membership check written from a rejection case is exactly the shape
+    that bans a legitimate value, so pin the accepting half explicitly.
+    """
+    bracket = Bracket(take_profit=0.02, stop_loss=0.01, anchor=anchor)  # type: ignore[arg-type]
+    assert bracket.anchor == anchor
+
+
+def test_anchor_participates_in_equality_and_hash() -> None:
+    """Two brackets differing only in *anchor* are distinct keys.
+
+    ``Bracket`` is primitives-only precisely so a consumer can hash it into
+    a cache key. *anchor* changes what the backtest computes with everything
+    else held equal, so it must not collide with the default.
+    """
+    default = Bracket(take_profit=0.02, stop_loss=0.01)
+    resignal = Bracket(take_profit=0.02, stop_loss=0.01, anchor="signal")
+
+    assert default != resignal
+    assert hash(default) != hash(resignal)
+    assert len({default, resignal}) == 2
+
+
+def test_positional_construction_is_unchanged_by_anchor() -> None:
+    """*anchor* is last on the dataclass, so the three existing positions hold."""
+    assert Bracket(0.02, 0.01, "take_profit_first") == Bracket(
+        take_profit=0.02, stop_loss=0.01, both_touch="take_profit_first"
+    )
+
+
+def test_anchor_is_frozen() -> None:
+    bracket = Bracket(take_profit=0.02)
+    with pytest.raises(FrozenInstanceError):
+        bracket.anchor = "signal"  # type: ignore[misc]
+
+
 def test_level_columns_lists_only_string_specs() -> None:
     assert Bracket(take_profit="tp", stop_loss=0.01).level_columns == ("tp",)
     assert Bracket(take_profit=0.02, stop_loss=0.01).level_columns == ()
