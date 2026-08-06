@@ -543,14 +543,39 @@ cal = get_calendar("NYSE")
 result = run(df, SmaCross(), calendar=cal)
 
 # Force-close positions at session end (no overnight exposure)
-result = run(df, SmaCross(), calendar=cal, flatten_eod=True)
+result = run(df, SmaCross(), calendar=cal, flatten="eod")
+
+# Or hold through the week, flattening only on its last session
+result = run(df, SmaCross(), calendar=cal, flatten="eow")
 ```
 
-With `flatten_eod=True`:
+With `flatten="eod"`:
 - Positions are forced to 0 at each session's last bar (e.g. 15:59 for NYSE)
-- Entries are suppressed on session-last bars
-- Session-forced exits fill at the session-last bar's open (not next session's open)
+- Entries are suppressed on flatten bars
+- Session-forced exits fill at the flatten bar's own open (not next session's open)
 - Overnight gaps are never captured
+
+`FlattenSchedule` controls all three dimensions — which sessions, how many
+minutes before the close to flatten, and how many minutes before the close to
+stop opening new positions:
+
+```python
+from mktlib.backtest import FlattenSchedule, Weekday
+
+run(df, SmaCross(), calendar=cal, flatten=FlattenSchedule(
+    days={Weekday.FRI},
+    minutes_before_close=30,              # flatten at 15:30
+    block_entry_minutes_before_close=60,  # open nothing after 15:00
+))
+```
+
+`block_entry_minutes_before_close` defaults to `minutes_before_close`, which is
+what keeps an early flatten from silently re-opening and carrying overnight.
+See the [Sphinx docs](https://polars-mktlib.readthedocs.io) for the full
+semantics.
+
+`flatten_eod=True` remains fully supported and is exactly equivalent to
+`flatten="eod"`.
 
 ### Trade Side
 
