@@ -18,7 +18,7 @@ import enum
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import polars as pl
 
@@ -159,6 +159,25 @@ class FlattenSchedule:
             raise ValueError(msg)
         object.__setattr__(self, "days", normalized)
 
+    @property
+    def resolved_days(self) -> FlattenDays:
+        """*days* after normalization — never a bare ``set`` or other iterable.
+
+        The field itself is typed wide because the constructor accepts any
+        iterable of weekday-ish values. Anything reading a schedule *after*
+        construction — a cache key, a repr, a comparison — wants the narrow
+        type, and should read this instead of the field.
+        """
+        days = self.days
+        if isinstance(days, str):
+            return days
+        return cast("frozenset[Weekday]", days)
+
+    @property
+    def block_minutes(self) -> int:
+        """*block_entry_minutes_before_close* after defaulting — always an int."""
+        return cast("int", self.block_entry_minutes_before_close)
+
     @staticmethod
     def _validate_minutes(name: str, value: object) -> None:
         # bool before int: isinstance(True, int) is True, so an unguarded check
@@ -244,17 +263,39 @@ def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
 # Schedule cache — avoids recomputing calendar.schedule() across mask calls
 # ---------------------------------------------------------------------------
 
-_schedule_cache: dict[tuple[str, datetime.date, datetime.date], pl.DataFrame] = {}
+_schedule_cache: dict[tuple[int, datetime.date, datetime.date], pl.DataFrame] = {}
 
 
 def _get_schedule(calendar: ExchangeCalendar, dates: pl.Series) -> pl.DataFrame:
-    """Return cached schedule DataFrame for the calendar covering *dates*."""
+    """Return cached schedule DataFrame for the calendar covering *dates*.
+
+    Keyed on the calendar's **identity**, not its name. Two distinct calendars
+    can share a name and differ in the fields this cache stores: an ad-hoc
+    ``ExchangeCalendar("MYX", close_time=...)`` built twice with different
+    closes would otherwise get the first one's schedule, silently. That was
+    already a hazard for the session-last bar; it is a sharper one now that
+    ``market_close`` also sets the ``minutes_before_close`` cutoff and the
+    entry-block window, so a wrong close moves both.
+
+    ``id()`` is safe here only because the value is a pure function of the
+    calendar object and the date range: a recycled id can only follow the
+    original's collection, and a stale entry under a recycled id would be
+    wrong. Hence the registry pin below — it holds a reference for as long as
+    the entry lives, so an id in this dict always denotes the object that
+    produced it.
+    """
     start = _to_date(dates.min())  # type: ignore[arg-type]
     end = _to_date(dates.max())  # type: ignore[arg-type]
-    key = (calendar.name, start, end)
+    key = (id(calendar), start, end)
     if key not in _schedule_cache:
         _schedule_cache[key] = calendar.schedule(start, end)
+        _schedule_cache_pins.append(calendar)
     return _schedule_cache[key]
+
+
+#: Keeps every calendar that owns a cache entry alive, so ``id()`` cannot be
+#: recycled onto a different object while its entry is still readable.
+_schedule_cache_pins: list[ExchangeCalendar] = []
 
 
 #: Monday of the ISO week containing ``_session_date``, as an epoch-day integer.
@@ -277,7 +318,7 @@ def _flatten_sessions(joined: pl.DataFrame, schedule: FlattenSchedule) -> pl.Dat
     table of its own: if Friday has no bars, Thursday is the week's last
     session and takes the flatten.
     """
-    days = schedule.days
+    days = schedule.resolved_days
     if days == "daily":
         return joined
     if days == "weekly":
@@ -387,11 +428,40 @@ def build_flatten_masks(
     # --- entry block window ------------------------------------------------
     # At block == 0 this is `date >= close`, which is empty by construction —
     # session membership already required `date < close`. A provable no-op.
-    block_minutes = schedule.block_entry_minutes_before_close
+    block_minutes = schedule.block_minutes
     if not block_minutes:
         return flatten_mask, empty
     blocked = joined.filter(
         pl.col("date")
         >= pl.col("market_close") - pl.duration(minutes=block_minutes)
     )
+
+    # A window that covers an entire session opens nothing that day. That is a
+    # legitimate configuration on a short session, but it is also exactly what
+    # a units slip looks like — ``block_entry_minutes_before_close=390`` (a
+    # whole NYSE session, or seconds passed where minutes were meant) blocks
+    # every bar and returns a backtest with zero trades and a flat equity
+    # curve. Silence there reads as "the strategy never triggered".
+    #
+    # Counted per session rather than over the frame, so one short session in a
+    # long backtest is still reported.
+    per_session = joined.group_by("market_open").len()
+    blocked_per_session = blocked.group_by("market_open").len()
+    fully_blocked = (
+        per_session.join(blocked_per_session, on="market_open", how="inner")
+        .filter(pl.col("len") == pl.col("len_right"))
+        .height
+    )
+    if fully_blocked:
+        logger.warning(
+            "block_entry_minutes_before_close=%d covers every bar of %d "
+            "selected session(s) in %s … %s — no position can open on those "
+            "sessions. Check the units: this is minutes before the close, not "
+            "seconds, and not a session length",
+            block_minutes,
+            fully_blocked,
+            dates.min(),
+            dates.max(),
+        )
+
     return flatten_mask, _mask_from_indices(blocked["_idx"].to_list(), n)

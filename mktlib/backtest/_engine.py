@@ -499,7 +499,16 @@ def _run_core(
         # is ``_pos_d1 == 1 & _pos_d2 == 0``, one bar later than
         # ``_entry_clean``.) Under an offset schedule the flatten bar is
         # in-session, so "the next bar" is in-session too.
+        #
+        # A flatten bar that is ITSELF inside the block window does not defer,
+        # it drops. Deferring it would carry the signal past the block — the
+        # next bar is often the next session's open, which no window covers —
+        # and land a fill hours after the signal, which is exactly what
+        # blocking is documented to prevent. With block == 0 nothing is
+        # blocked, so this is the unchanged legacy deferral.
         _suppressed = pl.col("_entry") & pl.col(FLATTEN_BAR_COLUMN)
+        if flatten.block_entry_minutes_before_close:
+            _suppressed = _suppressed & ~pl.lit(_blocked_mask)
         signals = signals.with_columns(
             (pl.col("_entry") | _suppressed.shift(1).fill_null(False)).alias("_entry"),
         )

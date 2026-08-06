@@ -14,11 +14,11 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from mktlib.backtest._conditions import Crossover, Crossunder
+from mktlib.backtest._conditions import Crossover, Crossunder, PriceIsAbove
 from mktlib.backtest._cost import Cost
 from mktlib.backtest._engine import run
 from mktlib.backtest._flatten import FlattenSchedule, build_flatten_masks
-from mktlib.scheduling import get_calendar
+from mktlib.scheduling import ExchangeCalendar, get_calendar
 
 
 class _Cross:
@@ -26,6 +26,22 @@ class _Cross:
 
     def entry(self) -> Crossover:
         return Crossover("fast", "slow")
+
+    def exit(self) -> Crossunder:
+        return Crossunder("never_a", "never_b")
+
+
+class _Level:
+    """Level entry: re-arms on **every** bar, so re-entry is always attempted.
+
+    An edge entry (``Crossover``) fires once and never again, which makes it
+    useless for testing that something *prevents* a re-entry — nothing was
+    going to re-enter anyway. Any assertion about the block window stopping a
+    re-open has to be made against an entry that would otherwise re-open.
+    """
+
+    def entry(self) -> PriceIsAbove:
+        return PriceIsAbove("fast", "slow")
 
     def exit(self) -> Crossunder:
         return Crossunder("never_a", "never_b")
@@ -88,6 +104,15 @@ _TWO = (datetime.date(2024, 1, 2), datetime.date(2024, 1, 3))
 #: A signal bar that is early enough to open a position and hold it into the
 #: close, and late enough to be a real crossover.
 _MORNING = datetime.datetime(2024, 1, 2, 10, 0)
+
+#: A true 15-minute grid, 09:30 .. 15:45. Its last bar starts exactly at
+#: ``close - 15``, which is what makes that bar both the flatten bar and the
+#: first blocked bar under ``minutes_before_close=15``.
+_T15 = tuple(
+    ((datetime.datetime(2024, 1, 2, 9, 30) + datetime.timedelta(minutes=15 * i)).hour,
+     (datetime.datetime(2024, 1, 2, 9, 30) + datetime.timedelta(minutes=15 * i)).minute)
+    for i in range(26)
+)
 
 
 # ---------------------------------------------------------------------------
@@ -291,21 +316,43 @@ class TestBlockEntry:
         to ``minutes_before_close``: with the flatten bar off the session's
         last bar, in-session bars remain afterwards, and without a block window
         a fresh entry re-opens on one of them and carries overnight.
+
+        Uses :class:`_Level`, whose entry re-arms every bar. With an edge entry
+        this assertion holds trivially — nothing would have re-entered — and
+        the block window is never exercised at all.
         """
         days = _sessions(datetime.date(2024, 1, 2), datetime.date(2024, 1, 4))
         df = _frame(days, _TIMES, signal_at=_MORNING)
-        res = run(
-            df, _Cross(), calendar=get_calendar("XNYS"),
-            # cutoff 15:20 -> flatten bar 15:15; bars 15:30 and 15:45 remain.
+        cal = get_calendar("XNYS")
+        # cutoff 15:20 -> flatten bar 15:15; bars 15:30 and 15:45 remain, and a
+        # level entry WILL re-open on them unless the window stops it.
+        blocked = run(
+            df, _Level(), calendar=cal,
             flatten=FlattenSchedule(minutes_before_close=40),
         )
-        assert res.trades.height >= 1, "fixture opened nothing; assertion is vacuous"
-        day1 = res.signals.filter(
-            pl.col("date").dt.date() == datetime.date(2024, 1, 2)
+        unblocked = run(
+            df, _Level(), calendar=cal,
+            flatten=FlattenSchedule(
+                minutes_before_close=40, block_entry_minutes_before_close=0
+            ),
         )
-        held = day1["_position"].to_list()
-        assert 1 in held, "fixture never held a position on day 1"
-        assert held[-1] == 0, (
+
+        def _day1(res: object) -> list[int]:
+            return (
+                res.signals.filter(  # type: ignore[attr-defined]
+                    pl.col("date").dt.date() == datetime.date(2024, 1, 2)
+                )["_position"].to_list()
+            )
+
+        held_blocked, held_unblocked = _day1(blocked), _day1(unblocked)
+        assert 1 in held_blocked, "fixture never held a position on day 1"
+        # The control proves the block is load-bearing: without it the position
+        # re-opens after the flatten and is still on at the session boundary.
+        assert held_unblocked[-1] == 1, (
+            "control failed: nothing re-entered even with the window open, so "
+            "the assertion below would hold vacuously"
+        )
+        assert held_blocked[-1] == 0, (
             "position survived to the session boundary despite an early flatten"
         )
 
@@ -370,3 +417,130 @@ class TestDeferralThenBlockOrdering:
         assert at_1555["_position"][0] == 0
         next_open = sig.filter(pl.col("date") == datetime.datetime(2024, 1, 3, 9, 30))
         assert next_open["_position"][0] == 0, "overnight exposure leaked"
+
+    def test_a_blocked_flatten_bar_drops_rather_than_defers(self) -> None:
+        """The other half of the ordering: the flatten bar IS in the window.
+
+        On a 15-minute grid the last bar starts exactly at ``close - 15``, so
+        ``minutes_before_close=15`` makes that bar both the flatten bar and the
+        first blocked bar. Deferring from it would carry the signal to the next
+        *session's* open — which no window covers — and fill hours late. The
+        documented behaviour is to drop.
+        """
+        schedule = FlattenSchedule(minutes_before_close=15)
+        df = _frame(list(_TWO), _T15, signal_at=datetime.datetime(2024, 1, 2, 15, 45))
+        assert datetime.datetime(2024, 1, 2, 15, 45) in _flatten_dates(df, schedule)
+        assert datetime.datetime(2024, 1, 2, 15, 45) in _blocked_dates(df, schedule)
+
+        res = run(df, _Cross(), calendar=get_calendar("XNYS"), flatten=schedule)
+        assert res.trades.height == 0, (
+            f"signal was deferred across the session boundary: "
+            f"{res.trades.select('entry_date').to_dicts()}"
+        )
+
+    def test_the_same_signal_opens_a_trade_without_the_block(self) -> None:
+        """Control for the test above — the signal itself is real."""
+        df = _frame(list(_TWO), _T15, signal_at=datetime.datetime(2024, 1, 2, 15, 45))
+        res = run(
+            df, _Cross(), calendar=get_calendar("XNYS"),
+            flatten=FlattenSchedule(
+                minutes_before_close=15, block_entry_minutes_before_close=0
+            ),
+        )
+        assert res.trades.height == 1
+        assert res.trades["entry_date"][0] == datetime.datetime(2024, 1, 3, 9, 30)
+
+
+class TestWholeSessionBlockDiagnostic:
+    """A window covering an entire session must not fail silently."""
+
+    @pytest.mark.parametrize(
+        ("schedule", "why"),
+        [
+            (FlattenSchedule(block_entry_minutes_before_close=390),
+             "a whole NYSE session"),
+            (FlattenSchedule(minutes_before_close=1800),
+             "seconds passed where minutes were meant"),
+        ],
+    )
+    def test_a_window_covering_every_bar_warns(
+        self, schedule: FlattenSchedule, why: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        df = _frame(list(_TWO), _TIMES, signal_at=_MORNING)
+        with caplog.at_level(logging.WARNING, logger="mktlib.backtest._flatten"):
+            res = run(df, _Cross(), calendar=get_calendar("XNYS"), flatten=schedule)
+        assert res.trades.height == 0, "fixture assumption: nothing can open"
+        assert "covers every bar" in caplog.text, (
+            f"a window that blocks {why} produced an empty backtest silently"
+        )
+        assert "units" in caplog.text, "the warning should name the likely cause"
+
+    def test_a_normal_window_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Guards the diagnostic against firing on every ordinary run."""
+        df = _frame(list(_TWO), _TIMES, signal_at=_MORNING)
+        with caplog.at_level(logging.WARNING, logger="mktlib.backtest._flatten"):
+            run(df, _Cross(), calendar=get_calendar("XNYS"),
+                flatten=FlattenSchedule(block_entry_minutes_before_close=45))
+        assert "covers every bar" not in caplog.text
+
+
+class TestScheduleCacheIdentity:
+    """Two calendars sharing a name must not share a cached schedule.
+
+    The cache stores ``market_close``, and ``market_close`` now sets the
+    ``minutes_before_close`` cutoff and the entry-block window as well as the
+    session-last bar — so a collision moves all three.
+    """
+
+    @staticmethod
+    def _adhoc(close_time: datetime.time) -> ExchangeCalendar:
+        return ExchangeCalendar(
+            "ADHOC-SAME-NAME",
+            timezone="America/New_York",
+            open_time=datetime.time(9, 30),
+            close_time=close_time,
+            holidays=[],
+        )
+
+    def test_same_name_different_close_do_not_collide(self) -> None:
+        late = self._adhoc(datetime.time(16, 0))
+        early = self._adhoc(datetime.time(13, 30))
+        assert late.name == early.name, "fixture: the names must collide"
+
+        df = _frame([datetime.date(2024, 1, 2)], _TIMES)
+        dates = df["date"]
+        sched_late = build_flatten_masks(dates, late, FlattenSchedule())
+        sched_early = build_flatten_masks(dates, early, FlattenSchedule())
+
+        late_bar = [d for d, m in zip(dates.to_list(), sched_late[0].to_list(),
+                                      strict=True) if m]
+        early_bar = [d for d, m in zip(dates.to_list(), sched_early[0].to_list(),
+                                       strict=True) if m]
+        # 16:00 close -> the grid's last bar, 15:45.
+        assert late_bar == [datetime.datetime(2024, 1, 2, 15, 45)]
+        # 13:30 close -> every 15:xx bar is outside the session, so the last
+        # bar of the session is 10:00. Sharing the cache entry would have
+        # produced 15:45 here.
+        assert early_bar == [datetime.datetime(2024, 1, 2, 10, 0)], (
+            "the 13:30-closing calendar reused the 16:00 calendar's schedule"
+        )
+
+
+class TestSessionsWithNoBarBeforeCutoff:
+    """The third warning path — reachable, and previously untested."""
+
+    def test_a_session_with_no_bar_before_the_cutoff_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Two sessions; the second carries only a late bar, after the cutoff.
+        early = [(9, 30), (10, 0), (15, 0)]
+        d1 = _frame([datetime.date(2024, 1, 2)], tuple(early))
+        d2 = _frame([datetime.date(2024, 1, 3)], ((15, 45),))
+        df = pl.concat([d1, d2]).sort("date")
+        with caplog.at_level(logging.WARNING, logger="mktlib.backtest._flatten"):
+            marks = _flatten_dates(df, FlattenSchedule(minutes_before_close=45))
+        # 16:00 - 45m = 15:15; only day 1 has a bar at or before it.
+        assert marks == [datetime.datetime(2024, 1, 2, 15, 0)]
+        assert "no bar at or before the cutoff" in caplog.text
