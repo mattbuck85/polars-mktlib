@@ -93,6 +93,9 @@ BLOCK_COLUMN = "_bracket_block"
 ENTRY_FILL_COLUMN = "_bracket_entry_fill"
 TP_LEVEL_COLUMN = "_bracket_tp"
 SL_LEVEL_COLUMN = "_bracket_sl"
+# Materialized only under ``anchor="signal"``; absent otherwise.
+ANCHOR_FILL_COLUMN = "_bracket_anchor_fill"
+RESIGNAL_COLUMN = "_bracket_resignal"
 
 BRACKET_COLUMNS: tuple[str, ...] = (
     BRACKET_LEVEL_COLUMN,
@@ -105,6 +108,8 @@ BRACKET_COLUMNS: tuple[str, ...] = (
     ENTRY_FILL_COLUMN,
     TP_LEVEL_COLUMN,
     SL_LEVEL_COLUMN,
+    ANCHOR_FILL_COLUMN,
+    RESIGNAL_COLUMN,
 )
 
 
@@ -254,6 +259,7 @@ def level_expr(
     is_long: bool,
     entry_clean_col: str,
     entry_fill_col: str,
+    resignal_col: str | None = None,
 ) -> pl.Expr:
     """Per-bar bracket level for one leg, held for the life of the position.
 
@@ -264,15 +270,43 @@ def level_expr(
     position is already held is suppressed by the position machinery and
     latches nothing. A ``float`` scales the latched entry fill price by the
     side-appropriate multiplier.
+
+    Under ``anchor="signal"`` the level also moves on entry signals that
+    fire while the position is held. The two spec kinds take that through
+    different doors:
+
+    *float*
+        entirely in the **caller**, which passes an *entry_fill_col* that
+        re-latches on those bars. This function's float body is the same
+        multiplication either way.
+    *str*
+        here, via *resignal_col* — a boolean column marking those bars.
+        When it is ``None`` the expression is exactly the position-anchored
+        one.
+
+    The re-latch is ``shift(1)``-ed because the signal on bar ``k`` is
+    observed at that bar's close: the position is live throughout ``k`` on
+    the level it already had, and the new level is in force from ``k + 1``.
+    An unshifted re-latch would move the level *during* the bar the signal
+    fired on.
+
+    ``coalesce`` takes the opening latch first. The two collide on one bar
+    only under ``flatten_eod``, where a session-last signal is both a
+    re-signal against the outgoing position and — deferred to the next
+    session's first bar — the signal that opens the next one. That bar
+    belongs to the new position, so its own latch wins. The caller
+    independently keeps session-last bars out of *resignal_col*, which
+    empties the relatch on that bar; measured, either defence alone
+    resolves the collision correctly and this ordering is the second one.
     """
     if isinstance(spec, str):
-        return (
-            pl.when(pl.col(entry_clean_col))
-            .then(pl.col(spec))
-            .otherwise(None)
-            .forward_fill()
-            .cast(pl.Float64)
+        initial = pl.when(pl.col(entry_clean_col)).then(pl.col(spec)).otherwise(None)
+        if resignal_col is None:
+            return initial.forward_fill().cast(pl.Float64)
+        relatch = (
+            pl.when(pl.col(resignal_col)).then(pl.col(spec)).otherwise(None).shift(1)
         )
+        return pl.coalesce(initial, relatch).forward_fill().cast(pl.Float64)
     # A take-profit sits in the trade's favour, a stop against it.
     favourable = leg == TAKE_PROFIT
     up = favourable == is_long

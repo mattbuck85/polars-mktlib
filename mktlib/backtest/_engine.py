@@ -10,6 +10,7 @@ import polars as pl
 logger = logging.getLogger(__name__)
 
 from mktlib.backtest._bracket import (
+    ANCHOR_FILL_COLUMN,
     BLOCK_COLUMN,
     BRACKET_CANDIDATE_COLUMN,
     BRACKET_COLUMNS,
@@ -19,6 +20,7 @@ from mktlib.backtest._bracket import (
     BRACKET_POST_COLUMN,
     BRACKET_SEEN_COLUMN,
     ENTRY_FILL_COLUMN,
+    RESIGNAL_COLUMN,
     SL_LEVEL_COLUMN,
     STOP_LOSS,
     TAKE_PROFIT,
@@ -199,17 +201,78 @@ def _apply_bracket(
 
     is_entry_bar = (pl.col("_pos_d1") == 1) & (pl.col("_pos_d2") == 0)
 
+    # Under anchor="signal" the levels also move on entry signals that fire
+    # while the position is held. NOTHING below is emitted under the default
+    # anchor="position", so that path's expression tree is untouched and its
+    # output is byte-identical by construction rather than by assertion.
+    re_anchor = bracket.anchor == "signal"
+
     # Latch the entry fill price (the entry bar's own open) and give every
     # position block an id, so "first trigger wins" becomes a cumulative count
     # that resets per block.
-    signals = signals.with_columns(
+    _block_exprs: list[pl.Expr] = [
         pl.when(is_entry_bar)
         .then(pl.col("open"))
         .otherwise(None)
         .forward_fill()
         .alias(ENTRY_FILL_COLUMN),
         is_entry_bar.cast(pl.UInt32).cum_sum().alias(BLOCK_COLUMN),
-    )
+    ]
+    if re_anchor:
+        # A re-signal is an entry signal on a bar the position was ALREADY
+        # held on (``_pos_d1 == 1``), so it opens nothing and the position
+        # machinery discards it — which is precisely what this policy exists
+        # to stop discarding.
+        #
+        # ``fill_null(False)`` keeps this a non-nullable Boolean. The null is
+        # real and reachable: ``_entry`` is null wherever the strategy's
+        # indicators are still warming up or its expression admits nulls, and
+        # ``null & true`` is null under Kleene logic, so on a held bar the
+        # ``&`` above propagates it.
+        #
+        # Measured, not assumed: with the three consumers this column has
+        # today the fill changes nothing — ``when(null)`` takes its otherwise
+        # branch, the anchor-fill column re-fills after its own ``shift(1)``,
+        # and the null guard's ``any()`` ignores nulls. It is kept because a
+        # nullable mask is a trap for the NEXT consumer, which may combine it
+        # with ``&``/``|`` outside a ``when``; 0.15.0 removed exactly this
+        # class of accidental truthiness from ``session_last``.
+        resignal = pl.col("_entry") & (pl.col("_pos_d1") == 1)
+        if flatten_eod:
+            # A session-last signal fires against a position that is
+            # flattened at that same bar's open, so there is nothing left to
+            # re-anchor. The signal itself is not lost: it was deferred to
+            # the next session's first bar, where it opens a fresh position
+            # and latches that position's own levels.
+            resignal = resignal & ~pl.col("_session_last")
+        # Materialized rather than inlined: it is read by the anchor-fill
+        # column, by each str leg, and by the post-hoc null guard, and a
+        # ``with_columns`` does not common-subexpression-eliminate.
+        _block_exprs.append(resignal.fill_null(False).alias(RESIGNAL_COLUMN))
+    signals = signals.with_columns(_block_exprs)
+
+    if re_anchor:
+        # The price a float leg is measured from. It starts as the entry fill
+        # (the entry bar's own open, same as ENTRY_FILL_COLUMN) and moves to
+        # ``open[k + 1]`` after a re-signal on bar ``k`` — the price a fresh
+        # entry on that signal would itself have filled at, so no second
+        # price model is introduced. ENTRY_FILL_COLUMN is left alone because
+        # trade P&L must keep measuring from the true entry fill.
+        signals = signals.with_columns(
+            pl.when(
+                is_entry_bar | pl.col(RESIGNAL_COLUMN).shift(1).fill_null(False)
+            )
+            .then(pl.col("open"))
+            .otherwise(None)
+            .forward_fill()
+            .alias(ANCHOR_FILL_COLUMN),
+        )
+
+    # Which column each spec kind reads is decided HERE rather than inside
+    # ``level_expr``: the float branch needs a different anchor price, the str
+    # branch needs an extra latch bar, and only the caller knows both.
+    _fill_col = ANCHOR_FILL_COLUMN if re_anchor else ENTRY_FILL_COLUMN
+    _resignal_col = RESIGNAL_COLUMN if re_anchor else None
 
     legs: list[tuple[str, str]] = []
     level_exprs: list[pl.Expr] = []
@@ -221,7 +284,8 @@ def _apply_bracket(
                 leg=TAKE_PROFIT,
                 is_long=is_long,
                 entry_clean_col="_entry_clean",
-                entry_fill_col=ENTRY_FILL_COLUMN,
+                entry_fill_col=_fill_col,
+                resignal_col=_resignal_col,
             ).alias(TP_LEVEL_COLUMN)
         )
     if bracket.stop_loss is not None:
@@ -232,7 +296,8 @@ def _apply_bracket(
                 leg=STOP_LOSS,
                 is_long=is_long,
                 entry_clean_col="_entry_clean",
-                entry_fill_col=ENTRY_FILL_COLUMN,
+                entry_fill_col=_fill_col,
+                resignal_col=_resignal_col,
             ).alias(SL_LEVEL_COLUMN)
         )
     signals = signals.with_columns(level_exprs)
@@ -347,6 +412,41 @@ def _apply_bracket(
         .alias(BRACKET_KIND_COLUMN),
         (pl.col(_count) >= 1).alias(BRACKET_SEEN_COLUMN),
     ).drop(_cum, _base, _count)
+
+    if re_anchor and bracket.level_columns:
+        # The entry-signal null guard above cannot cover re-latch bars: it runs
+        # before BLOCK_COLUMN and BRACKET_SEEN_COLUMN exist, and without them
+        # there is no way to tell a re-latch that matters from one in a block
+        # the bracket already closed. So this is a SECOND, deliberately
+        # POST-HOC guard — by the time it runs the levels have been computed
+        # and the stale value has already been used. It is a diagnostic that
+        # refuses to return the result, not a precondition.
+        #
+        # It is still exact rather than approximate. A null on a re-latch bar
+        # in a block that has NOT yet fired gives ``seen == False``, and the
+        # forward-fill would carry the pre-re-signal level onward as though
+        # the re-signal never happened — raise. A null at or after the block's
+        # first trigger gives ``seen == True``, and every level in that block
+        # from the trigger bar on is dead: the position closed there and later
+        # triggers lose the ``_count == 1`` gate.
+        for col in bracket.level_columns:
+            stale_relatch = signals.select(
+                (
+                    pl.col(col).is_null()
+                    & pl.col(RESIGNAL_COLUMN)
+                    & ~pl.col(BRACKET_SEEN_COLUMN)
+                ).any()
+            ).item()
+            if stale_relatch:
+                msg = (
+                    f"Bracket level column {col!r} is null on at least one "
+                    "re-anchoring entry signal bar. Under anchor='signal' the "
+                    "level is re-latched on every entry signal that fires "
+                    "while the position is held and forward-filled, so a null "
+                    "there would silently hold the level the re-signal was "
+                    "meant to move."
+                )
+                raise ValueError(msg)
 
     # Which leg fired is already known as a pair of booleans, so the fill price
     # is selected from those rather than by comparing the ``_bracket_kind``
