@@ -20,6 +20,17 @@ from dataclasses import dataclass
 import polars as pl
 import pytest
 
+from mktlib.backtest import (
+    All,
+    Bracket,
+    Col,
+    Condition,
+    Crossover,
+    Crossunder,
+    TradeSide,
+    ValueGTE,
+)
+
 from tests.backtest._reference import (
     RefBars,
     RefBracket,
@@ -27,7 +38,12 @@ from tests.backtest._reference import (
     RefLeg,
     run_reference,
 )
-from tests.backtest.test_golden_baseline import GOLDEN_DIR, _daily_frame
+from tests.backtest.test_golden_baseline import (
+    GOLDEN_DIR,
+    _daily_dates,
+    _daily_frame,
+    _frame,
+)
 
 _TOL = 1e-12
 
@@ -259,3 +275,204 @@ def test_the_anchor_no_longer_moves_mid_trade() -> None:
     assert per_block.select((pl.col("anchors") == 1).all()).item(), (
         f"an anchor moved mid-position: {per_block.sort('_block').to_dicts()}"
     )
+
+
+# --- adjudication: Bracket(anchor="signal") ---------------------------------
+#
+# T1 of the 0.16.0 test ladder, and the fails-first evidence for it.
+#
+# The frozen corpus cannot reach this feature at all. Every golden fixture
+# pairs `Crossover("fast","slow")` with `Crossunder("fast","slow")`, and those
+# are exact complements: a second crossover needs a prior bar with
+# `fast <= slow`, which is itself a crossunder, so the position is always flat
+# again before the next entry signal can fire. `_entry & held` is identically
+# false there and `anchor` has nothing to act on. Gating the exit breaks the
+# complement — a crossunder that fails the gate leaves the position open, and
+# the crossover after it fires while held.
+#
+# `flatten_eod` is deliberately absent: `_reference.py` puts it out of scope,
+# so the oracle cannot adjudicate that corner and must not be asked to.
+
+
+#: Longer than `_daily_frame`'s 60 bars. At 60 the fixture carries one or two
+#: mid-hold re-signals in total and most parametrizations cannot discriminate
+#: between the two policies at all.
+_ANCHOR_BARS = 400
+
+#: Chosen by measurement, not taste: on each of these the two policies produce
+#: different trades for every parametrization below. `test_the_anchor_fixture_
+#: discriminates` re-checks that rather than trusting this comment.
+_ANCHOR_SEEDS = (7932, 39608, 71284)
+
+#: Bracket half-width. Wide enough that a position survives long enough to see
+#: a re-signal — at the golden fixtures' 1%/0.8% the bracket fires within a bar
+#: or two of the entry fill and no re-anchor is ever reached.
+_ANCHOR_WIDTH = 0.04
+
+_ANCHOR_LEVEL_COLUMNS = ("tp_level", "lvl_up", "lvl_dn")
+
+
+@dataclass(frozen=True, slots=True)
+class _GatedExitLong:
+    """Crossover entry, crossunder exit **gated** on a level.
+
+    The gate is what makes a second entry signal reachable while held. It is
+    otherwise arbitrary — this is a synthetic discriminator, not a strategy.
+    """
+
+    def entry(self) -> Condition:
+        return Crossover("fast", "slow")
+
+    def exit(self) -> Condition:
+        return All(Crossunder("fast", "slow"), ValueGTE(Col("close"), Col("tp_level")))
+
+
+@dataclass(frozen=True, slots=True)
+class _GatedExitShort:
+    """The short mirror. An asymmetry in the re-anchor is the easy bug here."""
+
+    def entry(self) -> Condition:
+        return Crossunder("fast", "slow")
+
+    def exit(self) -> Condition:
+        return All(Crossover("fast", "slow"), ValueGTE(Col("close"), Col("tp_level")))
+
+
+def _anchor_frame(seed: int) -> pl.DataFrame:
+    """The golden fixture generator, longer, plus two absolute-level columns.
+
+    `lvl_up` / `lvl_dn` exist because the `str` legs need a level on each side
+    of the price. The golden frame carries only `tp_level`, which sits *above*
+    the bar's open — as a short's take-profit that is tagged on the entry fill
+    bar of every single trade, which ends the block before a re-signal can
+    happen and would make the short `str` case vacuous.
+    """
+    return _frame(_daily_dates(_ANCHOR_BARS), seed=seed).with_columns(
+        (pl.col("open") * (1.0 + _ANCHOR_WIDTH)).round(6).alias("lvl_up"),
+        (pl.col("open") * (1.0 - _ANCHOR_WIDTH)).round(6).alias("lvl_dn"),
+    )
+
+
+def _anchor_bars(df: pl.DataFrame, side: int) -> RefBars:
+    """`_GatedExitLong` / `_GatedExitShort`'s signals, re-derived in Python."""
+    fast, slow = df["fast"].to_list(), df["slow"].to_list()
+    close, tp = df["close"].to_list(), df["tp_level"].to_list()
+    up, down = _crossover(fast, slow), _crossunder(fast, slow)
+    entry, raw_exit = (up, down) if side == 1 else (down, up)
+    gate = [c >= t for c, t in zip(close, tp, strict=True)]
+    return RefBars(
+        open=df["open"].to_list(),
+        high=df["high"].to_list(),
+        low=df["low"].to_list(),
+        close=close,
+        entry=entry,
+        exit=[fired and g for fired, g in zip(raw_exit, gate, strict=True)],
+        cols={name: df[name].to_list() for name in _ANCHOR_LEVEL_COLUMNS},
+    )
+
+
+def _anchor_specs(kind: str, side: int) -> tuple[float | str, float | str]:
+    """``(take_profit, stop_loss)`` for one spec kind, side-appropriate."""
+    if kind == "float":
+        return (_ANCHOR_WIDTH, _ANCHOR_WIDTH)
+    return ("lvl_up", "lvl_dn") if side == 1 else ("lvl_dn", "lvl_up")
+
+
+_ANCHOR_GRID = pytest.mark.parametrize(
+    ("seed", "side", "kind", "both_touch"),
+    [
+        (seed, side, kind, both_touch)
+        for seed in _ANCHOR_SEEDS
+        for side in (1, -1)
+        for kind in ("float", "col")
+        for both_touch in ("stop_first", "take_profit_first")
+    ],
+    ids=lambda v: str(v),
+)
+
+
+@_ANCHOR_GRID
+def test_the_anchor_fixture_discriminates(
+    seed: int, side: int, kind: str, both_touch: str
+) -> None:
+    """Anti-vacuity, judged by the oracle alone — no engine involved.
+
+    A parity assertion against a fixture where the two policies happen to agree
+    passes by comparing two identical things. Every parametrization below must
+    be one where re-anchoring actually moves a trade.
+    """
+    bars = _anchor_bars(_anchor_frame(seed), side)
+    tp, sl = _anchor_specs(kind, side)
+    runs = {
+        anchor: run_reference(
+            bars,
+            RefConfig(
+                side=side,
+                bracket=RefBracket(tp=tp, sl=sl, both_touch=both_touch, anchor=anchor),
+            ),
+        )
+        for anchor in ("position", "signal")
+    }
+    held = runs["position"].trades
+    moved = runs["signal"].trades
+    assert len(held) >= 3, f"fixture produced only {len(held)} trades"
+    assert [(t.exit_bar, t.pnl) for t in held] != [(t.exit_bar, t.pnl) for t in moved], (
+        "the two anchor policies produce identical trades on this fixture, so "
+        "comparing the engine against it would measure nothing"
+    )
+
+
+@pytest.mark.parametrize("anchor", ["position", "signal"])
+@_ANCHOR_GRID
+def test_engine_matches_the_reference_on_bracket_anchor(
+    seed: int, side: int, kind: str, both_touch: str, anchor: str
+) -> None:
+    """The engine must reproduce the oracle under both anchoring policies.
+
+    ``anchor="position"`` is today's behaviour and is here to show the harness
+    is sound: the fixture translation, the signal re-derivation and the oracle's
+    per-bar level plumbing all agree with the engine before anything new is
+    asked of it. ``anchor="signal"`` is the new semantics.
+    """
+    from mktlib.backtest import run
+
+    df = _anchor_frame(seed)
+    tp, sl = _anchor_specs(kind, side)
+    engine = run(
+        df,
+        _GatedExitLong() if side == 1 else _GatedExitShort(),
+        trade_side=TradeSide.LONG if side == 1 else TradeSide.SHORT,
+        bracket=Bracket(
+            take_profit=tp, stop_loss=sl, both_touch=both_touch, anchor=anchor
+        ),
+    )
+    ref = run_reference(
+        _anchor_bars(df, side),
+        RefConfig(
+            side=side,
+            bracket=RefBracket(tp=tp, sl=sl, both_touch=both_touch, anchor=anchor),
+        ),
+    )
+
+    # `pnl` / `bars_held` / the per-bar returns, the same three the bootstrap
+    # cases compare. `exit_date` is deliberately not compared: the engine dates
+    # a signal exit on the bar the position closed and fills it at the next
+    # open, so it is one bar behind `RefTrade.exit_bar`, which is the fill.
+    # The returns series pins exit timing anyway, bar by bar.
+    assert len(ref.trades) == engine.trades.height, (
+        f"{len(ref.trades)} reference trades vs {engine.trades.height} engine trades"
+    )
+    for i, (got, want_pnl, want_held) in enumerate(
+        zip(
+            ref.trades,
+            engine.trades["pnl"].to_list(),
+            engine.trades["bars_held"].to_list(),
+            strict=True,
+        )
+    ):
+        assert got.bars_held == want_held, f"trade {i}: bars_held"
+        assert got.pnl == pytest.approx(want_pnl, abs=_TOL), f"trade {i}: pnl"
+    for i, (got, want) in enumerate(
+        zip(ref.returns, engine.returns["return"].to_list(), strict=True)
+    ):
+        assert got == pytest.approx(want, abs=_TOL), f"bar {i}"

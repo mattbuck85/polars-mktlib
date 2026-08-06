@@ -23,6 +23,13 @@ anchor**. A "realized" entry is therefore one that fires while flat.
 open too, unless something owns the bar it fired on — a bracket level or a limit
 price — in which case it fills inside that bar.
 
+*Bracket anchoring.* ``RefBracket.anchor`` mirrors ``Bracket.anchor``.
+``"position"`` latches each leg once, on the entry that opened the position.
+``"signal"`` also moves it on every later entry signal that fires while the
+position is still held — armed on the bar after the signal, so the level the
+signal bar itself is checked against is still the old one. See
+:func:`_block_levels`.
+
 *Returns.* One value per bar: ``close/open - 1`` on an entry fill bar,
 ``close/prev_close - 1`` while held, ``fill/prev_close - 1`` on an exit bar, and
 ``0.0`` when flat. Costs are subtracted on the bars that pay a fill.
@@ -57,11 +64,17 @@ class RefBracket:
     ``tp`` / ``sl`` are either a fraction of the entry fill price (``float``) or
     the name of a per-bar column of absolute levels (``str``), latched at the
     entry signal bar — mirroring ``Bracket``.
+
+    ``anchor`` mirrors ``Bracket.anchor``. Under ``"position"`` each leg is
+    latched once and holds for the life of the trade. Under ``"signal"`` an
+    entry signal that fires while the position is still open moves it — see
+    :func:`_block_levels` for the arming convention.
     """
 
     tp: float | str | None = None
     sl: float | str | None = None
     both_touch: str = "stop_first"
+    anchor: str = "position"
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,11 +247,13 @@ def _resolve_exit(  # noqa: C901, PLR0912
     """
     brk = cfg.bracket
     if brk is not None:
-        tp_level = _level(bars, brk.tp, cfg.side, entry_price, fill_bar, "tp")
-        sl_level = _level(bars, brk.sl, cfg.side, entry_price, fill_bar, "sl")
+        tp_levels = _block_levels(bars, cfg, brk.tp, "tp", fill_bar, end, entry_price, n)
+        sl_levels = _block_levels(bars, cfg, brk.sl, "sl", fill_bar, end, entry_price, n)
         # Live from the entry fill bar through `end + 1`: the position is
         # held whenever the previous bar's signal position was 1.
         for bar in range(fill_bar, min(end + 1, n - 1) + 1):
+            tp_level = tp_levels.get(bar)
+            sl_level = sl_levels.get(bar)
             tp_hit = tp_level is not None and _tagged(bars, bar, tp_level, cfg.side, "tp")
             sl_hit = sl_level is not None and _tagged(bars, bar, sl_level, cfg.side, "sl")
             if not (tp_hit or sl_hit):
@@ -274,22 +289,80 @@ def _resolve_exit(  # noqa: C901, PLR0912
     return (end + 2, bars.open[end + 2])
 
 
-def _level(
+def _block_levels(
     bars: RefBars,
+    cfg: RefConfig,
     spec: float | str | None,
+    leg: str,
+    fill_bar: int,
+    end: int,
+    entry_price: float,
+    n: int,
+) -> dict[int, float]:
+    """The level in force on each live bar of one block, for one leg.
+
+    Under ``anchor="position"`` this is one latched value repeated — the level
+    the position was opened with.
+
+    Under ``anchor="signal"`` an entry signal that fires while the position is
+    still open moves it. The signal on bar ``k`` is observed at that bar's
+    *close*, so the OLD level still governs bar ``k`` itself and the new one is
+    in force from ``k + 1``. A bar that tags a leg therefore closes the position
+    before any re-anchor on that same bar could take effect.
+
+    What the new level is, per spec kind:
+
+    ``float``
+        ``open[k + 1]`` scaled by the side-appropriate multiplier — the price a
+        fresh entry on that signal would have filled at, which is the engine's
+        own entry-fill model and not a second price convention.
+    ``str``
+        the spec column re-read on bar ``k``, the same bar the position-opening
+        signal reads it on.
+
+    A re-signal on the frame's last bar has no ``k + 1`` to land on and is
+    dropped.
+    """
+    if spec is None:
+        return {}
+    assert cfg.bracket is not None
+    re_anchors = cfg.bracket.anchor == "signal"
+    current = _latch(bars, spec, cfg.side, entry_price, fill_bar, leg)
+    levels: dict[int, float] = {}
+    for bar in range(fill_bar, min(end + 1, n - 1) + 1):
+        levels[bar] = current
+        # Every bar in this range is one the position is held on, so an entry
+        # signal here is by definition a re-signal: it opens nothing.
+        if not re_anchors or not bars.entry[bar] or bar + 1 >= n:
+            continue
+        current = (
+            bars.cols[spec][bar]
+            if isinstance(spec, str)
+            else _pct_level(spec, side=cfg.side, anchor_price=bars.open[bar + 1], leg=leg)
+        )
+    return levels
+
+
+def _latch(
+    bars: RefBars,
+    spec: float | str,
     side: int,
     entry_price: float,
     fill_bar: int,
     leg: str,
-) -> float | None:
-    if spec is None:
-        return None
+) -> float:
+    """The level the position opens with."""
     if isinstance(spec, str):
         # Absolute levels are latched on the entry SIGNAL bar.
         return bars.cols[spec][fill_bar - 1]
+    return _pct_level(spec, side=side, anchor_price=entry_price, leg=leg)
+
+
+def _pct_level(spec: float, *, side: int, anchor_price: float, leg: str) -> float:
+    """A fractional leg measured off *anchor_price*."""
     favourable = leg == "tp"
     up = favourable == (side == 1)
-    return entry_price * (1.0 + spec if up else 1.0 - spec)
+    return anchor_price * (1.0 + spec if up else 1.0 - spec)
 
 
 def _tagged(bars: RefBars, bar: int, level: float, side: int, leg: str) -> bool:
