@@ -1,7 +1,12 @@
 name: CI
 on:
   push: {branches: [main]}
-  pull_request: {branches: [main]}
+  # Every PR, whatever it targets. Filtering the base on `main` meant a PR
+  # stacked on another branch got no CI at all, and retargeting it once its
+  # base merged fired `edited` — not a dispatching activity type — so it
+  # stayed uncovered right up to the merge button. A 3844-line change to the
+  # fill engine reached the queue that way during 0.16.0.
+  pull_request: {branches: ['**']}
 
 jobs:
   lock-dev:
