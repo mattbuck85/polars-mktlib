@@ -255,9 +255,11 @@ def _apply_bracket(
     signals = signals.with_columns(level_exprs)
 
     # The bracket rests from the entry fill bar (``_pos_d1 == 1``) until the
-    # position closes. Under flatten_eod the session-last bar is exempt: the
+    # position closes. Under a flatten schedule the FLATTEN bar is exempt: the
     # engine flattens at that bar's *open*, so the position is already gone
-    # before any intra-bar level could be tagged.
+    # before any intra-bar level could be tagged. Not the session's last bar —
+    # under an offset those are different bars, and a position re-opened after
+    # the flatten is an ordinary held position whose bracket rests normally.
     live = pl.col("_pos_d1") == 1
     if flatten_active:
         live = live & ~pl.col(FLATTEN_BAR_COLUMN)
@@ -585,8 +587,9 @@ def _run_core(
 
     # Position tracking: 1 on entry, 0 on exit, forward-fill
     if flatten is not None:
-        # Suppress entries on session-last bars (position opens and immediately
-        # force-closes in the same bar — not a valid trade).
+        # Suppress entries on flatten bars (position opens and immediately
+        # force-closes in the same bar — not a valid trade). The signal itself
+        # was already deferred onto the next bar above.
         signals = signals.with_columns(
             pl.when(pl.col("_entry") & ~pl.col(FLATTEN_BAR_COLUMN))
             .then(pl.lit(1))

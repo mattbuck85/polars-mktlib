@@ -182,11 +182,18 @@ class Bracket:
     re-signal never re-opens or extends a block: block boundaries are fixed
     before the bracket is applied.
 
-    Under ``flatten_eod`` a re-signal on a session-last bar does not
-    re-anchor, since the position is flattened at that bar's open. With
-    ``flatten_eod=False`` a re-signal on a session's last bar anchors a
-    ``float`` leg to the next session's opening price, so an overnight gap
-    carries the levels with it.
+    Under a flatten schedule a re-signal on a **flatten bar** does not
+    re-anchor, since the position is force-closed at that bar's open and
+    there is nothing left to move. The signal is not lost — it is deferred
+    to the next bar, where it opens a fresh position and latches that
+    position's own levels.
+
+    The gate is the flatten bar, not the session's last bar. The two are
+    the same bar only at ``minutes_before_close=0``; under an offset they
+    separate, and a re-signal on a held session-last bar re-anchors like
+    any other. With no flatten at all, a re-signal on a session's last bar
+    anchors a ``float`` leg to the next session's opening price, so an
+    overnight gap carries the levels with it.
 
     An entry condition that is **level**-triggered rather than
     edge-triggered stays true on consecutive bars, so under
@@ -291,13 +298,13 @@ def level_expr(
     fired on.
 
     ``coalesce`` takes the opening latch first. The two collide on one bar
-    only under ``flatten_eod``, where a session-last signal is both a
+    only under a flatten schedule, where a flatten-bar signal is both a
     re-signal against the outgoing position and — deferred to the next
-    session's first bar — the signal that opens the next one. That bar
-    belongs to the new position, so its own latch wins. The caller
-    independently keeps session-last bars out of *resignal_col*, which
-    empties the relatch on that bar; measured, either defence alone
-    resolves the collision correctly and this ordering is the second one.
+    bar — the signal that opens the next one. That bar belongs to the new
+    position, so its own latch wins. The caller independently keeps
+    flatten bars out of *resignal_col*, which empties the relatch on that
+    bar; measured, either defence alone resolves the collision correctly
+    and this ordering is the second one.
     """
     if isinstance(spec, str):
         initial = pl.when(pl.col(entry_clean_col)).then(pl.col(spec)).otherwise(None)
