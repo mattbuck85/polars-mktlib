@@ -22,6 +22,14 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import polars as pl
 
+# One implementation of "align these bars to this calendar's timezone", shared
+# with the calendar mixins rather than copied. The copy this module used to
+# carry was taken before ``_align_tz`` grew its ``convert_time_zone`` branch,
+# so tz-aware bars against a tz-aware calendar in a *different* zone — UTC bars
+# against XNYS, the common shape — re-raised a ``SchemaError`` that had already
+# been fixed once. Importing is what keeps the two from drifting again.
+from mktlib.scheduling._mixins import _align_tz
+
 if TYPE_CHECKING:
     from mktlib.scheduling import ExchangeCalendar
 
@@ -251,59 +259,45 @@ def _to_date(dt: datetime.datetime | datetime.date) -> datetime.date:
     return dt
 
 
-def _tz(series: pl.Series) -> str | None:
-    """Extract timezone from a Datetime series, or None."""
-    return series.dtype.time_zone  # type: ignore[union-attr]
-
-
-def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
-    """Align *target* timezone to match *reference*."""
-    ref_tz = _tz(reference)
-    tgt_tz = _tz(target)
-    if ref_tz is None and tgt_tz is not None:
-        return target.dt.replace_time_zone(None)
-    if ref_tz is not None and tgt_tz is None:
-        return target.dt.replace_time_zone(ref_tz)
-    return target
-
-
 # ---------------------------------------------------------------------------
 # Schedule cache — avoids recomputing calendar.schedule() across mask calls
 # ---------------------------------------------------------------------------
 
-_schedule_cache: dict[tuple[int, datetime.date, datetime.date], pl.DataFrame] = {}
+#: Cache key: the calendar's value identity plus the date range.
+_ScheduleKey = tuple[tuple[object, ...], datetime.date, datetime.date]
+
+_schedule_cache: dict[_ScheduleKey, pl.DataFrame] = {}
 
 
 def _get_schedule(calendar: ExchangeCalendar, dates: pl.Series) -> pl.DataFrame:
     """Return cached schedule DataFrame for the calendar covering *dates*.
 
-    Keyed on the calendar's **identity**, not its name. Two distinct calendars
-    can share a name and differ in the fields this cache stores: an ad-hoc
-    ``ExchangeCalendar("MYX", close_time=...)`` built twice with different
-    closes would otherwise get the first one's schedule, silently. That was
-    already a hazard for the session-last bar; it is a sharper one now that
-    ``market_close`` also sets the ``minutes_before_close`` cutoff and the
-    entry-block window, so a wrong close moves both.
+    Keyed on :attr:`~mktlib.scheduling.ExchangeCalendar.cache_key` — the
+    calendar's **value**, not its ``id()``.
 
-    ``id()`` is safe here only because the value is a pure function of the
-    calendar object and the date range: a recycled id can only follow the
-    original's collection, and a stale entry under a recycled id would be
-    wrong. Hence the registry pin below — it holds a reference for as long as
-    the entry lives, so an id in this dict always denotes the object that
-    produced it.
+    Value identity is what bounds this dict. ``get_calendar("XNYS")`` returns a
+    new object per call, so an ``id()`` key missed on every run that built its
+    own calendar and grew one entry each time; an optimizer loop or a
+    walk-forward that constructs a calendar per fold leaked the whole schedule
+    for every fold. It also forced a parallel list pinning each calendar
+    forever, because an ``id()`` may be recycled once its object is collected
+    and a stale entry read under a recycled id would be wrong. A value key
+    retires all three at once, and the pin list is gone with it.
+
+    What the key must never lose is the ability to tell two same-named
+    calendars apart: an ad-hoc ``ExchangeCalendar("MYX", close_time=...)``
+    built twice with different closes must not be served the first one's
+    schedule, since ``market_close`` sets the ``minutes_before_close`` cutoff
+    and the entry-block window alike. ``cache_key`` covers every field
+    ``schedule()`` reads, which is why that lives on the calendar rather than
+    being assembled here.
     """
     start = _to_date(dates.min())  # type: ignore[arg-type]
     end = _to_date(dates.max())  # type: ignore[arg-type]
-    key = (id(calendar), start, end)
+    key = (calendar.cache_key, start, end)
     if key not in _schedule_cache:
         _schedule_cache[key] = calendar.schedule(start, end)
-        _schedule_cache_pins.append(calendar)
     return _schedule_cache[key]
-
-
-#: Keeps every calendar that owns a cache entry alive, so ``id()`` cannot be
-#: recycled onto a different object while its entry is still readable.
-_schedule_cache_pins: list[ExchangeCalendar] = []
 
 
 #: Monday of the ISO week containing ``_session_date``, as an epoch-day integer.
@@ -318,9 +312,8 @@ _WEEK_KEY = pl.col("_session_date").cast(pl.Int32) - (
 )
 
 
-_week_last_cache: dict[
-    tuple[int, datetime.date, datetime.date], list[datetime.date]
-] = {}
+#: Same key shape, same reasoning, as :data:`_schedule_cache`.
+_week_last_cache: dict[_ScheduleKey, list[datetime.date]] = {}
 
 
 def _week_closing_sessions(
@@ -351,7 +344,7 @@ def _week_closing_sessions(
     # confusion this function exists to remove.
     start = first - datetime.timedelta(days=first.isoweekday() - 1)
     end = last + datetime.timedelta(days=7 - last.isoweekday())
-    key = (id(calendar), start, end)
+    key = (calendar.cache_key, start, end)
     cached = _week_last_cache.get(key)
     if cached is None:
         sessions = calendar.valid_days(start, end).alias("_session_date")
@@ -363,7 +356,6 @@ def _week_closing_sessions(
             .to_list()
         )
         _week_last_cache[key] = cached
-        _schedule_cache_pins.append(calendar)
     return cached
 
 
