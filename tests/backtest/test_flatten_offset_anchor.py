@@ -259,16 +259,28 @@ def _flatten_bar_resignal_frame() -> pl.DataFrame:
     ``_entry`` is **not** cleared on a flatten bar — the deferral ORs the
     signal onto the next bar (``_entry | _suppressed.shift(1)``) and leaves the
     original in place — so ``_entry & (_pos_d1 == 1)`` really is true there and
-    the ``& ~_flatten_bar`` term really is doing work.
+    the ``& ~_flatten_bar`` term really is evaluated.
 
-    It should do that work: on the flatten bar the position is force-closed at
-    that bar's own open, so there is nothing left to re-anchor. The deferred
-    signal opens a fresh position on the next bar, which latches its own
-    levels like any other entry.
+    What must happen: on the flatten bar the position is force-closed at that
+    bar's own open, so there is nothing left to re-anchor. The deferred signal
+    opens a fresh position on the next bar, which latches its own levels like
+    any other entry.
+
+    Prices ramp and the second position's bracket genuinely fires, so
+    ``signal == position`` below is a statement about two real backtests. An
+    earlier version of this fixture held every price at 100.0, which made that
+    assertion ``0.0 == 0.0`` — true no matter what the gate did.
     """
     ts = _timestamps()
     n = len(ts)
-    opens = [100.0] * n
+    opens = [100.0 + 0.2 * i for i in range(n)]
+    closes = list(opens)
+    highs = [o + 0.3 for o in opens]
+    # Tags the SECOND position's take-profit (open[16] * 1.02 = 105.264) and
+    # nothing earlier, so the first position is closed by the flatten and the
+    # second by the bracket.
+    highs[20] = 106.0
+
     fast = [1.0] * n
     # Crossover at bar 10 opens the position; bar 13 dips back under (no exit
     # fires, so the position simply stays open); bar 14 crosses up again —
@@ -277,12 +289,13 @@ def _flatten_bar_resignal_frame() -> pl.DataFrame:
         fast[i] = 3.0
     for i in range(_FLATTEN_BAR, n):
         fast[i] = 3.0
+
     return pl.DataFrame({
         "date": ts,
         "open": opens,
-        "high": [o + 0.5 for o in opens],
-        "low": [o - 0.5 for o in opens],
-        "close": opens,
+        "high": highs,
+        "low": [o - 0.3 for o in opens],
+        "close": closes,
         "fast": fast,
         "slow": [2.0] * n,
         "never_a": [0.0] * n,
@@ -301,6 +314,32 @@ def _run_b(anchor: Anchor) -> BacktestResult:
 
 
 class TestFlattenBarResignalDoesNotReAnchor:
+    """The gate's other side — and an honest account of what these pin.
+
+    Removing ``& ~pl.col(FLATTEN_BAR_COLUMN)`` altogether is **not**
+    numerically observable, here or in any frame we could construct. That is a
+    property of the engine rather than a weakness of this fixture:
+
+    * A ``float`` leg reads ``ANCHOR_FILL_COLUMN``, which an ungated re-signal
+      on flatten bar ``k`` would re-latch at ``k + 1``. But ``k + 1`` is the
+      bar the deferred signal opens the new position on, so the bracket's
+      ``live`` mask (``_pos_d1 == 1``) is false there; at ``k + 2``
+      ``is_entry_bar`` re-latches to ``open[k + 2]`` under either gate. The two
+      converge before any bar the level is read on.
+    * A ``str`` leg's ``coalesce(initial, relatch)`` takes the opening latch
+      first, and that bar belongs to the new position — which is what
+      ``level_expr``'s own docstring says: "either defence alone resolves the
+      collision correctly and this ordering is the second one".
+
+    So the gate is **defence in depth**, and the test that detects its removal
+    is ``test_bracket.py::test_the_flatten_bar_is_kept_out_of_the_re_signal_mask``,
+    asserting on ``_bracket_resignal`` directly. That is the right layer for
+    it. What these tests pin is the observable consequence — a flatten-bar
+    signal produces no re-anchor and no changed number — and the mutation this
+    module *does* detect is the one that matters numerically: gating on the
+    session's last bar instead of the flatten bar. See Frame A.
+    """
+
     def test_the_frame_really_puts_an_entry_signal_on_the_flatten_bar(self) -> None:
         """Anti-vacuity: the gated term must actually be reachable here."""
         signals = _run_b("signal").signals
@@ -309,11 +348,22 @@ class TestFlattenBarResignalDoesNotReAnchor:
         # a re-signal.
         assert signals["_position"][_FLATTEN_BAR - 1] == 1
 
+    def test_the_frame_is_not_numerically_degenerate(self) -> None:
+        """Prices move and the bracket fires, so the equality below has content.
+
+        Without this the fixture could drift back to a flat tape, where
+        ``signal == position`` holds as ``0.0 == 0.0`` regardless of the gate.
+        """
+        result = _run_b("signal")
+        assert result.trades.height >= 2
+        assert int((result.returns["return"] != 0.0).sum()) > 0
+        assert result.trades.select(pl.col("pnl").abs().max()).item() > 0.0
+
     def test_a_flatten_bar_signal_does_not_re_anchor(self) -> None:
         """The position is force-closed on that bar; nothing survives to move.
 
-        The accept-twin of the session-last test: the gate must exclude the
-        flatten bar and *only* the flatten bar.
+        The accept-twin of Frame A: the gate must exclude the flatten bar and
+        *only* the flatten bar.
         """
         moved = _run_b("signal")
         held = _run_b("position")
@@ -356,6 +406,16 @@ def test_the_frozen_offset_anchor_scenario_is_not_vacuous() -> None:
     assert any(b > _FLATTEN_BAR for b in per_session), (
         "every mid-hold signal lands at or before the flatten bar, so this "
         "fixture cannot distinguish the flatten bar from the session's last"
+    )
+    # Stronger, and the condition that actually makes the frozen bytes detect
+    # a session-last gate: a re-signal has to land on the session's last bar
+    # exactly. A signal merely *after* the flatten bar (say bar 20) is gated
+    # identically by both implementations, so `any(b > _FLATTEN_BAR)` alone
+    # would stay green while the baseline stopped discriminating.
+    assert _SESSION_LAST_BAR in per_session, (
+        "no mid-hold re-signal lands on a session-last bar, so the frozen "
+        "baseline no longer separates the flatten-bar gate from a "
+        "session-last gate"
     )
 
 

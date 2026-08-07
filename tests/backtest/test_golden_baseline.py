@@ -844,6 +844,24 @@ def test_scenario_set_is_complete() -> None:
     assert set(SCENARIOS) == set(EXPECTED_SCENARIOS)
 
 
+def test_every_anchor_scenario_has_an_unbracketed_reference() -> None:
+    """:data:`ANCHOR_UNBRACKETED` must cover exactly :data:`ANCHOR_SCENARIOS`.
+
+    The two dicts restate the same ``run()`` keywords by hand, minus the
+    bracket, and nothing structural ties them together. An anchor scenario
+    added without its reference would raise ``KeyError`` — loud, and fine. The
+    quiet failure is the other way round: if a scenario later gains a keyword
+    (``cost=``, a different schedule) that its reference does not, then
+    ``test_anchor_scenario_actually_re_anchors``' "the bracket fires at all"
+    assertion starts passing on *that* difference rather than on the bracket.
+
+    This catches the add/remove half. The keyword half is why both dicts are
+    defined adjacently, with the reference immediately below the scenario it
+    mirrors.
+    """
+    assert set(ANCHOR_UNBRACKETED) == set(ANCHOR_SCENARIOS)
+
+
 @pytest.mark.parametrize("scenario", sorted(SCENARIOS))
 def test_scenario_is_not_degenerate(scenario: str) -> None:
     """Guard against a fixture that pins an all-zero, no-trade backtest.
