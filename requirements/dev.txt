@@ -1,10 +1,10 @@
 annotated-types==0.8.0
 anyio==4.14.2
 bracex==3.0.1
-bump-my-version==1.5.0
+bump-my-version==1.5.1
 cfgv==3.5.0
 click==8.4.2
-coverage==7.15.3
+coverage==7.15.4
 distlib==0.4.3
 exchange_calendars==4.13.2
 filelock==3.32.2

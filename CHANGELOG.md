@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A session-forced exit was priced at a limit level the tape never traded.** `_limit_price` is materialized on every bar — the level is an expression over the whole frame, and `_pos_d1` does not exist yet at that point — but `_extract_trades` reads it through `_limit_price.is_not_null()`. Any exit the session flatten forced was therefore booked at the take-profit, while `returns` correctly used the flatten bar's open.
+
+  The two views of one run disagreed, and because `mktlib.reports` reads `trades["pnl"]`, a **losing strategy could report a 100% win rate**. On a 61-trade take-profit strategy over Jan–Mar 2024 the equity curve read 0.973 from `returns` and 3.236 from `trades.pnl` — a 232% divergence, all of it the untouched take-profit being booked 61 times.
+
+  `_limit_price` is now narrowed to the bars the limit actually fills on, using the same predicate the return expression uses, so `is_not_null()` means "the limit filled here" for every reader rather than each having to re-derive it.
+
+- **A limit firing on the bar the entry filled was measured from the previous close.** That position was never held across the previous close — it opened at this bar's own open — so the return credited a gap that was never carried. On a bar gapping 100.0 → 110.0 that fills a 115.0 limit, `returns` booked **+15.0%** against a position that earned **+4.55%**. `_bracket_entry_ret` already handled the identical case correctly and measured from `open`; the two are the same accounting and now agree.
+
+Both defects predate the current release and were found by code review. Three tests in `tests/backtest/test_limit_exit.py` asserted the wrong values and have been corrected — `test_tp_hit_long_fills_at_limit_same_bar` asserted the *correct* base for `pnl` and the *incorrect* base for `returns` in the same test, and passed only because the engine disagreed with itself the same way. `test_short_side_tp_via_value_lte` needed its fixture repaired as well: the short's take-profit sat above its entry fill, so covering there was a loss, and it read as a gain only because of the defect being fixed.
+
+The `limit_exit` and `flatten_eod_limit` frozen baselines are regenerated — they had frozen the wrong values. 4 of 60 and 4 of 78 return rows change respectively; `trades` is byte-unchanged in both. Under a per-trade reconciliation of `prod(1 + return)` against `pnl`, `limit_exit` improves from 5 of 6 trades failing to 1, and `flatten_eod_limit` from 4 of 6 to 0. No other scenario is touched.
+
+**Known residual, not fixed here.** `limit_exit` trade 5 still fails that reconciliation, identically before and after this change. Its inner exit condition is true on two consecutive bars while the position is open, so `_is_limit_exit_bar` holds on both and the returns series books two limit fills where the trade log books one. That is a third, independent defect with its own semantics question — what a bar on which entry *and* exit both fire should do mid-limit-trade — and it is deliberately left for a separate change rather than guessed at here.
+
 ## 0.15.0
 
 ### Added

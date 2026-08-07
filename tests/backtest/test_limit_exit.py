@@ -72,7 +72,14 @@ def _base_ohlcv(*, closes, opens=None, highs=None, lows=None) -> pl.DataFrame:
 class TestLimitCoreBehavior:
     def test_tp_hit_long_fills_at_limit_same_bar(self):
         """Crossover at d(3) (entry fill at open[d(4)]=102.4); TP at 103 fires
-        on d(4) (high=103.5). Return at d(4) uses close[d(3)] as prev-close.
+        on d(4) (high=103.5).
+
+        The limit fires on the bar the entry filled, so the return is measured
+        from the entry fill — the position was never held across close[d(3)].
+        This assertion previously used close[d(3)] as the base while the
+        ``pnl`` assertion below used the entry fill, so the same test asserted
+        both a correct and an incorrect view of one trade and passed, because
+        the engine disagreed with itself the same way.
         """
         closes = [100.0, 100.5, 101.0, 102.5, 103.0]
         highs = [100.5, 101.0, 101.5, 103.5, 104.0]
@@ -91,15 +98,20 @@ class TestLimitCoreBehavior:
 
         ret = result.returns
         r4 = ret.filter(pl.col("date") == _d(4)).row(0, named=True)["return"]
-        # Return at d(4) = (limit - close[d(3)]) / close[d(3)]
-        assert r4 == pytest.approx((tp - closes[2]) / closes[2], rel=1e-9)
+        # Return at d(4) = (limit - entry fill) / entry fill — the same base
+        # ``pnl`` uses above. The two views of one trade must agree.
+        entry_fill = df.filter(pl.col("date") == _d(4)).row(0, named=True)["open"]
+        assert r4 == pytest.approx((tp - entry_fill) / entry_fill, rel=1e-9)
+        assert r4 == pytest.approx(row["pnl"], rel=1e-9)
         # Return on d(5) = 0 (flat post-limit)
         r5 = ret.filter(pl.col("date") == _d(5)).row(0, named=True)["return"]
         assert r5 == pytest.approx(0.0, abs=1e-12)
 
     def test_sl_hit_long_fills_at_limit_same_bar(self):
-        """Long position; SL at 99 fires on d(4) (low=98.5). Return uses
-        close[d(3)] as prev-close.
+        """Long position; SL at 99 fires on d(4) (low=98.5).
+
+        The limit fires on the bar the entry filled, so the return is measured
+        from the entry fill, not from close[d(3)].
         """
         closes = [100.0, 100.5, 101.0, 99.5, 99.0]
         lows = [99.5, 100.0, 100.5, 98.5, 98.5]
@@ -115,8 +127,10 @@ class TestLimitCoreBehavior:
 
         ret = result.returns
         r4 = ret.filter(pl.col("date") == _d(4)).row(0, named=True)["return"]
-        # (SL - close[d(3)]) / close[d(3)] = (99 - 101) / 101
-        assert r4 == pytest.approx((sl - closes[2]) / closes[2], rel=1e-9)
+        # (SL - entry fill) / entry fill, the same base ``pnl`` uses.
+        entry_fill = df.filter(pl.col("date") == _d(4)).row(0, named=True)["open"]
+        assert r4 == pytest.approx((sl - entry_fill) / entry_fill, rel=1e-9)
+        assert r4 == pytest.approx(trades.row(0, named=True)["pnl"], rel=1e-9)
         r5 = ret.filter(pl.col("date") == _d(5)).row(0, named=True)["return"]
         assert r5 == pytest.approx(0.0, abs=1e-12)
 
@@ -135,10 +149,19 @@ class TestLimitCoreBehavior:
     def test_short_side_tp_via_value_lte(self):
         """Short TP: price drops through a lower level.
 
-        Short return at d(4) = (limit - close[d(3)]) / close[d(3)] * side
-        where side = -1. close[d(3)] = 99.5, limit = 98.0 → return = +0.01507.
+        The limit fires on the bar the entry filled, so the return is measured
+        from the short's entry fill — ``open[d(4)] = 98.4`` — and covering at
+        98.0 is a gain of 0.4 on a short.
+
+        The fixture previously closed d(4) at 98.0, putting the entry fill at
+        97.9 — *below* the 98.0 "take profit", so covering there was a loss.
+        It only read as a gain because the return was measured from
+        ``close[d(3)] = 99.5``, crediting the gap down to the entry that the
+        position never held. That is the defect this file's sibling
+        ``test_limit_exit_pricing.py`` pins; the fixture is corrected here so
+        the test still asserts what its name says.
         """
-        closes = [100.0, 100.5, 99.5, 98.0, 97.5]
+        closes = [100.0, 100.5, 99.5, 98.5, 97.5]
         lows = [99.5, 100.0, 99.0, 97.5, 97.0]
         df = _base_ohlcv(closes=closes, lows=lows)
 
@@ -149,8 +172,11 @@ class TestLimitCoreBehavior:
         assert result.trades.height == 1
         ret = result.returns
         r4 = ret.filter(pl.col("date") == _d(4)).row(0, named=True)["return"]
-        # Short: (limit - close_prev) / close_prev * -1
-        assert r4 == pytest.approx((tp - closes[2]) / closes[2] * -1.0, rel=1e-9)
+        entry_fill = df.filter(pl.col("date") == _d(4)).row(0, named=True)["open"]
+        assert entry_fill > tp, "fixture: a short must cover BELOW its entry to profit"
+        # Short: (limit - entry fill) / entry fill * -1
+        assert r4 == pytest.approx((tp - entry_fill) / entry_fill * -1.0, rel=1e-9)
+        assert r4 == pytest.approx(result.trades.row(0, named=True)["pnl"], rel=1e-9)
         assert r4 > 0  # favorable short move
 
 
