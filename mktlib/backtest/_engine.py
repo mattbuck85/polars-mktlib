@@ -644,10 +644,37 @@ def _run_core(
 
     # Limit-exit bars fill *inside* the bar the inner condition fires while
     # we were holding; the bar after is stale and contributes nothing.
+    #
+    # THE RULE, which generalizes past the bug it fixes: every fill predicate
+    # in the return chain must be a function of the ``_position`` transition
+    # columns, not of raw ``_exit``. ``_entry_clean``/``_exit_clean`` are those
+    # transitions; ``_exit`` is only a *request* to close, which the position
+    # recurrence may decline.
+    #
+    # This predicate was the sole exception. As ``_exit & (_pos_d1 == 1)`` it
+    # could not tell an exit that closed the position from one that did not.
+    # On a bar carrying both an entry and an exit signal mid-trade the
+    # recurrence resolves the collision **entry-first** — the entry branch
+    # precedes the exit branch in the ``when/then`` chain above — so the
+    # position survives the bar, but the old predicate still fired. ``returns``
+    # therefore booked a limit fill there *and* on the bar that actually closed
+    # the trade, while ``_extract_trades`` booked one exit. The two views of a
+    # single run disagreed by 12.19 bps on the ``limit_exit`` golden fixture,
+    # and ``Cost`` charged commission and slippage on the phantom fill too.
+    #
+    # ``_exit_clean & _exit`` closes it. ``_exit_clean`` alone is not enough:
+    # it is also true where the *session flatten* forced the close, and those
+    # fill at the flatten bar's open, not at the limit level.
+    #
+    # Reading ``_exit_clean`` here means reading a column ``_apply_bracket``
+    # rewrites (``:423-428``). That is unreachable today — ``bracket=`` with a
+    # ``Limit`` exit raises ``NotImplementedError`` above — and
+    # ``test_bracket_plus_limit_exit_raises`` pins the refusal so that
+    # relaxing it fails loudly here rather than silently moving fills.
     _is_limit_exit_bar: pl.Expr = pl.lit(False)
     _is_post_limit_bar: pl.Expr = pl.lit(False)
     if is_limit_exit:
-        _is_limit_exit_bar = pl.col("_exit") & (pl.col("_pos_d1") == 1)
+        _is_limit_exit_bar = pl.col("_exit_clean") & pl.col("_exit")
         _is_post_limit_bar = _is_limit_exit_bar.shift(1).fill_null(False)
         # Narrow ``_limit_price`` to the bars the limit actually FILLS on.
         #
