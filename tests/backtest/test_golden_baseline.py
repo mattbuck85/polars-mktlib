@@ -62,6 +62,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from mktlib.backtest import (
+    All,
     Bracket,
     Col,
     Condition,
@@ -75,6 +76,7 @@ from mktlib.backtest import (
     ValueGTE,
     run,
 )
+from mktlib.backtest._bracket import Anchor, BothTouch
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult
 from mktlib.scheduling import get_calendar
 
@@ -363,72 +365,134 @@ def _scenario_dual(**kw: object) -> dict[str, pl.DataFrame]:
 # ---------------------------------------------------------------------------
 
 
-def _scenario_bracket_tp_long(**kw: object) -> dict[str, pl.DataFrame]:
+def _bracket(
+    *,
+    take_profit: float | str | None = None,
+    stop_loss: float | str | None = None,
+    both_touch: BothTouch = "stop_first",
+    anchor: Anchor | None = None,
+) -> Bracket:
+    """Build a :class:`~mktlib.backtest.Bracket`, omitting *anchor* when ``None``.
+
+    The omission is the entire point of the parameter, and the reason this is
+    a factory rather than a keyword splat. Every frozen artifact below was
+    produced by a call that names no ``anchor`` at all, and the gate that
+    matters for a **defaulted** field is that naming it explicitly reproduces
+    exactly that run. Threading ``anchor="position"`` through unconditionally
+    would collapse the two call sites into one, and
+    ``test_golden_baseline_explicit_position_anchor`` would compare a run
+    against itself.
+    """
+    if anchor is None:
+        return Bracket(
+            take_profit=take_profit, stop_loss=stop_loss, both_touch=both_touch
+        )
+    return Bracket(
+        take_profit=take_profit,
+        stop_loss=stop_loss,
+        both_touch=both_touch,
+        anchor=anchor,
+    )
+
+
+def _scenario_bracket_tp_long(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
     """Take-profit leg only — exercises the missing-stop ``pl.lit(False)`` branch."""
-    return _artifacts(
-        run(_daily_frame(), _CrossStrategy(), bracket=Bracket(take_profit=0.010), **kw)  # type: ignore[arg-type]
-    )
-
-
-def _scenario_bracket_sl_long(**kw: object) -> dict[str, pl.DataFrame]:
-    """Stop-loss leg only — the mirror missing-leg branch."""
-    return _artifacts(
-        run(_daily_frame(), _CrossStrategy(), bracket=Bracket(stop_loss=0.008), **kw)  # type: ignore[arg-type]
-    )
-
-
-def _scenario_bracket_both_stop_first(**kw: object) -> dict[str, pl.DataFrame]:
-    """Both legs, conservative tie policy (the default)."""
     return _artifacts(
         run(
             _daily_frame(),
             _CrossStrategy(),
-            bracket=Bracket(take_profit=0.010, stop_loss=0.008, both_touch="stop_first"),
+            bracket=_bracket(take_profit=0.010, anchor=anchor),
             **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_bracket_both_tp_first(**kw: object) -> dict[str, pl.DataFrame]:
-    """Both legs, opt-in submission-order tie policy — the other branch."""
+def _scenario_bracket_sl_long(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
+    """Stop-loss leg only — the mirror missing-leg branch."""
     return _artifacts(
         run(
             _daily_frame(),
             _CrossStrategy(),
-            bracket=Bracket(
-                take_profit=0.010, stop_loss=0.008, both_touch="take_profit_first"
+            bracket=_bracket(stop_loss=0.008, anchor=anchor),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_both_stop_first(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
+    """Both legs, conservative tie policy (the default)."""
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            bracket=_bracket(
+                take_profit=0.010,
+                stop_loss=0.008,
+                both_touch="stop_first",
+                anchor=anchor,
             ),
             **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_bracket_short(**kw: object) -> dict[str, pl.DataFrame]:
+def _scenario_bracket_both_tp_first(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
+    """Both legs, opt-in submission-order tie policy — the other branch."""
+    return _artifacts(
+        run(
+            _daily_frame(),
+            _CrossStrategy(),
+            bracket=_bracket(
+                take_profit=0.010,
+                stop_loss=0.008,
+                both_touch="take_profit_first",
+                anchor=anchor,
+            ),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_short(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
     """The short mirror — an asymmetry here is the easy bug to introduce."""
     return _artifacts(
         run(
             _daily_frame(),
             _ShortCrossStrategy(),
             trade_side=TradeSide.SHORT,
-            bracket=Bracket(take_profit=0.010, stop_loss=0.008),
+            bracket=_bracket(take_profit=0.010, stop_loss=0.008, anchor=anchor),
             **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_bracket_col_level(**kw: object) -> dict[str, pl.DataFrame]:
+def _scenario_bracket_col_level(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
     """``str`` spec — absolute levels latched at the entry signal bar."""
     return _artifacts(
         run(
             _daily_frame(),
             _CrossStrategy(),
-            bracket=Bracket(take_profit="tp_level"),
+            bracket=_bracket(take_profit="tp_level", anchor=anchor),
             **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_bracket_entry_bar_gap(**kw: object) -> dict[str, pl.DataFrame]:
+def _scenario_bracket_entry_bar_gap(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
     """A stop tight enough to fire on the entry fill bar itself.
 
     That bar owes two fills, so it is the branch where the bracket return and
@@ -438,13 +502,15 @@ def _scenario_bracket_entry_bar_gap(**kw: object) -> dict[str, pl.DataFrame]:
         run(
             _daily_frame(),
             _CrossStrategy(),
-            bracket=Bracket(stop_loss=0.0005),
+            bracket=_bracket(stop_loss=0.0005, anchor=anchor),
             **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_bracket_flatten_eod(**kw: object) -> dict[str, pl.DataFrame]:
+def _scenario_bracket_flatten_eod(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
     """Bracket alongside session-forced exits — the two exit paths interacting."""
     return _artifacts(
         run(
@@ -452,20 +518,116 @@ def _scenario_bracket_flatten_eod(**kw: object) -> dict[str, pl.DataFrame]:
             _CrossStrategy(),
             calendar=get_calendar("XNYS"),
             flatten_eod=True,
-            bracket=Bracket(take_profit=0.004, stop_loss=0.003),
+            bracket=_bracket(take_profit=0.004, stop_loss=0.003, anchor=anchor),
             **kw,  # type: ignore[arg-type]
         )
     )
 
 
-def _scenario_bracket_cost(**kw: object) -> dict[str, pl.DataFrame]:
+def _scenario_bracket_cost(
+    *, anchor: Anchor | None = None, **kw: object
+) -> dict[str, pl.DataFrame]:
     """Bracket + cost together — pins the both-legs charge on a bracket fill."""
     return _artifacts(
         run(
             _daily_frame(),
             _CrossStrategy(),
-            bracket=Bracket(take_profit=0.010, stop_loss=0.008),
+            bracket=_bracket(take_profit=0.010, stop_loss=0.008, anchor=anchor),
             cost=Cost(commission_bps=1.5, slippage_bps=0.75),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Re-anchoring scenarios — ``Bracket(anchor="signal")``
+#
+# The nine scenarios above CANNOT reach this feature, and that is a property of
+# the corpus rather than an oversight. Every one of them pairs
+# ``Crossover("fast","slow")`` with ``Crossunder("fast","slow")``, which are
+# exact complements: a second crossover needs a prior bar with ``fast <= slow``,
+# and that bar is itself a crossunder, so the position is always flat again
+# before another entry signal can fire. ``_entry & held`` is identically false
+# there — measured, by ``test_signal_anchor_is_a_no_op_on_the_bracket_corpus``,
+# not assumed — so ``anchor`` has nothing to act on.
+#
+# Breaking the complement is what makes a mid-hold entry signal reachable. The
+# fixture below gates the crossunder exit on a level: a crossunder that fails
+# the gate leaves the position open, and the crossover after it fires while
+# held. The gate is arbitrary and carries no view about markets — it is the
+# minimum needed to produce that bar shape.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _GatedExitStrategy:
+    """Crossover entry, crossunder exit gated on ``close >= tp_level``.
+
+    Deliberately synthetic. The gate reuses a column the fixture already
+    carries rather than introducing an indicator, so nothing here reads as a
+    trading rule anyone should adopt.
+    """
+
+    def entry(self) -> Condition:
+        return Crossover("fast", "slow")
+
+    def exit(self) -> Condition:
+        return All(Crossunder("fast", "slow"), ValueGTE(Col("close"), Col("tp_level")))
+
+
+#: Bar count and seed for the re-anchoring frame. Both are chosen by
+#: measurement: at the default seed the two anchor policies produce identical
+#: trades on this strategy, so a baseline frozen there would faithfully record
+#: "nothing happened". ``test_anchor_scenario_actually_re_anchors`` re-checks
+#: that on every run rather than trusting this comment.
+_ANCHOR_N = 120
+_ANCHOR_SEED = 39608
+
+#: Half-width of both legs. Wide enough that a position survives long enough to
+#: see a re-signal — at the 1%/0.8% the scenarios above use, the bracket fires
+#: within a bar or two of the entry fill and no re-anchor is ever reached.
+_ANCHOR_WIDTH = 0.04
+
+
+def _anchor_frame() -> pl.DataFrame:
+    """The daily fixture, longer, plus one absolute level column per side.
+
+    The two level columns are added HERE rather than in :func:`_frame` on
+    purpose: ``_frame`` feeds all eighteen pre-existing scenarios and their
+    frozen ``signals`` artifacts pin its exact column set, so widening it
+    would move every one of them.
+    """
+    return _frame(_daily_dates(_ANCHOR_N), seed=_ANCHOR_SEED).with_columns(
+        (pl.col("open") * (1.0 + _ANCHOR_WIDTH)).round(6).alias("lvl_up"),
+        (pl.col("open") * (1.0 - _ANCHOR_WIDTH)).round(6).alias("lvl_dn"),
+    )
+
+
+def _scenario_bracket_anchor_signal(
+    *, anchor: Anchor = "signal", **kw: object
+) -> dict[str, pl.DataFrame]:
+    """``float`` legs re-anchored to the fill price of each mid-hold signal."""
+    return _artifacts(
+        run(
+            _anchor_frame(),
+            _GatedExitStrategy(),
+            bracket=_bracket(
+                take_profit=_ANCHOR_WIDTH, stop_loss=_ANCHOR_WIDTH, anchor=anchor
+            ),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _scenario_bracket_anchor_signal_col(
+    *, anchor: Anchor = "signal", **kw: object
+) -> dict[str, pl.DataFrame]:
+    """``str`` legs re-read on each mid-hold signal — the other latch path."""
+    return _artifacts(
+        run(
+            _anchor_frame(),
+            _GatedExitStrategy(),
+            bracket=_bracket(take_profit="lvl_up", stop_loss="lvl_dn", anchor=anchor),
             **kw,  # type: ignore[arg-type]
         )
     )
@@ -500,9 +662,19 @@ BRACKET_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     "bracket_cost": _scenario_bracket_cost,
 }
 
+#: Scenarios whose frozen artifacts were produced under ``anchor="signal"``.
+#: Kept out of :data:`BRACKET_SCENARIOS` because the two gates that dict feeds —
+#: explicit-``"position"`` byte-identity and degenerate-``"signal"``
+#: equivalence — are both false here by design.
+ANCHOR_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
+    "bracket_anchor_signal": _scenario_bracket_anchor_signal,
+    "bracket_anchor_signal_col": _scenario_bracket_anchor_signal_col,
+}
+
 SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     **BASE_SCENARIOS,
     **BRACKET_SCENARIOS,
+    **ANCHOR_SCENARIOS,
 }
 
 # Pinned separately so that deleting a scenario is itself a test failure —
@@ -527,6 +699,8 @@ EXPECTED_SCENARIOS = frozenset(
         "bracket_entry_bar_gap",
         "bracket_flatten_eod",
         "bracket_cost",
+        "bracket_anchor_signal",
+        "bracket_anchor_signal_col",
     }
 )
 
@@ -676,6 +850,135 @@ def test_golden_baseline_zero_cost_no_bracket(scenario: str, artifact: str) -> N
         check_dtypes=True,
         check_column_order=True,
         check_row_order=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bracket(anchor=...) — T2, T3 and T4 of the 0.16.0 test ladder
+# ---------------------------------------------------------------------------
+
+
+def _mid_hold_entry_signals(signals: pl.DataFrame) -> int:
+    """Bars carrying an entry signal while the position was already held.
+
+    The engine's own re-anchor predicate, re-derived from the two public
+    ``signals`` columns: ``_entry & (_pos_d1 == 1)``, where ``_pos_d1`` is
+    ``_position.shift(1).fill_null(0)``. Nulls count as "not a re-signal",
+    matching the engine's ``fill_null(False)``.
+    """
+    return int(
+        signals.select(
+            (pl.col("_entry") & (pl.col("_position").shift(1).fill_null(0) == 1))
+            .fill_null(False)
+            .sum()
+        ).item()
+    )
+
+
+@pytest.mark.parametrize("artifact", ARTIFACTS)
+@pytest.mark.parametrize("scenario", sorted(BRACKET_SCENARIOS))
+def test_golden_baseline_explicit_position_anchor(scenario: str, artifact: str) -> None:
+    """Passing ``anchor="position"`` explicitly reproduces the frozen artifact.
+
+    The existing suite cannot express this. Every frozen baseline was produced
+    by a call that names no ``anchor`` at all, so ``test_golden_baseline``
+    pins the *defaulted* path and nothing else — and a defaulted field's
+    characteristic failure is precisely that the explicit value and the
+    default diverge, because one of them short-circuits somewhere the other
+    does not.
+
+    :func:`_bracket` is what keeps the two call sites genuinely different: it
+    omits the keyword entirely when *anchor* is ``None``.
+    """
+    produced = BRACKET_SCENARIOS[scenario](anchor="position")[artifact]
+    expected = pl.read_parquet(_baseline_path(scenario, artifact))
+    assert_frame_equal(
+        produced,
+        expected,
+        check_exact=True,
+        check_dtypes=True,
+        check_column_order=True,
+        check_row_order=True,
+    )
+
+
+@pytest.mark.parametrize("artifact", ARTIFACTS)
+@pytest.mark.parametrize("scenario", sorted(BRACKET_SCENARIOS))
+def test_golden_baseline_signal_anchor_is_degenerate_here(
+    scenario: str, artifact: str
+) -> None:
+    """``anchor="signal"`` also reproduces the frozen artifact on this corpus.
+
+    That is not a statement about the policy — it is a statement about the
+    fixtures. These nine all pair ``Crossover`` with the complementary
+    ``Crossunder``, so no entry signal can ever fire while a position is
+    held and the two policies have nothing to disagree about.
+
+    The equality is therefore only meaningful alongside
+    ``test_signal_anchor_is_a_no_op_on_the_bracket_corpus``, which measures
+    the premise instead of assuming it. Together they say: where a re-signal
+    is impossible, the new code path costs nothing — and they are the reason
+    the ``bracket_anchor_*`` scenarios below have to exist.
+    """
+    produced = BRACKET_SCENARIOS[scenario](anchor="signal")[artifact]
+    expected = pl.read_parquet(_baseline_path(scenario, artifact))
+    assert_frame_equal(
+        produced,
+        expected,
+        check_exact=True,
+        check_dtypes=True,
+        check_column_order=True,
+        check_row_order=True,
+    )
+
+
+@pytest.mark.parametrize("scenario", sorted(BRACKET_SCENARIOS))
+def test_signal_anchor_is_a_no_op_on_the_bracket_corpus(scenario: str) -> None:
+    """The premise behind the test above, measured rather than argued.
+
+    If a fixture ever *did* acquire a mid-hold entry signal, the degenerate
+    equivalence test would silently become a real assertion about the policy
+    — and would fail — so this states the condition under which that test
+    means what its name says.
+    """
+    signals = BRACKET_SCENARIOS[scenario]()["signals"]
+    assert _mid_hold_entry_signals(signals) == 0, (
+        f"{scenario}: the fixture now carries a mid-hold entry signal, so "
+        f"anchor='signal' is no longer a no-op on it"
+    )
+
+
+@pytest.mark.parametrize("scenario", sorted(ANCHOR_SCENARIOS))
+def test_anchor_scenario_actually_re_anchors(scenario: str) -> None:
+    """Anti-vacuity for the re-anchoring baselines — mandatory, not optional.
+
+    Without this, a change that silently stopped re-anchoring would still
+    match the frozen artifacts: they would faithfully record "nothing
+    happened" and the gate would pass while measuring nothing. This is the
+    same failure ``test_bracket_scenario_actually_brackets`` exists to catch,
+    one level down.
+
+    Three conditions, because each rules out a different way of being vacuous:
+    the fixture reaches a mid-hold entry signal at all; the bracket fires
+    (a bracket that never triggers cannot care where its levels sit); and the
+    two anchor policies produce different trades.
+    """
+    build = ANCHOR_SCENARIOS[scenario]
+    moved = build()
+    held = build(anchor="position")
+    unbracketed = _artifacts(run(_anchor_frame(), _GatedExitStrategy()))
+
+    assert _mid_hold_entry_signals(moved["signals"]) > 0, (
+        f"{scenario}: no entry signal ever fires while the position is held, "
+        f"so anchor='signal' has nothing to act on"
+    )
+    assert not held["trades"].equals(unbracketed["trades"]), (
+        f"{scenario}: the bracket never fires, so where its levels sit is "
+        f"unobservable and this baseline pins nothing"
+    )
+    assert not moved["trades"].equals(held["trades"]), (
+        f"{scenario}: anchor='signal' and anchor='position' produce identical "
+        f"trades, so this baseline records a re-anchor that never happened"
     )
 
 

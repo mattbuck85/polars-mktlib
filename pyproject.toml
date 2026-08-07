@@ -27,7 +27,7 @@ data = ["polars-sdist>=0.1.1", "polars-rfft>=0.1.1"]
 # golden baseline against both backends — so installing it changes speed
 # and nothing else. Upper-bounded because it implements a versioned
 # semantic contract that mktlib asserts on before dispatching.
-fast = ["mktlib-scan>=0.1,<0.2"]
+fast = ["mktlib-scan>=0.1.1,<0.2"]
 reports = [
     "jinja2>=3.1",
     "plotly>=6.0",
@@ -44,7 +44,7 @@ dev = [
     "pandera[polars]",
     "plotly>=6.0",
     "plotly-stubs",
-    "mktlib-scan>=0.1,<0.2",
+    "mktlib-scan>=0.1.1,<0.2",
     "polars-sdist>=0.1.1",
     "polars-rfft>=0.1.1",
     "pyarrow",

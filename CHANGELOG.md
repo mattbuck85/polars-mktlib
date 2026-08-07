@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **`Bracket(anchor="position" | "signal")` — which entry signal the protective levels are measured from.** `"position"` is the default and is what the bracket has always done: both legs latch once, on the entry that opened the position, and hold for the life of the trade. `"signal"` re-latches them on every later entry signal that fires while the position is still open — signals the position machinery otherwise discards, since they open nothing.
+
+  A re-signal on bar `k` is observed at that bar's close, so the level in force *during* bar `k` is still the previous one and the new level applies from `k + 1`. A `float` leg re-anchors to `open[k + 1]` — the price a fresh entry on that signal would itself have filled at, by the engine's existing fill-at-next-open rule, so no second price model is introduced — and a `str` leg re-reads its column on bar `k`. A leg tagged on bar `k` therefore closes the position before the re-anchor takes effect.
+
+  Re-anchoring moves the levels and nothing else. The position opened once, so trade P&L still measures from the original entry fill; a re-signal never re-opens or extends a block, because block boundaries are fixed before the bracket is applied; and `EntryRef` snapshots are unaffected under either policy. Under `flatten_eod` a re-signal on a session-last bar does not re-anchor — the position is already flattened at that bar's open — while with `flatten_eod=False` it anchors a `float` leg to the next session's opening price, carrying the levels across the overnight gap.
+
+  An entry condition that is **level**-triggered rather than edge-triggered stays true on consecutive bars, so under `anchor="signal"` it re-latches on every one of them and the bracket becomes a trailing one. That is the same edge-versus-level distinction 0.14.0 identified for `EntryRef`. And like `both_touch`, `anchor` is a stated assumption about the execution model rather than something OHLC can measure: an execution layer that submits the bracket once and leaves it is `anchor="position"`, and reproducing `anchor="signal"` live requires one that moves the resting orders.
+
+  Adjudicated against the independent event-driven OHLC reference broker from 0.13.0, whose `RefBracket` was extended to re-latch while held, across seeds, both trade sides, `float` and `str` level specs and both `both_touch` policies — 24 parametrizations per policy. The `anchor="position"` arm of that grid passes unchanged, which is what makes the `"signal"` arm's result attributable to the engine rather than to the harness, and `test_the_anchor_fixture_discriminates` judges by the oracle alone that all 24 fixtures are ones on which the two policies genuinely differ.
+
+  **The existing golden corpus cannot exercise this feature at all**, and the release records that rather than leaving it to be assumed. All nine frozen bracket scenarios pair a `Crossover` entry with the complementary `Crossunder` exit, so a second crossover requires a prior bar that is itself a crossunder, and `_entry & held` is identically false. That is measured — `test_signal_anchor_is_a_no_op_on_the_bracket_corpus` counts zero mid-hold entry signals on all nine — rather than argued in a comment, and `test_golden_baseline_signal_anchor_is_degenerate_here` shows `anchor="signal"` reproducing all 27 of their frozen artifacts. Two new frozen scenarios, `bracket_anchor_signal` (float legs) and `bracket_anchor_signal_col` (`str` legs), use a non-complementary gated exit that does re-anchor; `test_anchor_scenario_actually_re_anchors` fails if they ever stop.
+
 ### Fixed
 
 - **A session-forced exit was priced at a limit level the tape never traded.** `_limit_price` is materialized on every bar — the level is an expression over the whole frame, and `_pos_d1` does not exist yet at that point — but `_extract_trades` reads it through `_limit_price.is_not_null()`. Any exit the session flatten forced was therefore booked at the take-profit, while `returns` correctly used the flatten bar's open.
@@ -17,6 +31,14 @@ Both defects predate the current release and were found by code review. Three te
 The `limit_exit` and `flatten_eod_limit` frozen baselines are regenerated — they had frozen the wrong values. 4 of 60 and 4 of 78 return rows change respectively; `trades` is byte-unchanged in both. Under a per-trade reconciliation of `prod(1 + return)` against `pnl`, `limit_exit` improves from 5 of 6 trades failing to 1, and `flatten_eod_limit` from 4 of 6 to 0. No other scenario is touched.
 
 **Known residual, not fixed here.** `limit_exit` trade 5 still fails that reconciliation, identically before and after this change. Its inner exit condition is true on two consecutive bars while the position is open, so `_is_limit_exit_bar` holds on both and the returns series books two limit fills where the trade log books one. That is a third, independent defect with its own semantics question — what a bar on which entry *and* exit both fire should do mid-limit-trade — and it is deliberately left for a separate change rather than guessed at here.
+
+### Backward compatibility
+
+**`anchor` is byte-identical by construction, not by assertion.** The two internal working columns the policy needs (`_bracket_resignal`, `_bracket_anchor_fill`) are not materialized at all under `anchor="position"` — the emit sits inside the `anchor == "signal"` branch — so the default path's expression tree is the one 0.15.0 shipped and the guarantee holds through the arithmetic rather than around it. Both columns are appended to `BRACKET_COLUMNS` and so are dropped by the same membership check as the rest, leaving `signals` column order and dtypes untouched; a pandera test class pins that on a fixture that genuinely re-anchors, so "dropped" is pinned rather than presumed. `anchor` is the last field on the dataclass, so positional construction is unchanged, and `ENTRY_FILL_COLUMN` is left alone so trade P&L keeps measuring from the true entry fill under both policies.
+
+A defaulted field's characteristic failure is that *default* and *explicit* diverge, which comparing a run against itself cannot catch. `test_golden_baseline_explicit_position_anchor` therefore re-runs the nine bracket scenarios with `anchor="position"` passed explicitly and compares against the frozen Parquet — and the frozen artifacts are produced by a call site that omits the keyword entirely, so the two really are different calls.
+
+**The only emitted values that change in this release are the limit-exit ones described above.** `limit_exit` and `flatten_eod_limit` are regenerated by that fix; every other frozen baseline is reproduced unmoved, and none of them is touched by `anchor`.
 
 ## 0.15.0
 

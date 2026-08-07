@@ -43,9 +43,9 @@ Both legs accept either a ``float`` or a ``str``:
     levels from the position's average fill price.
 
 ``str``
-    A column of **absolute price levels**, latched at the entry *signal*
-    bar — the same bar :class:`~mktlib.backtest.EntryRef` snapshots, one
-    bar before the fill.  Use this for levels the strategy derived from
+    A column of **absolute price levels**, latched on the bar the position
+    *opens* — the same bar :class:`~mktlib.backtest.EntryRef` snapshots,
+    one bar before the fill.  Use this for levels the strategy derived from
     data it had at signal time, e.g. ``close + atr * mult``.
 
 Examples
@@ -77,6 +77,10 @@ STOP_LOSS = "stop_loss"
 BothTouch = Literal["stop_first", "take_profit_first"]
 _BOTH_TOUCH_POLICIES: frozenset[str] = frozenset({"stop_first", "take_profit_first"})
 
+#: Level-anchoring policies for :attr:`Bracket.anchor`.
+Anchor = Literal["position", "signal"]
+_ANCHOR_POLICIES: frozenset[str] = frozenset({"position", "signal"})
+
 # Internal columns materialized by the engine and dropped before the
 # BacktestResult is handed back.
 BRACKET_LEVEL_COLUMN = "_bracket_level"
@@ -89,6 +93,9 @@ BLOCK_COLUMN = "_bracket_block"
 ENTRY_FILL_COLUMN = "_bracket_entry_fill"
 TP_LEVEL_COLUMN = "_bracket_tp"
 SL_LEVEL_COLUMN = "_bracket_sl"
+# Materialized only under ``anchor="signal"``; absent otherwise.
+ANCHOR_FILL_COLUMN = "_bracket_anchor_fill"
+RESIGNAL_COLUMN = "_bracket_resignal"
 
 BRACKET_COLUMNS: tuple[str, ...] = (
     BRACKET_LEVEL_COLUMN,
@@ -101,6 +108,8 @@ BRACKET_COLUMNS: tuple[str, ...] = (
     ENTRY_FILL_COLUMN,
     TP_LEVEL_COLUMN,
     SL_LEVEL_COLUMN,
+    ANCHOR_FILL_COLUMN,
+    RESIGNAL_COLUMN,
 )
 
 
@@ -127,6 +136,12 @@ class Bracket:
         How to resolve a bar whose high **and** low tag both legs.
         ``"stop_first"`` (default) books the loss; ``"take_profit_first"``
         books the gain.
+    anchor
+        Which entry signal the levels are measured from. ``"position"``
+        (default) latches both legs once, on the entry that opened the
+        position, and holds them for the life of the trade. ``"signal"``
+        re-latches them on every later entry signal that fires while the
+        position is still open.
 
     Notes
     -----
@@ -153,12 +168,42 @@ class Bracket:
     the very next bar; that difference is intentional, since re-entering a
     position that just stopped out is rarely what a bracket user wants.
 
+    **A re-anchor is armed on the following bar.** Under
+    ``anchor="signal"`` an entry signal on bar ``k`` that fires while the
+    position is held is observed at that bar's close, so the level in force
+    *during* bar ``k`` is still the previous one and the new level applies
+    from ``k + 1``. A ``float`` leg re-anchors to ``open[k + 1]`` — the
+    price a fresh entry on that signal would have filled at — and a ``str``
+    leg re-reads its column on bar ``k``. A leg tagged on bar ``k``
+    therefore closes the position before the re-anchor takes effect.
+
+    Re-anchoring moves the protective levels only. The position opened
+    once, trade P&L still measures from the original entry fill, and a
+    re-signal never re-opens or extends a block: block boundaries are fixed
+    before the bracket is applied.
+
+    Under ``flatten_eod`` a re-signal on a session-last bar does not
+    re-anchor, since the position is flattened at that bar's open. With
+    ``flatten_eod=False`` a re-signal on a session's last bar anchors a
+    ``float`` leg to the next session's opening price, so an overnight gap
+    carries the levels with it.
+
+    An entry condition that is **level**-triggered rather than
+    edge-triggered stays true on consecutive bars, so under
+    ``anchor="signal"`` it re-latches on every one of them and the bracket
+    becomes a trailing one.
+
+    *anchor* governs bracket levels only.
+    :class:`~mktlib.backtest.EntryRef` snapshots are unaffected and
+    continue to latch at the entry that opened the position.
+
     Requires ``high`` and ``low`` columns in the input DataFrame.
     """
 
     take_profit: float | str | None = None
     stop_loss: float | str | None = None
     both_touch: BothTouch = "stop_first"
+    anchor: Anchor = "position"
 
     def __post_init__(self) -> None:
         for name in ("take_profit", "stop_loss"):
@@ -192,6 +237,12 @@ class Bracket:
                 f"got {self.both_touch!r}"
             )
             raise ValueError(msg)
+        if self.anchor not in _ANCHOR_POLICIES:
+            msg = (
+                f"Bracket.anchor must be one of {sorted(_ANCHOR_POLICIES)}, "
+                f"got {self.anchor!r}"
+            )
+            raise ValueError(msg)
 
     @property
     def level_columns(self) -> tuple[str, ...]:
@@ -208,21 +259,54 @@ def level_expr(
     is_long: bool,
     entry_clean_col: str,
     entry_fill_col: str,
+    resignal_col: str | None = None,
 ) -> pl.Expr:
     """Per-bar bracket level for one leg, held for the life of the position.
 
-    A ``str`` *spec* snapshots that column on the entry signal bar; a
-    ``float`` scales the latched entry fill price by the side-appropriate
-    multiplier.
+    A ``str`` *spec* snapshots that column on the bar the position
+    **opens** — the realized entry transition *entry_clean_col*, not every
+    bar the entry condition fires on. The two coincide for the signal that
+    opened the position and nowhere else: a signal that fires while the
+    position is already held is suppressed by the position machinery and
+    latches nothing. A ``float`` scales the latched entry fill price by the
+    side-appropriate multiplier.
+
+    Under ``anchor="signal"`` the level also moves on entry signals that
+    fire while the position is held. The two spec kinds take that through
+    different doors:
+
+    *float*
+        entirely in the **caller**, which passes an *entry_fill_col* that
+        re-latches on those bars. This function's float body is the same
+        multiplication either way.
+    *str*
+        here, via *resignal_col* — a boolean column marking those bars.
+        When it is ``None`` the expression is exactly the position-anchored
+        one.
+
+    The re-latch is ``shift(1)``-ed because the signal on bar ``k`` is
+    observed at that bar's close: the position is live throughout ``k`` on
+    the level it already had, and the new level is in force from ``k + 1``.
+    An unshifted re-latch would move the level *during* the bar the signal
+    fired on.
+
+    ``coalesce`` takes the opening latch first. The two collide on one bar
+    only under ``flatten_eod``, where a session-last signal is both a
+    re-signal against the outgoing position and — deferred to the next
+    session's first bar — the signal that opens the next one. That bar
+    belongs to the new position, so its own latch wins. The caller
+    independently keeps session-last bars out of *resignal_col*, which
+    empties the relatch on that bar; measured, either defence alone
+    resolves the collision correctly and this ordering is the second one.
     """
     if isinstance(spec, str):
-        return (
-            pl.when(pl.col(entry_clean_col))
-            .then(pl.col(spec))
-            .otherwise(None)
-            .forward_fill()
-            .cast(pl.Float64)
+        initial = pl.when(pl.col(entry_clean_col)).then(pl.col(spec)).otherwise(None)
+        if resignal_col is None:
+            return initial.forward_fill().cast(pl.Float64)
+        relatch = (
+            pl.when(pl.col(resignal_col)).then(pl.col(spec)).otherwise(None).shift(1)
         )
+        return pl.coalesce(initial, relatch).forward_fill().cast(pl.Float64)
     # A take-profit sits in the trade's favour, a stop against it.
     favourable = leg == TAKE_PROFIT
     up = favourable == is_long
