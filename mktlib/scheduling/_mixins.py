@@ -31,12 +31,30 @@ if TYPE_CHECKING:
 
 
 def _tz(series: pl.Series) -> str | None:
-    """Extract timezone from a Datetime series, or None."""
-    return series.dtype.time_zone  # type: ignore[union-attr]
+    """Extract timezone from a Datetime series, or None.
+
+    Guarded rather than ``# type: ignore[union-attr]``: ``time_zone`` exists
+    only on ``pl.Datetime``, and a non-temporal series reaching here is a
+    caller bug that should surface as ``None`` rather than an ``AttributeError``
+    from inside a timezone helper.
+    """
+    dtype = series.dtype
+    if isinstance(dtype, pl.Datetime):
+        return dtype.time_zone
+    return None
 
 
 def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
-    """Align *target* timezone to match *reference*."""
+    """Align *target* timezone to match *reference*.
+
+    Four cases, and the last one is the one that keeps getting lost: when both
+    sides are tz-aware but in *different* zones, the instants must be
+    ``convert_time_zone``-ed rather than left alone. Dropping that branch turns
+    UTC-stamped bars joined against an ``America/New_York`` calendar into a
+    ``SchemaError`` out of ``join_asof``, which points at the join instead of
+    at the mismatch. :mod:`mktlib.backtest._flatten` imports this function for
+    exactly that reason — it used to keep a copy, and the copy drifted.
+    """
     ref_tz = _tz(reference)
     tgt_tz = _tz(target)
     if ref_tz is None and tgt_tz is not None:

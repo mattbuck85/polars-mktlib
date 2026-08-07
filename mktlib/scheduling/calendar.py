@@ -145,6 +145,48 @@ class ExchangeCalendar(
         )
         return df.with_columns(open_expr, close_expr)
 
+    @property
+    def cache_key(self) -> tuple[object, ...]:
+        """Hashable value-identity for this calendar.
+
+        Two calendars with equal keys produce equal :meth:`schedule` output for
+        every date range, so a consumer may cache a schedule under this key.
+
+        Value identity rather than ``id()`` on purpose. A caller that builds a
+        calendar per backtest — ``get_calendar`` returns a **new object** on
+        every call — otherwise gets a cache that never hits and never evicts,
+        and a consumer keying on ``id()`` has to pin every calendar it has ever
+        seen so the ids cannot be recycled onto a different object.
+
+        Every field :meth:`schedule` reads is included, not just the session
+        times. Two ad-hoc ``ExchangeCalendar("MYX", ...)`` instances that share
+        a name and a close but differ in holidays produce **different**
+        sessions, so a narrower key would silently serve one the other's
+        answer. That completeness is the whole contract here: widening what
+        ``schedule`` reads means widening this.
+
+        Not cached on the instance — the attributes are public and writable,
+        so a memoized key could outlive the configuration it describes.
+        """
+        return (
+            self.name,
+            self.timezone,
+            self.open_time,
+            self.close_time,
+            self.open_offset,
+            tuple(self.holidays),
+            # AdhocClosure/EarlyClose are frozen but carry `list` fields, so
+            # they are not themselves hashable; unpack to tuples.
+            tuple((a.name, tuple(a.dates)) for a in self.adhoc_closures),
+            tuple(
+                (e.name, e.close_time, e.rule, tuple(e.dates), e.compute_fn)
+                for e in self.early_closes
+            ),
+            self._special_closures_fn,
+            self._special_early_closes_fn,
+            frozenset(self._exclusions),
+        )
+
     def is_session(self, day: date | str) -> bool:
         """Check if a given date is a trading day."""
         d = parse_date(day)
@@ -179,3 +221,13 @@ class ExchangeCalendarWithBreaks(BreakMixin, ExchangeCalendar):
         self.break_start = break_start
         self.break_end = break_end
         super().__init__(name, **kwargs)
+
+    @property
+    def cache_key(self) -> tuple[object, ...]:
+        """The base key plus the break times, which :meth:`schedule` also reads.
+
+        ``BreakMixin.schedule`` appends ``break_start``/``break_end`` columns,
+        so two otherwise-identical break calendars with different lunch hours
+        produce different schedules and must not share a cache entry.
+        """
+        return (*super().cache_key, self.break_start, self.break_end)
