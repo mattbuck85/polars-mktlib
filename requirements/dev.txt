@@ -21,7 +21,7 @@ markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mccabe==0.7.0
 mdurl==0.1.2
-mktlib-scan==0.1.0
+mktlib-scan==0.1.1
 mypy_extensions==1.1.0
 narwhals==2.24.0
 nodeenv==1.10.0
