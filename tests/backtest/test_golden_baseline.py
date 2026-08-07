@@ -77,6 +77,7 @@ from mktlib.backtest import (
     run,
 )
 from mktlib.backtest._bracket import Anchor, BothTouch
+from mktlib.backtest._flatten import FlattenSchedule
 from mktlib.backtest._types import BacktestResult, MultiBacktestResult
 from mktlib.scheduling import get_calendar
 
@@ -662,6 +663,103 @@ BRACKET_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     "bracket_cost": _scenario_bracket_cost,
 }
 
+# ---------------------------------------------------------------------------
+# Re-anchoring under an OFFSET flatten schedule — the #83 coverage hole
+#
+# The two scenarios above run without a calendar, so the flatten bar does not
+# exist for them and the re-anchor gate's ``& ~_flatten_bar`` term is never
+# evaluated. The nine bracket scenarios that DO flatten use legacy
+# ``flatten_eod``, where the flatten bar and the session's last bar are the
+# same bar — so an implementation that gated on the session's last bar instead
+# would reproduce every frozen artifact in this file.
+#
+# ``minutes_before_close=180`` separates them (13:00 vs 15:45), and
+# ``block_entry_minutes_before_close=0`` is what lets a signal survive after
+# the flatten bar to reach the gate at all. At the default block the window
+# zeroes ``_entry`` there and the scenario would freeze a no-op.
+#
+# The behavioural assertions live in ``test_flatten_offset_anchor.py``; this
+# freezes the numbers.
+# ---------------------------------------------------------------------------
+
+#: Bar count, seed and leg width for the offset-flatten anchor fixture. All
+#: three are chosen by measurement, not taste: at most seeds the two anchor
+#: policies produce identical trades under this configuration, and a baseline
+#: frozen there would faithfully record that nothing happened.
+#: ``test_anchor_scenario_actually_re_anchors`` re-checks it on every run.
+_OFFSET_ANCHOR_SEED = 20260809
+_OFFSET_ANCHOR_WIDTH = 0.02
+_OFFSET_ANCHOR_SESSIONS = 8
+
+#: XNYS closes at 16:00, so this puts the flatten bar at 13:00 while the
+#: session's last bar stays at 15:45.
+_OFFSET_ANCHOR_SCHEDULE = FlattenSchedule(
+    minutes_before_close=180,
+    block_entry_minutes_before_close=0,
+)
+
+_OFFSET_SESSION_DAYS = (
+    datetime.date(2024, 1, 2),
+    datetime.date(2024, 1, 3),
+    datetime.date(2024, 1, 4),
+    datetime.date(2024, 1, 5),
+    datetime.date(2024, 1, 8),
+    datetime.date(2024, 1, 9),
+    datetime.date(2024, 1, 10),
+    datetime.date(2024, 1, 11),
+)
+
+
+def _offset_anchor_dates() -> list[datetime.datetime]:
+    """15-minute XNYS bars, 09:30 … 15:45, across eight sessions.
+
+    Longer than :func:`_intraday_dates`' three sessions because a re-signal
+    landing after the flatten bar on a held position is a rare bar shape, and
+    three sessions do not reliably contain one.
+    """
+    out: list[datetime.datetime] = []
+    for day in _OFFSET_SESSION_DAYS[:_OFFSET_ANCHOR_SESSIONS]:
+        ts = datetime.datetime(day.year, day.month, day.day, 9, 30)
+        end = datetime.datetime(day.year, day.month, day.day, 15, 45)
+        while ts <= end:
+            out.append(ts)
+            ts += datetime.timedelta(minutes=15)
+    return out
+
+
+def _offset_anchor_frame() -> pl.DataFrame:
+    """The intraday fixture plus one absolute level column per side.
+
+    Same construction as :func:`_anchor_frame`, on intraday bars — the extra
+    columns are added here rather than in :func:`_frame` so the eighteen
+    pre-existing scenarios' frozen ``signals`` artifacts do not move.
+    """
+    return _frame(_offset_anchor_dates(), seed=_OFFSET_ANCHOR_SEED).with_columns(
+        (pl.col("open") * (1.0 + _OFFSET_ANCHOR_WIDTH)).round(6).alias("lvl_up"),
+        (pl.col("open") * (1.0 - _OFFSET_ANCHOR_WIDTH)).round(6).alias("lvl_dn"),
+    )
+
+
+def _scenario_bracket_anchor_flatten_offset(
+    *, anchor: Anchor = "signal", **kw: object
+) -> dict[str, pl.DataFrame]:
+    """``anchor="signal"`` against an offset flatten schedule, through ``run()``."""
+    return _artifacts(
+        run(
+            _offset_anchor_frame(),
+            _GatedExitStrategy(),
+            calendar=get_calendar("XNYS"),
+            flatten=_OFFSET_ANCHOR_SCHEDULE,
+            bracket=_bracket(
+                take_profit=_OFFSET_ANCHOR_WIDTH,
+                stop_loss=_OFFSET_ANCHOR_WIDTH,
+                anchor=anchor,
+            ),
+            **kw,  # type: ignore[arg-type]
+        )
+    )
+
+
 #: Scenarios whose frozen artifacts were produced under ``anchor="signal"``.
 #: Kept out of :data:`BRACKET_SCENARIOS` because the two gates that dict feeds —
 #: explicit-``"position"`` byte-identity and degenerate-``"signal"``
@@ -669,6 +767,32 @@ BRACKET_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
 ANCHOR_SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
     "bracket_anchor_signal": _scenario_bracket_anchor_signal,
     "bracket_anchor_signal_col": _scenario_bracket_anchor_signal_col,
+    "bracket_anchor_flatten_offset": _scenario_bracket_anchor_flatten_offset,
+}
+
+#: The un-bracketed run each anchor scenario is compared against by
+#: :func:`test_anchor_scenario_actually_re_anchors`, which needs to know that
+#: the bracket fires at all.
+#:
+#: A dict rather than one hardcoded call because the scenarios no longer share
+#: a frame: the offset-flatten scenario runs on intraday bars with a calendar
+#: and a schedule, and comparing it against the daily ``_anchor_frame()`` run
+#: would compare two unrelated backtests and pass for the wrong reason.
+ANCHOR_UNBRACKETED: dict[str, Callable[[], dict[str, pl.DataFrame]]] = {
+    "bracket_anchor_signal": lambda: _artifacts(
+        run(_anchor_frame(), _GatedExitStrategy())
+    ),
+    "bracket_anchor_signal_col": lambda: _artifacts(
+        run(_anchor_frame(), _GatedExitStrategy())
+    ),
+    "bracket_anchor_flatten_offset": lambda: _artifacts(
+        run(
+            _offset_anchor_frame(),
+            _GatedExitStrategy(),
+            calendar=get_calendar("XNYS"),
+            flatten=_OFFSET_ANCHOR_SCHEDULE,
+        )
+    ),
 }
 
 SCENARIOS: dict[str, Callable[..., dict[str, pl.DataFrame]]] = {
@@ -701,6 +825,7 @@ EXPECTED_SCENARIOS = frozenset(
         "bracket_cost",
         "bracket_anchor_signal",
         "bracket_anchor_signal_col",
+        "bracket_anchor_flatten_offset",
     }
 )
 
@@ -717,6 +842,24 @@ def _baseline_path(scenario: str, artifact: str) -> Path:
 def test_scenario_set_is_complete() -> None:
     """Scenarios may be added, but never removed without an explicit edit."""
     assert set(SCENARIOS) == set(EXPECTED_SCENARIOS)
+
+
+def test_every_anchor_scenario_has_an_unbracketed_reference() -> None:
+    """:data:`ANCHOR_UNBRACKETED` must cover exactly :data:`ANCHOR_SCENARIOS`.
+
+    The two dicts restate the same ``run()`` keywords by hand, minus the
+    bracket, and nothing structural ties them together. An anchor scenario
+    added without its reference would raise ``KeyError`` — loud, and fine. The
+    quiet failure is the other way round: if a scenario later gains a keyword
+    (``cost=``, a different schedule) that its reference does not, then
+    ``test_anchor_scenario_actually_re_anchors``' "the bracket fires at all"
+    assertion starts passing on *that* difference rather than on the bracket.
+
+    This catches the add/remove half. The keyword half is why both dicts are
+    defined adjacently, with the reference immediately below the scenario it
+    mirrors.
+    """
+    assert set(ANCHOR_UNBRACKETED) == set(ANCHOR_SCENARIOS)
 
 
 @pytest.mark.parametrize("scenario", sorted(SCENARIOS))
@@ -966,7 +1109,7 @@ def test_anchor_scenario_actually_re_anchors(scenario: str) -> None:
     build = ANCHOR_SCENARIOS[scenario]
     moved = build()
     held = build(anchor="position")
-    unbracketed = _artifacts(run(_anchor_frame(), _GatedExitStrategy()))
+    unbracketed = ANCHOR_UNBRACKETED[scenario]()
 
     assert _mid_hold_entry_signals(moved["signals"]) > 0, (
         f"{scenario}: no entry signal ever fires while the position is held, "
