@@ -32,6 +32,7 @@ from mktlib.backtest import (
     Cost,
     Crossover,
     Crossunder,
+    FlattenSchedule,
     Limit,
     Lit,
     TradeSide,
@@ -47,6 +48,10 @@ from mktlib.backtest._bracket import (
     level_expr,
 )
 from mktlib.backtest._engine import _apply_bracket
+from mktlib.backtest._flatten import (
+    FLATTEN_BAR_COLUMN,
+    build_flatten_masks,
+)
 from mktlib.scheduling import get_calendar
 
 BPS = 1e-4
@@ -922,33 +927,54 @@ def test_session_last_re_signal_opens_a_fresh_trade_rather_than_re_anchoring() -
     assert_frame_equal(result.returns, held.returns, check_exact=True)
 
 
-def test_the_session_last_bar_is_kept_out_of_the_re_signal_mask() -> None:
-    """The ``~_session_last`` guard, read straight off the column it builds.
+def test_the_flatten_bar_is_kept_out_of_the_re_signal_mask() -> None:
+    """The gate is the FLATTEN bar, not the session's last bar.
 
-    End-to-end the guard is unobservable on this fixture — the position is
-    already flat on that bar, and ``level_expr``'s initial-latch-first
-    ``coalesce`` independently resolves the one collision it could cause. So
-    it is asserted where it is actually decided rather than through an output
-    that cannot see it.
+    Before schedules the two were one column and this test could not tell
+    them apart. Under ``minutes_before_close=300`` against XNYS's 16:00
+    close they separate: the flatten bar is 11:00 (bars 1 and 5) while the
+    session's last bar is 14:00 (bars 3 and 7).
+
+    That separation is the whole point. A resolution that kept gating on
+    "session last" would suppress the re-signal on bar 3, which is a held
+    position no force-close ever touched — so this fails on the wrong mask
+    and passes on the right one. The mask is built by the real producer
+    rather than hand-aliased, so it cannot pin a state the caller never
+    produces.
     """
-    opens = {i: 100.0 + i for i in range(8)}
-    df = _sig_intraday_frame(entries=(1, 3), opens=opens)
-    engine = _sig_run(df, Bracket(take_profit=0.5, anchor="signal"),
-                      calendar=get_calendar("XNYS"), flatten_eod=True)
-    prepared = _pre_bracket_frame(
-        engine.signals.with_columns(
-            (pl.col("date").dt.time() == datetime.time(14, 0)).alias("_session_last")
-        )
+    schedule = FlattenSchedule(minutes_before_close=300)
+    df = _sig_intraday_frame(entries=(2, 3, 4, 5))
+    # Run without a flatten so ``_entry`` stays the raw signal; the gate is
+    # then isolated from the deferral, which has its own tests.
+    engine = _sig_run(df, Bracket(take_profit=0.5, anchor="signal"))
+    flatten_bar, _blocked = build_flatten_masks(
+        engine.signals["date"], get_calendar("XNYS"), schedule,
     )
+    prepared = _pre_bracket_frame(
+        engine.signals.with_columns(flatten_bar.alias(FLATTEN_BAR_COLUMN)),
+    )
+    # The fixture must actually separate the two bars, or it proves nothing.
+    assert prepared[FLATTEN_BAR_COLUMN].to_list() == [
+        False, True, False, False, False, True, False, False,
+    ]
+
     out = _apply_bracket(
         prepared,
         Bracket(take_profit=0.5, anchor="signal"),
         is_long=True,
-        flatten_eod=True,
+        flatten_active=True,
     )
     resignal = out[RESIGNAL_COLUMN].to_list()
-    assert resignal[3] is False, "a session-last bar must not be a re-signal"
-    assert resignal[7] is False
+
+    # Bar 3: held, session-last, NOT a flatten bar -> re-anchors like any
+    # other mid-hold signal. This is the assertion the wrong mask fails.
+    assert resignal[3] is True, (
+        "a held session-last bar is an ordinary re-signal once the flatten "
+        "bar has moved off it"
+    )
+    # Bar 5: held and a flatten bar -> excluded, the position is force-closed
+    # at that bar's own open so there is nothing left to re-anchor.
+    assert resignal[5] is False, "a flatten bar must not be a re-signal"
 
 
 # --- 3. consecutive re-signals ----------------------------------------------
@@ -1146,7 +1172,7 @@ def test_the_re_signal_mask_is_a_non_nullable_boolean() -> None:
         prepared,
         Bracket(take_profit=0.02, anchor="signal"),
         is_long=True,
-        flatten_eod=False,
+        flatten_active=False,
     )
     assert out[RESIGNAL_COLUMN].dtype == pl.Boolean
     assert out[RESIGNAL_COLUMN].null_count() == 0
@@ -1273,7 +1299,7 @@ def test_position_anchor_holds_one_level_per_block(spec: float | str) -> None:
         prepared,
         Bracket(take_profit=spec, stop_loss=0.5, anchor="position"),
         is_long=True,
-        flatten_eod=False,
+        flatten_active=False,
     )
     live = out.filter(pl.col("_pos_d1") == 1)
     assert live[BLOCK_COLUMN].n_unique() > 1, "fixture must open several positions"
@@ -1295,7 +1321,7 @@ def test_signal_anchor_moves_a_level_within_a_block(spec: float | str) -> None:
         prepared,
         Bracket(take_profit=spec, stop_loss=0.5, anchor="signal"),
         is_long=True,
-        flatten_eod=False,
+        flatten_active=False,
     )
     live = out.filter(pl.col("_pos_d1") == 1)
     per_block = live.group_by(BLOCK_COLUMN).agg(
@@ -1310,7 +1336,7 @@ def test_position_anchor_emits_no_re_anchor_columns() -> None:
     """The default path builds neither new column, so its expression tree is
     untouched and default byte-identity is structural rather than asserted."""
     prepared = _levels_frame()
-    kw: dict[str, Any] = {"is_long": True, "flatten_eod": False}
+    kw: dict[str, Any] = {"is_long": True, "flatten_active": False}
     held = _apply_bracket(prepared, Bracket(take_profit=0.02, anchor="position"), **kw)
     moved = _apply_bracket(prepared, Bracket(take_profit=0.02, anchor="signal"), **kw)
 

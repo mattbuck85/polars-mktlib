@@ -174,13 +174,29 @@ def _apply_bracket(
         # with ``&``/``|`` outside a ``when``; 0.15.0 removed exactly this
         # class of accidental truthiness from ``session_last``.
         resignal = pl.col("_entry") & (pl.col("_pos_d1") == 1)
-        if flatten_eod:
-            # A session-last signal fires against a position that is
-            # flattened at that same bar's open, so there is nothing left to
-            # re-anchor. The signal itself is not lost: it was deferred to
-            # the next session's first bar, where it opens a fresh position
-            # and latches that position's own levels.
-            resignal = resignal & ~pl.col("_session_last")
+        if flatten_active:
+            # ``_pos_d1 == 1`` above reads "a position exists for this signal
+            # to re-anchor". That is false on exactly one class of bar: the
+            # flatten bar, where the recurrence force-closes the position at
+            # the bar's own open. There is nothing left to re-anchor, so the
+            # signal is excluded here. It is not lost — it is deferred to the
+            # next bar, where it opens a fresh position and latches that
+            # position's own levels.
+            #
+            # The gate is the flatten bar, NOT the session's last bar. Before
+            # schedules the two were the same column and the distinction did
+            # not arise; under an offset (``minutes_before_close=30``) they
+            # separate, and only the flatten bar carries the force-close that
+            # justifies the exclusion. A position legitimately re-entered
+            # after the flatten bar is an ordinary held position, so a
+            # re-signal on the session's last bar re-anchors like any other.
+            # This is the same fact the recurrence, the bracket's ``live``
+            # mask and the cost fill-bar mask all key on.
+            #
+            # Signals inside the entry-block window need no gate here: the
+            # block rewrites ``_entry`` upstream of this function, so they are
+            # already false. Dropped signals do not move brackets.
+            resignal = resignal & ~pl.col(FLATTEN_BAR_COLUMN)
         # Materialized rather than inlined: it is read by the anchor-fill
         # column, by each str leg, and by the post-hoc null guard, and a
         # ``with_columns`` does not common-subexpression-eliminate.
