@@ -100,6 +100,43 @@ When adding a new exchange:
 - **Sphinx docs** (`docs/`) — primary reference. Deployed to Read the Docs. Contains narrative guides (`quickstart.rst`, `advanced.rst`), API references (`api/*.rst`), and ecosystem notes.
 - The `autofunction::` / `automodule::` directives pull signatures from docstrings — update the docstring, not a handwritten table in the README.
 
+### Describe the mechanism, and stop
+
+Docs state **what a thing does**. They do not tell a reader what to want. Three
+specific prohibitions, all of which have been violated in shipped docs:
+
+- **No performance claims in either direction.** Not "adds ~4ms", not "fast
+  enough", not "negligible overhead". Numbers go stale silently and are almost
+  never measured on the reader's shape of data. Benchmarks belong in
+  `scripts/bench_*.py`, where they are reproducible.
+- **No mode is labelled preferred, recommended, best, or discouraged.** Say what
+  each mode does and let the difference be the guidance. "Prefer `flatten=` in
+  new code" becomes "`flatten=` additionally accepts `"eow"` and a
+  `FlattenSchedule`, which `flatten_eod` cannot express".
+- **No application guidance and no worked strategy examples.** "Choose
+  `"weekly"` when you mean end of week" and "close the day trade at 15:00, take
+  a fresh swing entry at 15:45" both cross the line. This library computes; it
+  does not advise.
+
+The test for a passage is whether it would still be true if the reader's goals
+were the opposite of the ones you imagined. `block_entry_minutes_before_close=0`
+is the worked example: *"with `block_entry_minutes_before_close=0` no bar is
+blocked, so an entry signal after the flatten bar opens a position that carries
+to the next session"* says everything the old text said and recommends nothing.
+
+Written down here because it was previously enforced per-review and therefore
+inconsistently — two of the passages fixed in 0.16.1 predate the release that
+flagged them, which is what an unstated rule looks like.
+
+### CODEMAPs are anchored on symbols, never on line numbers
+
+`docs/CODEMAPS/*.md` names symbols and files. It does **not** carry `file.py:317`
+references. Line-anchored codemaps go stale on any commit that adds a line above
+the anchor, silently and without failing anything — it happened twice inside the
+0.16.0 cycle alone, the second time to numbers a mid-stack commit had just
+"refreshed". A symbol name is stable under exactly the edits that break a line
+number.
+
 ## Release Process
 
 1. Create PR with changes, including CHANGELOG.md update

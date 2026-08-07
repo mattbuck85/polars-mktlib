@@ -65,7 +65,7 @@ defined by the calendar.
 ``"eod"`` and ``True`` are :class:`FlattenSchedule` ``(days="daily")``;
 ``"eow"`` is ``(days="weekly")``. ``False`` and ``None`` disable flattening.
 
-Three things worth knowing before reaching for the offsets:
+How the offsets behave:
 
 **The offsets are wall-clock, not bar counts.** ``minutes_before_close=N``
 selects the last bar *starting at or before* ``close - N``. On a 15-minute
@@ -74,12 +74,10 @@ grid whose final bar starts at 15:45 against a 16:00 close, every ``N`` below
 own close, so an early-closing half-day needs no special-casing.
 
 **``block_entry_minutes_before_close`` defaults to ``minutes_before_close``.**
-Once the flatten bar moves off the session's last bar, in-session bars remain
-after it, and without a block window a fresh entry re-opens on one of them and
-carries overnight — the exact exposure an early flatten was meant to remove.
-Setting it to ``0`` explicitly is supported and coherent ("close the day trade
-at 15:00, take a fresh swing entry at 15:45"), but it reintroduces overnight
-exposure, so it has to be asked for.
+At that default every in-session bar at or after the flatten bar's cutoff is
+blocked, so no position can open after the flatten. With
+``block_entry_minutes_before_close=0`` no bar is blocked, so an entry signal
+after the flatten bar opens a position that carries to the next session.
 
 **A signal inside the block window is dropped, not deferred.** Deferring it
 would fill on the next session's open, hours stale. For an edge condition such
@@ -89,8 +87,8 @@ as :class:`Crossover`, which fires once, that means the signal is gone.
 each ISO week, which makes it holiday-aware for free: when Friday is a holiday,
 Thursday is the week's closing session and takes the flatten. An explicit
 ``days={Weekday.FRI}`` is deliberately literal — that same week does not flatten
-at all. Choose ``"weekly"`` when you mean "end of week" and the weekday set when
-you mean a particular weekday.
+at all. ``"weekly"`` selects the week's closing session; the weekday set selects
+those weekdays and nothing else.
 
 The distinction that matters for walk-forward work is that selection asks the
 *calendar*, not the data. If a week's closing session carries no bars, that week
@@ -110,8 +108,9 @@ are indistinguishable.
 .. note::
 
    ``flatten_eod=True`` remains fully supported and is exactly equivalent to
-   ``flatten="eod"``. Prefer ``flatten=`` in new code. Setting both raises
-   rather than picking a winner.
+   ``flatten="eod"``. ``flatten=`` additionally accepts ``"eow"`` and a
+   :class:`FlattenSchedule`, which ``flatten_eod`` cannot express. Setting both
+   raises rather than picking a winner.
 
 Transaction Costs
 ~~~~~~~~~~~~~~~~~
@@ -462,11 +461,18 @@ bracket is applied.
 
 .. note::
 
-   Under ``flatten_eod``, a re-signal on a session-last bar does not
-   re-anchor: the engine has already flattened the position at that bar's
-   open. With ``flatten_eod=False`` a re-signal on a session's last bar
-   anchors a ``float`` leg to the next session's opening price, so an
-   overnight gap carries the levels with it.
+   Under a flatten schedule, a re-signal on a **flatten bar** does not
+   re-anchor: the engine has already force-closed the position at that bar's
+   open. The signal is deferred to the next bar, where it opens a fresh
+   position and latches that position's own levels.
+
+   The gate is the flatten bar, not the session's last bar. They coincide
+   only at ``minutes_before_close=0``. With
+   ``FlattenSchedule(minutes_before_close=30)`` the flatten bar is 15:30 and
+   the session's last bar is 15:59, and a re-signal at 15:45 on a held
+   position re-anchors like any other. With no flatten, a re-signal on a
+   session's last bar anchors a ``float`` leg to the next session's opening
+   price, so an overnight gap carries the levels with it.
 
    An entry condition that is **level**-triggered rather than edge-triggered
    stays true on consecutive bars, so under ``anchor="signal"`` it re-latches
@@ -635,11 +641,11 @@ only the position-tracking / returns computation differs.
      - 0.009s
      - 2.8x faster
 
-Calendar filtering adds ~8ms for schedule-join market-hours masking.
-``flatten_eod`` adds ~4ms on top.
+Calendar filtering adds a schedule join for market-hours masking. A flatten
+schedule adds the mask construction on top of that join.
 
 .. note::
 
    Numba requires ahead-of-time compilation (~0.6s on first call, cached to disk
-   thereafter). The Polars engine is the best default — no extra dependencies and
-   competitive performance. Benchmark scripts live in ``scripts/bench_*.py``.
+   thereafter). The Polars engine requires no extra dependencies. Benchmark
+   scripts live in ``scripts/bench_*.py``.

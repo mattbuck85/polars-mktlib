@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.16.1
+
+### Fixed
+
+- **Limit-exit `returns` values change. Equity curves for strategies using a `Limit(...)` exit will move.** This is a patch release, so read this first.
+
+  `returns` booked **two** limit fills where `trades` booked **one**, on any bar where an entry signal and an exit signal fired together while a position was already open. `prod(1 + return)` over a trade's span did not equal that trade's `pnl`, so the same backtest reported two different results depending on which artifact you read — `mktlib.reports` reads `trades["pnl"]`, equity curves are built from `returns`.
+
+  The magnitude depends entirely on how often that bar shape occurs. On the frozen `limit_exit` fixture it is one bar in sixty and the equity curve moves **-12 bps** (-0.5134% -> -0.6333% total return); on a fixture built to maximise it, **~150 bps**. `trades` is unaffected — it was the correct view throughout, and is byte-identical.
+
+  The `_position` recurrence resolves an entry/exit collision **entry-first**, so the position survives such a bar. `_is_limit_exit_bar` was `_exit & (_pos_d1 == 1)`, which cannot tell an exit that closed the position from one the recurrence declined, so it fired on the shared bar *and* on the bar that actually closed the trade. It is now `_exit_clean & _exit` — "the exit is suppressed while held", which is what `trades` already implemented. `Cost` was charging commission and slippage on the phantom fill too.
+
+  The rule this encodes, now stated at the site: **every fill predicate in the return chain must be a function of the `_position` transition columns, not of raw `_exit`.** This was the only one that was not. `_limit_price` is narrowed by the same predicate and moves with it.
+
+  This is the third and last defect in the family `0.16.0` opened; the residual that release documented as "deliberately left for a separate change" is this one. The `limit_exit` frozen baseline is regenerated (`returns` and `signals`; `trades` byte-identical). `flatten_eod_limit` does **not** move — its fixture contains no such bar. (#78)
+
+- **`_align_tz` in `mktlib/backtest/_flatten.py` lacked the `convert_time_zone` branch**, so UTC-stamped bars against an `America/New_York` calendar raised `SchemaError` out of `join_asof` — pointing at the join rather than at the timezone mismatch that caused it.
+
+  A re-regression: `mktlib/scheduling/_mixins.py` already had the branch, and this exact `SchemaError` is recorded as fixed in `0.8.1` below. The `0.16.0` extraction of `_flatten.py` copied the **pre-fix** form. `_flatten.py` now **imports** the `_mixins` helper rather than keeping a second copy, and a test pins that the two names resolve to one function — the duplication is what let them drift, and patching the copy in place would have left that armed. (#84)
+
+### Changed
+
+- **The flatten schedule cache is keyed on calendar *value*, not `id()`.** `get_calendar("XNYS")` returns a new object on every call, so the identity key never hit across runs that construct their own calendar: `_schedule_cache` and its companion `_schedule_cache_pins` grew one entry per run, ~50 KB retained each over a ten-year range. An optimizer loop or a walk-forward building a calendar per fold leaked every fold.
+
+  `ExchangeCalendar.cache_key` is a new public property — a hashable tuple of every field `schedule()` reads, including holidays, ad-hoc closures, early closes and (on `ExchangeCalendarWithBreaks`) the lunch window, not just name and session times. Keying on it bounds the cache, removes the recycled-`id()` hazard, and deletes `_schedule_cache_pins` entirely. `_week_last_cache` had the same key and the same leak. (#82)
+
+### Documentation
+
+- **The bracket re-anchor guard is keyed on the flatten bar, not the session's last bar.** Docs said the latter in five places. The two are the same bar only at `minutes_before_close=0`; under an offset they separate, and a re-signal on a held session-last bar **does** re-anchor. The code was correct throughout — these statements described behaviour it does not have. `docs/CODEMAPS/backtest.md` additionally named `~_session_last`, a column `0.16.0` deleted. (#79)
+
+- **`docs/CODEMAPS/backtest.md` no longer carries line-number anchors.** They went stale twice inside the `0.16.0` cycle — the second time to numbers a mid-stack commit had just refreshed — because a line anchor breaks silently on any commit that adds a line above it. References are now symbol-anchored, and `CLAUDE.md` records the rule. (#80)
+
+- **`docs/api/backtest.rst` editorialised where the rule is mechanism-only.** Removed a preferred-mode label, application guidance, a worked strategy example, and two stale performance claims (one naming a parameter that no longer exists). The rule itself was written down **nowhere** before now — which is why two of the flagged passages predate the release that flagged them. It is now in `CLAUDE.md`. (#81)
+
+### Testing
+
+- **End-to-end coverage of an offset flatten schedule combined with `Bracket(anchor="signal")`** — the one configuration where the `0.16.0` flatten/anchor interaction is numerically observable, and the one with no `run()`-level test. Under legacy `flatten_eod` the flatten bar *is* the session's last bar, so every prior fixture was blind to the distinction: an implementation gating on the session's last bar reproduced every frozen artifact in the repo. Measured by mutation — before, one test caught that substitution, and it asserted on an internal column no numeric output reads; after, nine do. Adds the `bracket_anchor_flatten_offset` frozen scenario. (#83)
+
+- **CI now runs on pull requests targeting any branch**, not only `main`. A PR opened against another branch received no CI at all, and retargeting it fires `edited`, which does not dispatch either — so a 3844-line fill-simulation PR reached the merge queue during `0.16.0` never having been exercised. (#85)
+
 ## 0.16.0
 
 ### Added
@@ -18,7 +58,7 @@
   ))
   ```
 
-  `flatten_eod=True` **remains fully supported** and is exactly equivalent to `flatten="eod"`; no existing call site changes and every frozen golden baseline is untouched. Setting both raises rather than picking a winner.
+  `flatten_eod=True` **remains fully supported** and is exactly equivalent to `flatten="eod"`; no existing call site changes, and **this feature** touches no frozen golden baseline. (The limit-exit fixes further down do regenerate two of them — see *Fixed*.) Setting both raises rather than picking a winner.
 
   Splitting the forced exit from the entry block is what the single session-last bar could not express. "Close the day trade at 15:00 but let a fresh swing entry in at 15:45" and "stop opening at 15:30 but let winners run to the close" are now separate, sayable configurations.
 
@@ -40,7 +80,7 @@
 
   A re-signal on bar `k` is observed at that bar's close, so the level in force *during* bar `k` is still the previous one and the new level applies from `k + 1`. A `float` leg re-anchors to `open[k + 1]` — the price a fresh entry on that signal would itself have filled at, by the engine's existing fill-at-next-open rule, so no second price model is introduced — and a `str` leg re-reads its column on bar `k`. A leg tagged on bar `k` therefore closes the position before the re-anchor takes effect.
 
-  Re-anchoring moves the levels and nothing else. The position opened once, so trade P&L still measures from the original entry fill; a re-signal never re-opens or extends a block, because block boundaries are fixed before the bracket is applied; and `EntryRef` snapshots are unaffected under either policy. Under `flatten_eod` a re-signal on a session-last bar does not re-anchor — the position is already flattened at that bar's open — while with `flatten_eod=False` it anchors a `float` leg to the next session's opening price, carrying the levels across the overnight gap.
+  Re-anchoring moves the levels and nothing else. The position opened once, so trade P&L still measures from the original entry fill; a re-signal never re-opens or extends a block, because block boundaries are fixed before the bracket is applied; and `EntryRef` snapshots are unaffected under either policy. Under a flatten schedule a re-signal on a **flatten bar** does not re-anchor — the position is already force-closed at that bar's open — while with no flatten it anchors a `float` leg to the next session's opening price, carrying the levels across the overnight gap. The gate is the flatten bar, not the session's last bar; the two coincide only at `minutes_before_close=0`.
 
   An entry condition that is **level**-triggered rather than edge-triggered stays true on consecutive bars, so under `anchor="signal"` it re-latches on every one of them and the bracket becomes a trailing one. That is the same edge-versus-level distinction 0.14.0 identified for `EntryRef`. And like `both_touch`, `anchor` is a stated assumption about the execution model rather than something OHLC can measure: an execution layer that submits the bracket once and leaves it is `anchor="position"`, and reproducing `anchor="signal"` live requires one that moves the resting orders.
 
@@ -62,7 +102,7 @@
 
 - **The schedule cache is keyed on calendar identity, not name.** Two `ExchangeCalendar` objects sharing a name and differing in `close_time` collided, and the second silently reused the first's schedule. Pre-existing, but sharper now that `market_close` sets the `minutes_before_close` cutoff and the block window as well as the session-last bar.
 
-- **`docs/CODEMAPS/backtest.md` line references refreshed.** Several were 200+ lines stale — `run()` was listed at `_engine.py:279` against an actual `:939`.
+- **`docs/CODEMAPS/backtest.md` line references refreshed.** Several were 200+ lines stale — `run()` was listed at `_engine.py:279` against an actual `:939`. (This refresh landed mid-stack and was stale again by release; 0.16.1 removes the line anchors instead.)
 
 ### Fixed
 
@@ -76,7 +116,7 @@
 
 Both defects predate the current release and were found by code review. Three tests in `tests/backtest/test_limit_exit.py` asserted the wrong values and have been corrected — `test_tp_hit_long_fills_at_limit_same_bar` asserted the *correct* base for `pnl` and the *incorrect* base for `returns` in the same test, and passed only because the engine disagreed with itself the same way. `test_short_side_tp_via_value_lte` needed its fixture repaired as well: the short's take-profit sat above its entry fill, so covering there was a loss, and it read as a gain only because of the defect being fixed.
 
-The `limit_exit` and `flatten_eod_limit` frozen baselines are regenerated — they had frozen the wrong values. 4 of 60 and 4 of 78 return rows change respectively; `trades` is byte-unchanged in both. Under a per-trade reconciliation of `prod(1 + return)` against `pnl`, `limit_exit` improves from 5 of 6 trades failing to 1, and `flatten_eod_limit` from 4 of 6 to 0. No other scenario is touched.
+The `limit_exit` and `flatten_eod_limit` frozen baselines are regenerated — they had frozen the wrong values. 4 of 60 and 4 of 78 return rows change respectively; `trades` is **value**-unchanged in both — 0 cell diffs, 6x5 in each — though the parquet bytes move (1861->1883 and 1989->2013), so `git diff --stat` shows three changed files per scenario rather than two. Under a per-trade reconciliation of `prod(1 + return)` against `pnl`, `limit_exit` improves from 5 of 6 trades failing to 1, and `flatten_eod_limit` from 4 of 6 to 0. No other scenario is touched.
 
 **Known residual, not fixed here.** `limit_exit` trade 5 still fails that reconciliation, identically before and after this change. Its inner exit condition is true on two consecutive bars while the position is open, so `_is_limit_exit_bar` holds on both and the returns series books two limit fills where the trade log books one. That is a third, independent defect with its own semantics question — what a bar on which entry *and* exit both fire should do mid-limit-trade — and it is deliberately left for a separate change rather than guessed at here.
 
