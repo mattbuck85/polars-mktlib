@@ -260,6 +260,48 @@ class TestTheGuardDoesNotOverRefuse:
         assert rets[5] == pytest.approx(expected, abs=1e-12)
         assert _reconcile(result) == pytest.approx([0.0], abs=1e-12)
 
+    def test_a_limit_on_the_entry_fill_bar_still_fills(self) -> None:
+        """The other same-bar branch: ``_is_limit_exit_bar & _is_entry_bar``.
+
+        A limit tagged on the very bar the entry filled is measured from that
+        bar's ``open`` rather than from the previous close, and pays two fills.
+        The branch is reachable only when the predicate is true on a bar that
+        is also the entry bar, so a narrowing that added ``& ~_is_entry_bar``
+        — a plausible reading of "suppress the exit where an entry is
+        involved" — would silently delete it while passing every other test in
+        this file.
+        """
+        n = 6
+        closes = [100.0 + 0.5 * i for i in range(n)]
+        opens = [c - 0.2 for c in closes]
+        tp = [999.0] * n
+        tp[2] = 101.2  # open[2] = 100.8, high[2] = 101.4 — tagged inside the bar
+        df = pl.DataFrame({
+            "date": [
+                datetime.datetime(2024, 1, 2, 9, 30)
+                + datetime.timedelta(minutes=15 * i)
+                for i in range(n)
+            ],
+            "open": opens,
+            "high": [c + 0.4 for c in closes],
+            "low": [c - 0.6 for c in closes],
+            "close": closes,
+            "fast": [1.0] + [3.0] * (n - 1),
+            "slow": [2.0] * n,
+            "tp": tp,
+        })
+        result = run(df, _CrossEntryTakeProfit())
+
+        # Bar 2 is the entry FILL bar: the signal fired on bar 1, so the
+        # position opened at bar 2's open and closed inside the same bar.
+        assert result.trades.height == 1
+        assert result.trades["bars_held"][0] == 0  # opened and closed in one bar
+
+        rets = result.returns["return"].to_list()
+        expected = (tp[2] - opens[2]) / opens[2]
+        assert rets[2] == pytest.approx(expected, abs=1e-12)
+        assert _reconcile(result) == pytest.approx([0.0], abs=1e-12)
+
 
 class TestBracketWithLimitStaysRefused:
     def test_bracket_plus_limit_exit_raises(self) -> None:
@@ -276,7 +318,13 @@ class TestBracketWithLimitStaysRefused:
         test is what fails, rather than the bracket silently changing which
         bars a limit fills on.
         """
-        with pytest.raises(NotImplementedError, match="not supported together"):
+        # Matched on the Limit-specific clause, not on "not supported
+        # together" — that phrase also opens `_DUAL_BRACKET_MSG`, so the
+        # looser pattern could be satisfied by the dual-path refusal instead
+        # of the one this test exists to pin.
+        with pytest.raises(
+            NotImplementedError, match=r"Limit\(\.\.\.\) exit condition"
+        ):
             run(
                 _daily_frame(),
                 _LimitTakeProfitStrategy(),
