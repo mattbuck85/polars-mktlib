@@ -6,7 +6,9 @@ Signal-driven backtesting with fill-at-next-open semantics, exchange calendar in
 
 | Export | Source | Description |
 |-|-|-|
-| `run(df, strategy, *, trade_side, calendar, flatten_eod, instrument_col)` | `_engine.py:279` | Run vectorized backtest; returns `BacktestResult` or `MultiBacktestResult` |
+| `run(df, strategy, *, trade_side, calendar, flatten, flatten_eod, instrument_col)` | `_engine.py:939` | Run vectorized backtest; returns `BacktestResult` or `MultiBacktestResult`. Five `@overload` stubs at `:862`–`:924` discriminate the return type |
+| `FlattenSchedule` | `_flatten.py:76` | Frozen dataclass: when positions are force-closed (`days`, `minutes_before_close`, `block_entry_minutes_before_close`) |
+| `Weekday` | `_flatten.py:36` | ISO IntEnum: `MON=1` … `SUN=7`, matching `dt.weekday()` / `date.isoweekday()` |
 | `Cost` | `_cost.py:47` | Frozen dataclass: per-side transaction cost in basis points (`commission_bps`, `slippage_bps`, `slippage_col`) |
 | `Bracket` | `_bracket.py:117` | Frozen dataclass: protective TP/SL resting against every position (`take_profit`, `stop_loss`, `both_touch`, `anchor`) |
 | `Strategy` | `_types.py:28` | Protocol: `entry() -> Condition \| pl.Expr`, `exit() -> Condition \| pl.Expr` |
@@ -30,7 +32,7 @@ Signal-driven backtesting with fill-at-next-open semantics, exchange calendar in
 
 ## Engine (`_engine.py`)
 
-### `run()` — L279
+### `run()` — L939 (overloads L862–L924)
 
 Dispatches to `_run_core` (single-symbol) or `_run_multi` (multi-symbol via `instrument_col`).
 
@@ -38,7 +40,7 @@ Dispatches to `_run_core` (single-symbol) or `_run_multi` (multi-symbol via `ins
 
 **`init()` hook**: If the strategy defines `init(self, df) -> pl.DataFrame`, it is called before signal evaluation (L95–97) to enrich the DataFrame with indicator columns.
 
-### `_run_core()` — L121
+### `_run_core()` — L315
 
 Single-symbol backtest pipeline:
 1. Call `strategy.init(df)` if defined
@@ -82,7 +84,7 @@ Fill table (mirrors a conventional event-driven OHLC broker: a long bracket is a
 | short | TP | `low <= tp` | `min(open, tp)` |
 | short | SL | `high >= sl` | `max(open, sl)` |
 
-`_apply_bracket` (`_engine.py`) latches the entry fill price and a per-position `_bracket_block` id, computes both legs' levels, masks triggers to `_pos_d1 == 1` (so the bracket is armed **from the entry fill bar**, and — under `flatten_eod` — never on a session-last bar, where the engine already flattened at the open), keeps only the first trigger per block via `cum_sum().over(block) == 1`, and redirects `_exit_clean` to the bracket bar. `_position` is left inconsistent, exactly as the `Limit` path does; the return expression (`_with_bracket`) and `_extract_trades` carry the truth. Bars after the bracket bar in the same block return `0.0` — **a bracketed block never re-enters**, which is a deliberate divergence from live.
+`_apply_bracket` (`_engine.py`) latches the entry fill price and a per-position `_bracket_block` id, computes both legs' levels, masks triggers to `_pos_d1 == 1` (so the bracket is armed **from the entry fill bar**, and — when flattening — never on a flatten bar, where the engine already flattened at the open), keeps only the first trigger per block via `cum_sum().over(block) == 1`, and redirects `_exit_clean` to the bracket bar. `_position` is left inconsistent, exactly as the `Limit` path does; the return expression (`_with_bracket`) and `_extract_trades` carry the truth. Bars after the bracket bar in the same block return `0.0` — **a bracketed block never re-enters**, which is a deliberate divergence from live.
 
 `both_touch` defaults to `"stop_first"`, which **diverges from submission-order OCO on purpose**: a live bracket is commonly an OCO pair whose TP leg is submitted before the SL leg and filled in submission order, so the realized policy on a both-touch bar is `take_profit_first`. Pinned by `test_default_policy_diverges_from_submission_order_oco`.
 
@@ -112,22 +114,40 @@ Backward compatibility: `bracket=None` takes a byte-for-byte unchanged code path
 - Middle bars: `close / prev_close - 1`
 - Exit bar: `(open - prev_close) / prev_close`
 
-### `_run_multi()` — L223
+### `_run_multi()` — L746
 
 Multi-symbol backtest: partitions by `instrument_col`, runs `_run_core` per partition, wraps results in `MultiBacktestResult`.
 
-### `flatten_eod` behavior — L115
+### Flatten behavior — `_engine.py:382`
 
-When `flatten_eod=True` (requires `calendar`):
-- Entries on session-last bars deferred to next session's first bar (L118–123)
-- Position forced to 0 at session-last bar
-- Session-forced exits fill at session-last bar's `open` (not next session's open)
+When a flatten schedule resolves (requires `calendar`):
+- Entries on the flatten bar are deferred to the next bar (`:388`–`:392`)
+- Entries inside the block window are then dropped (`:401`–`:405`) — **after** the deferral, so the deferral cannot write into the window it just cleared
+- `_position` is forced to 0 on the flatten bar, structurally (`:432`–`:440`)
+- Session-forced exits fill at the flatten bar's own `open`, not the next bar's
+- The bar after a flatten bar returns `0.0` unconditionally (`:620`–`:642`)
 
-### `_build_session_last_mask()` — L55
+`run()` accepts `flatten=` (`None | bool | "eod" | "eow" | FlattenSchedule`) and the legacy `flatten_eod: bool`. `resolve_flatten()` (`_flatten.py:188`) collapses the two; setting both raises.
 
-Detects session-last bar from actual data (not fixed offset), so it works for any candle size (1min, 5min, 15min, …). Groups by session via `join_asof` on `market_open`, takes `max(date)` per session.
+### `mktlib/backtest/_flatten.py` — everything that knows what a *day* is
 
-### `_extract_trades()` — L368
+The engine consumes two boolean masks and never mentions a calendar concept. That is what keeps the compiled resolver out of scope: `mktlib-scan` takes the flatten mask as `Option<&[bool]>`, so changing *when* a position is force-closed never touches the FFI contract, and entry blocking never reaches it at all (`_entry` is zeroed upstream).
+
+| Symbol | Line | Notes |
+|-|-|-|
+| `FLATTEN_BAR_COLUMN` | `:32` | `"_flatten_bar"`; dropped before `run()` returns, so it appears in no golden parquet |
+| `Weekday` | `:36` | ISO 1–7 |
+| `FlattenSchedule` | `:76` | `__post_init__` normalizes `days` to `frozenset[Weekday]` (a bare `set` would leave the frozen dataclass unhashable) and canonicalizes `block_entry_minutes_before_close` to an int |
+| `resolve_flatten()` | `:188` | `flatten=` / `flatten_eod=` → one schedule or `None` |
+| `_WEEK_KEY` | `:262` | ISO Monday as an epoch-day int: `date.cast(Int32) - (weekday - 1)`. Not `year*100+week` (wrong every Dec/Jan) and not `dt.truncate("1w")` (epoch-anchored on a Thursday) |
+| `_week_closing_sessions()` | `:319` | `calendar.valid_days()` over whole ISO weeks -> the session the exchange closes each week on. Cached per calendar identity |
+| `_flatten_sessions()` | `:346` | Restricts to the sessions the schedule flattens. Every branch selects on a property of the session **alone**, so slicing the frame cannot relocate a flatten bar |
+| `_warn_weekly_gaps()` | `:371` | Reports an *interior* week whose closing session has no bars. A trailing one is indistinguishable from data legitimately ending mid-week, so it is not reported |
+| `build_flatten_masks()` | `:302` | Returns `(flatten_bar, entry_blocked)`. Both offsets are provable no-ops at 0: `date <= close - 0` collapses into the existing `date < close`, and `date >= close - 0` is empty by construction |
+
+Day selection keys off `calendar.schedule()`'s own `date` column — the *trading day* — not off `market_open`, which lands on the previous calendar date on any exchange with a negative open offset (CME Globex, FX).
+
+### `_extract_trades()` — L1139
 
 Pairs entry/exit transitions by ordinal position. Entry fills use `open.shift(-1)`. Exit fills use `open.shift(-1)` normally, or `open` (current bar) for session-forced exits.
 
@@ -135,11 +155,17 @@ Output schema: `(entry_date, exit_date, pnl, bars_held)`.
 
 ### Calendar helpers
 
+These moved out of `_engine.py` into `_flatten.py`, so the engine holds no
+calendar concept of its own.
+
 | Function | Line | Purpose |
 |-|-|-|
-| `_get_schedule` | L45 | Get schedule for date range from calendar |
-| `_build_session_last_mask` | L55 | Boolean mask: bar is last bar of session (data-driven) |
-| `_align_tz` | L27 | Match timezone between two series |
+| `_get_schedule` | `_flatten.py:59` | Cached `calendar.schedule()` for the bar range |
+| `build_flatten_masks` | `_flatten.py:302` | `(flatten_bar, entry_blocked)` boolean masks (data-driven, any candle size) |
+| `_align_tz` | `_flatten.py:42` | Match timezone between two series |
+
+Note: `mktlib/scheduling/_mixins.py:38` holds a **separate** `_align_tz`; that
+is the one `tests/scheduling/test_align_tz.py` covers.
 
 ## Types (`_types.py`)
 
@@ -187,7 +213,7 @@ Benchmarked on MACD crossover, 491K minute bars (5yr synthetic data). Signal res
 | Python for-loop | 0.206s | 8.2x slower |
 | Numba JIT (warm) | 0.009s | 2.8x faster |
 
-Calendar filtering adds ~8ms (schedule join). `flatten_eod` adds ~4ms.
+Calendar filtering adds ~8ms (schedule join). Flattening adds ~4ms.
 
 Benchmark scripts: `scripts/bench_macd_market.py`, `scripts/bench_single_pass.py`, `scripts/bench_pandas.py`, `scripts/bench_numpy.py`.
 

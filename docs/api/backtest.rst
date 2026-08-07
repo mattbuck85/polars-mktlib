@@ -14,7 +14,7 @@ The engine runs a signal-driven backtest where:
 - A **Strategy** defines ``entry()`` and ``exit()`` methods returning composable **Conditions**
 - Conditions resolve to boolean Polars expressions evaluated over the full DataFrame
 - Fills use **next-bar-open** semantics: signal at bar *t* → market order fills at bar *t+1*'s open
-- Optional **calendar** filters to market hours; ``flatten_eod=True`` force-closes positions at session end
+- Optional **calendar** filters to market hours; ``flatten=...`` force-closes positions on a schedule
 
 Return Model
 ~~~~~~~~~~~~
@@ -30,7 +30,7 @@ Return Model
      - ``close / prev_close - 1``
    * - Exit bar
      - ``(open - prev_close) / prev_close``
-   * - Session-forced exit (``flatten_eod``)
+   * - Session-forced exit (``flatten=...``)
      - ``(open - prev_close) / prev_close`` for held positions; ``0`` for same-bar entry+exit
    * - Bracket exit bar (``bracket=Bracket(...)``)
      - ``(bracket_fill - prev_close) / prev_close``; ``(bracket_fill - open) / open`` when the bracket closes the position on the bar it opened
@@ -38,6 +38,80 @@ Return Model
      - ``0`` — the position is closed and does not re-open within the block
    * - Any fill bar, with ``cost=Cost(...)``
      - the formula above, minus ``cost_bps / 1e4`` (holding bars unchanged; a bracket exit on the entry bar pays twice, since two fills land there)
+
+Flatten Schedules
+~~~~~~~~~~~~~~~~~
+
+Pass ``flatten=...`` to :func:`run` to force-close open positions on a
+schedule. Requires a *calendar* — sessions, and therefore session closes, are
+defined by the calendar.
+
+.. code-block:: python
+
+   from mktlib.backtest import FlattenSchedule, Weekday, run
+   from mktlib.scheduling import get_calendar
+
+   cal = get_calendar("XNYS")
+
+   run(df, strat, calendar=cal, flatten="eod")   # every session's last bar
+   run(df, strat, calendar=cal, flatten="eow")   # last session of each week
+
+   run(df, strat, calendar=cal, flatten=FlattenSchedule(
+       days={Weekday.FRI},
+       minutes_before_close=30,             # flatten at 15:30
+       block_entry_minutes_before_close=60, # open nothing after 15:00
+   ))
+
+``"eod"`` and ``True`` are :class:`FlattenSchedule` ``(days="daily")``;
+``"eow"`` is ``(days="weekly")``. ``False`` and ``None`` disable flattening.
+
+Three things worth knowing before reaching for the offsets:
+
+**The offsets are wall-clock, not bar counts.** ``minutes_before_close=N``
+selects the last bar *starting at or before* ``close - N``. On a 15-minute
+grid whose final bar starts at 15:45 against a 16:00 close, every ``N`` below
+15 resolves to that same bar. Both offsets are measured against each session's
+own close, so an early-closing half-day needs no special-casing.
+
+**``block_entry_minutes_before_close`` defaults to ``minutes_before_close``.**
+Once the flatten bar moves off the session's last bar, in-session bars remain
+after it, and without a block window a fresh entry re-opens on one of them and
+carries overnight — the exact exposure an early flatten was meant to remove.
+Setting it to ``0`` explicitly is supported and coherent ("close the day trade
+at 15:00, take a fresh swing entry at 15:45"), but it reintroduces overnight
+exposure, so it has to be asked for.
+
+**A signal inside the block window is dropped, not deferred.** Deferring it
+would fill on the next session's open, hours stale. For an edge condition such
+as :class:`Crossover`, which fires once, that means the signal is gone.
+
+``days="weekly"`` selects the session on which the **exchange calendar** closes
+each ISO week, which makes it holiday-aware for free: when Friday is a holiday,
+Thursday is the week's closing session and takes the flatten. An explicit
+``days={Weekday.FRI}`` is deliberately literal — that same week does not flatten
+at all. Choose ``"weekly"`` when you mean "end of week" and the weekday set when
+you mean a particular weekday.
+
+The distinction that matters for walk-forward work is that selection asks the
+*calendar*, not the data. If a week's closing session carries no bars, that week
+is not flattened — the flatten does not fall back to whatever bar happens to be
+last. Otherwise a fold ending on a Wednesday would flatten there while the
+pooled run over the same bars would not, and the two would disagree over
+identical inputs. An interior gap of that kind is logged at ``WARNING``; a frame
+that simply ends mid-week is not, because from inside the engine the two cases
+are indistinguishable.
+
+.. autoclass:: mktlib.backtest.FlattenSchedule
+   :members:
+
+.. autoclass:: mktlib.backtest.Weekday
+   :members:
+
+.. note::
+
+   ``flatten_eod=True`` remains fully supported and is exactly equivalent to
+   ``flatten="eod"``. Prefer ``flatten=`` in new code. Setting both raises
+   rather than picking a winner.
 
 Transaction Costs
 ~~~~~~~~~~~~~~~~~

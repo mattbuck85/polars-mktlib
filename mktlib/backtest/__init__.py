@@ -32,6 +32,7 @@ from mktlib.backtest._backend import (
 from mktlib.backtest._artifact import combined_strategy_artifact, register_alias, strategy_artifact
 from mktlib.backtest._bracket import Bracket
 from mktlib.backtest._cost import Cost
+from mktlib.backtest._flatten import FlattenSchedule, Weekday
 from mktlib.backtest._engine import run
 from mktlib.backtest._types import BacktestResult, InitStrategy, MultiBacktestResult, Strategy, TradeSide
 from mktlib.backtest._weights import (
@@ -57,6 +58,7 @@ __all__ = [
     "Crossunder",
     "Custom",
     "EntryRef",
+    "FlattenSchedule",
     "INSTRUMENT_COLUMN",
     "get_scan_backend",
     "InitStrategy",
@@ -79,6 +81,7 @@ __all__ = [
     "ValueGTE",
     "ValueLT",
     "ValueLTE",
+    "Weekday",
     "WEIGHT_COLUMN",
     "register_alias",
     "run",

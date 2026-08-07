@@ -47,7 +47,14 @@ With exchange calendar and session-boundary management:
    cal = get_calendar("NYSE")
 
    # Filter to market hours, force-close at session end
-   result = run(df, SmaCross(), calendar=cal, flatten_eod=True)
+   result = run(df, SmaCross(), calendar=cal, flatten="eod")
+
+   # Or hold through the week and flatten only on the last session of it
+   result = run(df, SmaCross(), calendar=cal, flatten="eow")
+
+See :doc:`api/backtest` for :class:`~mktlib.backtest.FlattenSchedule`, which
+also controls how many minutes before the close to flatten and to stop opening
+new positions.
 
 Conditions compose with ``&``, ``|``, ``~``:
 
