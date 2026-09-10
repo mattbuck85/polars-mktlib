@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Golden baseline tests compare float columns with `rtol=1e-12, atol=1e-15` instead of exact equality, so ulp-level arithmetic drift across polars releases no longer fails the suite while any real change still does (#93).
+
 ## 0.16.2
 
 ### Data
