@@ -66,6 +66,18 @@ def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
     return target
 
 
+# Names of the columns ``filter_market_hours`` adds to the caller's frame and
+# joins the schedule onto. They are prefixed because a caller column of the
+# same name silently breaks the filter: ``join`` suffixes the *incoming*
+# column, so the mask reads the caller's data instead of the schedule's and
+# the predicate compares against something unrelated -- a frame carrying a
+# plausible name like ``_upper`` returned zero rows on the default path.
+# Anything the caller is holding under these names is a deliberate collision.
+_BAR_DATE = "__fmh_bar_date"
+_OPEN = "__fmh_open"
+_UPPER = "__fmh_upper"
+
+
 def _ensure_aware(dt: datetime, tz: ZoneInfo) -> datetime:
     """Ensure *dt* is timezone-aware in the given tz."""
     if dt.tzinfo is None:
@@ -279,6 +291,15 @@ class TradingHelperMixin:
         inside the final minute is labelled after that bound and is dropped
         even when it ends at or before the close; *end_column* is what
         makes those rows survive.
+
+        A row whose *end_column* value is **null** is dropped, because
+        ``null <= market_close`` is null and a null mask entry does not
+        select. A bar with no known end is therefore not asserted to be
+        in-session.
+
+        Columns named ``__fmh_bar_date``, ``__fmh_open`` and ``__fmh_upper``
+        are used internally on the caller's frame and must not be present in
+        *df*.
         """
         dates = df[date_column]
         if df.is_empty():
@@ -315,32 +336,30 @@ class TradingHelperMixin:
             if end_column is not None
             else pl.col("market_close") - pl.duration(minutes=1)
         )
-        sched = sched.with_columns(upper_bound.alias("_upper_bound"))
+        sched = sched.with_columns(upper_bound.alias(_UPPER))
 
         # Build join key: bar date (Date) to match schedule's date column
         dates_df = df.with_columns(
-            pl.col(date_column).dt.date().alias("_bar_date"),
+            pl.col(date_column).dt.date().alias(_BAR_DATE),
         )
 
         # Prepare schedule columns with tz aligned to bar timestamps. The
         # upper bound is aligned to the column it is compared against, which
         # is not necessarily the label column.
         sched_join = sched.select(
-            pl.col("date").alias("_bar_date"),
-            _align_tz(sched["market_open"], dates).alias("_mkt_open"),
-            _align_tz(sched["_upper_bound"], df[upper_column]).alias(
-                "_upper"
-            ),
+            pl.col("date").alias(_BAR_DATE),
+            _align_tz(sched["market_open"], dates).alias(_OPEN),
+            _align_tz(sched[_UPPER], df[upper_column]).alias(_UPPER),
         )
 
-        joined = dates_df.join(sched_join, on="_bar_date", how="left")
+        joined = dates_df.join(sched_join, on=_BAR_DATE, how="left")
 
         # Bar is valid if it opens at or after the open and its bounded
         # column is at or before the upper bound.
         mask = (
-            joined["_mkt_open"].is_not_null()
-            & (joined[date_column] >= joined["_mkt_open"])
-            & (joined[upper_column] <= joined["_upper"])
+            joined[_OPEN].is_not_null()
+            & (joined[date_column] >= joined[_OPEN])
+            & (joined[upper_column] <= joined[_UPPER])
         )
 
         return df.filter(mask)

@@ -146,6 +146,13 @@ class BreakMixin:
         (see :meth:`TradingHelperMixin.filter_market_hours`); the lunch-break
         exclusion below is unaffected by it, so a bar sitting inside the
         break is still dropped however it is labelled.
+
+        The exclusion tests the bar's **label**, so a bar that opens before
+        ``break_start`` and closes after ``break_end`` — one that *straddles*
+        the break — is **kept**, and carries break-period activity into the
+        session. That is the contract on both paths, and it is reachable only
+        with variable-duration bars: a fixed-width minute bar cannot span a
+        60-minute break, so no fixed-width frame can produce such a row.
         """
         filtered = cast(
             "_BreakCalendarProtocol", super()

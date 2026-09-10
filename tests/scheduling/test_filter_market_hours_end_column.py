@@ -161,3 +161,112 @@ class TestEndColumn:
         assert spans[3][0] in kept
         assert spans[4][0] in kept, "closing bar must be retained via end_column"
         assert result.height == 3
+
+
+class TestCallerColumnCollision:
+    """A caller column must never collide with the filter's internals.
+
+    ``filter_market_hours`` adds a join key to the caller's frame and joins
+    schedule columns onto it. If the caller already carries a column of the
+    same name, Polars suffixes the *incoming* one, so the mask reads the
+    caller's column instead of the schedule's and the predicate silently
+    compares against unrelated data. The internals are therefore prefixed
+    ``__fmh_``, which is why these names are safe to hold.
+    """
+
+    @pytest.mark.parametrize(
+        "colliding", ["_upper", "_mkt_open", "_bar_date", "_last_min", "_upper_bound"]
+    )
+    def test_a_caller_column_named_like_an_internal_is_ignored(
+        self, nyse: ExchangeCalendar, colliding: str
+    ):
+        """The default path must return the same rows whatever the extra column."""
+        bars = [
+            datetime(2024, 1, 2, 8, 0, tzinfo=NY),  # pre-market
+            datetime(2024, 1, 2, 10, 0, tzinfo=NY),  # in session
+            datetime(2024, 1, 2, 17, 0, tzinfo=NY),  # post-market
+        ]
+        clean = pl.DataFrame({"date": bars})
+        collided = clean.with_columns(pl.lit("x").alias(colliding))
+
+        expected = nyse.filter_market_hours(clean)
+        result = nyse.filter_market_hours(collided)
+
+        assert result.height == expected.height == 1
+        assert result["date"].to_list() == expected["date"].to_list()
+        assert colliding in result.columns
+
+    @pytest.mark.parametrize("colliding", ["_upper", "_mkt_open", "_bar_date"])
+    def test_a_caller_column_named_like_an_internal_is_ignored_with_end_column(
+        self, nyse: ExchangeCalendar, colliding: str
+    ):
+        """Same guarantee on the ``end_column`` path."""
+        spans = [
+            (datetime(2024, 1, 2, 10, 0, 0, tzinfo=NY), datetime(2024, 1, 2, 10, 0, 30, tzinfo=NY)),
+            (datetime(2024, 1, 2, 15, 59, 50, tzinfo=NY), datetime(2024, 1, 2, 16, 0, 0, tzinfo=NY)),
+            (datetime(2024, 1, 2, 17, 0, 0, tzinfo=NY), datetime(2024, 1, 2, 17, 0, 30, tzinfo=NY)),
+        ]
+        clean = _bars(spans)
+        collided = clean.with_columns(pl.lit("x").alias(colliding))
+
+        expected = clean.pipe(lambda d: nyse.filter_market_hours(d, end_column="end"))
+        result = nyse.filter_market_hours(collided, end_column="end")
+
+        assert result.height == expected.height == 2
+        assert result["date"].to_list() == expected["date"].to_list()
+
+
+class TestStraddlingAndNullEnds:
+    def test_a_bar_straddling_the_lunch_break_is_kept(
+        self, jpx: ExchangeCalendarWithBreaks
+    ):
+        """A bar that opens before the break and closes after it is KEPT.
+
+        This is the documented contract, not an accident, and it is reachable
+        only with variable-duration bars: a fixed-width minute bar cannot
+        span JPX's 60-minute break, so the label-based break test never had
+        to decide the case. Such a bar carries break-period activity into the
+        session. Both the default and the ``end_column`` path keep it, since
+        the break exclusion tests the *label*, which sits in the morning.
+        """
+        spans = [
+            # opens 11:00 (morning), closes 13:00 (afternoon) -- straddles
+            (datetime(2024, 1, 4, 11, 0, 0, tzinfo=TOKYO), datetime(2024, 1, 4, 13, 0, 0, tzinfo=TOKYO)),
+            # squarely inside the break, for contrast: dropped
+            (datetime(2024, 1, 4, 11, 45, 0, tzinfo=TOKYO), datetime(2024, 1, 4, 11, 50, 0, tzinfo=TOKYO)),
+        ]
+        df = _bars(spans)
+
+        with_end = jpx.filter_market_hours(df, end_column="end")
+        assert with_end["date"].to_list() == [spans[0][0]]
+
+        default = jpx.filter_market_hours(df)
+        assert default["date"].to_list() == [spans[0][0]]
+
+    def test_a_row_whose_end_is_null_is_dropped(self, nyse: ExchangeCalendar):
+        """A null in *end_column* drops the row rather than keeping it.
+
+        ``null <= close`` is null, so the mask is null and the row is
+        filtered out. That is the safe direction -- an unbounded bar is not
+        asserted to be in-session -- but it is silent, so it is pinned here.
+        """
+        df = pl.DataFrame(
+            {
+                "date": [
+                    datetime(2024, 1, 2, 10, 0, tzinfo=NY),
+                    datetime(2024, 1, 2, 11, 0, tzinfo=NY),
+                ],
+                "end": [
+                    datetime(2024, 1, 2, 10, 0, 30, tzinfo=NY),
+                    None,
+                ],
+            },
+            schema={
+                "date": pl.Datetime("us", "America/New_York"),
+                "end": pl.Datetime("us", "America/New_York"),
+            },
+        )
+
+        result = nyse.filter_market_hours(df, end_column="end")
+        assert result.height == 1
+        assert result["date"].to_list() == [datetime(2024, 1, 2, 10, 0, tzinfo=NY)]
