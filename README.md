@@ -214,7 +214,7 @@ register_exchange("XICE", lambda: cal, aliases=["Iceland"])
 | `previous_open(dt)` | `datetime` | Previous market open |
 | `previous_close(dt)` | `datetime` | Previous market close |
 | `minute_to_session(dt)` | `date \| None` | Session containing datetime |
-| `filter_market_hours(df, date_column)` | `pl.DataFrame` | Filter rows to market hours |
+| `filter_market_hours(df, date_column, *, end_column)` | `pl.DataFrame` | Filter rows to market hours; `end_column` bounds bars by their end |
 | `trading_index(start, end, period, closed)` | `pl.Series` | Intraday timestamp index |
 
 All date parameters accept `date` objects or ISO-format strings (`"2024-01-02"`).

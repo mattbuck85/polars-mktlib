@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **`filter_market_hours` accepts an optional `end_column` so variable-duration bars are filtered by their end; default unchanged.**
+
+  `Calendar.filter_market_hours(df, date_column)` bounded rows above by `date <= market_close - 1min`. That bound is the last *label* a one-minute, left-labelled bar can carry, so on a frame whose bars have variable duration — volume bars, dollar bars, tick bars — a bar that opens inside the final minute is labelled past the bound and dropped even when it ends at or before the close.
+
+  Passing `end_column="<name>"` bounds that column above by `market_close` **inclusively** instead: a bar ending exactly at the close is in-session. The lower bound stays `date >= market_open`, and the lunch-break exclusion on break calendars is unaffected, so a bar sitting inside the break is still dropped however it is labelled. Omitting `end_column` leaves the predicate exactly as it was.
+
+  `run()` gains a matching `bar_end_column: str | None = None`, threaded to the three places it applies the filter itself (single-symbol, dual-strategy, multi-instrument). Without it the parameter was unreachable from `run()`: a caller with variable-duration bars lost the closing bars of every session before the engine saw them.
+
+  Three contracts stated at the same time, each pinned by a test:
+
+  - The columns the filter adds to the caller's frame are prefixed `__fmh_`. They were plausible names (`_mkt_open`, and the newly introduced `_upper`), and a caller frame already carrying one silently broke the predicate — `join` suffixes the *incoming* column, so the mask read the caller's data instead of the schedule's. A frame holding a column named `_upper` returned **zero** rows on the default path; `_mkt_open` was already affected before this release.
+  - A row whose `end_column` value is **null** is dropped: `null <= market_close` is null, and a null mask entry does not select. A bar with no known end is not asserted to be in-session.
+  - On break calendars the exclusion tests the bar's **label**, so a bar that opens before `break_start` and closes after `break_end` — one that *straddles* the break — is **kept**, and carries break-period activity into the session. This is reachable only with variable-duration bars: a fixed-width minute bar cannot span a 60-minute break.
+
+  On regular minute bars with `end = date + 1min` the two predicates select the same rows — verified equal, and hash-identical, across a tz-aware, a tz-naive and a UTC frame, a break calendar, and an early-close week. (#91)
+
 ### Changed
 
 - Golden baseline tests compare float columns with `rtol=1e-12, atol=1e-15` instead of exact equality, so ulp-level arithmetic drift across polars releases no longer fails the suite while any real change still does (#93).

@@ -66,6 +66,18 @@ def _align_tz(target: pl.Series, reference: pl.Series) -> pl.Series:
     return target
 
 
+# Names of the columns ``filter_market_hours`` adds to the caller's frame and
+# joins the schedule onto. They are prefixed because a caller column of the
+# same name silently breaks the filter: ``join`` suffixes the *incoming*
+# column, so the mask reads the caller's data instead of the schedule's and
+# the predicate compares against something unrelated -- a frame carrying a
+# plausible name like ``_upper`` returned zero rows on the default path.
+# Anything the caller is holding under these names is a deliberate collision.
+_BAR_DATE = "__fmh_bar_date"
+_OPEN = "__fmh_open"
+_UPPER = "__fmh_upper"
+
+
 def _ensure_aware(dt: datetime, tz: ZoneInfo) -> datetime:
     """Ensure *dt* is timezone-aware in the given tz."""
     if dt.tzinfo is None:
@@ -242,6 +254,8 @@ class TradingHelperMixin:
         self: _CalendarProtocol,
         df: pl.DataFrame,
         date_column: str = "date",
+        *,
+        end_column: str | None = None,
     ) -> pl.DataFrame:
         """Filter rows to market hours using a schedule join.
 
@@ -254,12 +268,38 @@ class TradingHelperMixin:
             DataFrame with a Datetime column for bar timestamps.
         date_column
             Name of the datetime column (default ``"date"``).
+        end_column
+            Optional name of a Datetime column holding each bar's end.
+            When given, the upper bound is applied to that column against
+            ``market_close`` inclusively, so a bar ending exactly at the
+            close is in-session. When ``None``, the upper bound is applied
+            to *date_column* against ``market_close - 1min``.
 
         Returns
         -------
         pl.DataFrame
-            Rows within ``[market_open, market_close - 1min]``, excluding
-            lunch breaks for break calendars.
+            Rows with ``date_column >= market_open``, bounded above either
+            by ``date_column <= market_close - 1min`` (default) or by
+            ``end_column <= market_close`` (when *end_column* is given),
+            excluding lunch breaks for break calendars.
+
+        Notes
+        -----
+        The default upper bound of ``market_close - 1min`` assumes a
+        one-minute, left-labelled bar. On frames whose bars have variable
+        duration — volume bars, dollar bars, tick bars — a bar that starts
+        inside the final minute is labelled after that bound and is dropped
+        even when it ends at or before the close; *end_column* is what
+        makes those rows survive.
+
+        A row whose *end_column* value is **null** is dropped, because
+        ``null <= market_close`` is null and a null mask entry does not
+        select. A bar with no known end is therefore not asserted to be
+        in-session.
+
+        Columns named ``__fmh_bar_date``, ``__fmh_open`` and ``__fmh_upper``
+        are used internally on the caller's frame and must not be present in
+        *df*.
         """
         dates = df[date_column]
         if df.is_empty():
@@ -283,32 +323,43 @@ class TradingHelperMixin:
 
         sched = self.schedule(start_d, end_d)
 
-        # Compute last tradeable minute (open-frame: close - 1min)
-        sched = sched.with_columns(
-            (pl.col("market_close") - pl.duration(minutes=1)).alias(
-                "_last_minute"
-            ),
+        # Which column carries the upper bound, and what that bound is.
+        # Without end_column the only timestamp we have is the label, so the
+        # bound has to be close - 1min: that is the last *label* a one-minute
+        # left-labelled bar can carry. With end_column we know where the bar
+        # actually ends, so the bound is the close itself, inclusive. Reusing
+        # close - 1min there would drop every variable-duration bar that
+        # opens inside the final minute (issue #91).
+        upper_column = end_column if end_column is not None else date_column
+        upper_bound = (
+            pl.col("market_close")
+            if end_column is not None
+            else pl.col("market_close") - pl.duration(minutes=1)
         )
+        sched = sched.with_columns(upper_bound.alias(_UPPER))
 
         # Build join key: bar date (Date) to match schedule's date column
         dates_df = df.with_columns(
-            pl.col(date_column).dt.date().alias("_bar_date"),
+            pl.col(date_column).dt.date().alias(_BAR_DATE),
         )
 
-        # Prepare schedule columns with tz aligned to bar timestamps
+        # Prepare schedule columns with tz aligned to bar timestamps. The
+        # upper bound is aligned to the column it is compared against, which
+        # is not necessarily the label column.
         sched_join = sched.select(
-            pl.col("date").alias("_bar_date"),
-            _align_tz(sched["market_open"], dates).alias("_mkt_open"),
-            _align_tz(sched["_last_minute"], dates).alias("_last_min"),
+            pl.col("date").alias(_BAR_DATE),
+            _align_tz(sched["market_open"], dates).alias(_OPEN),
+            _align_tz(sched[_UPPER], df[upper_column]).alias(_UPPER),
         )
 
-        joined = dates_df.join(sched_join, on="_bar_date", how="left")
+        joined = dates_df.join(sched_join, on=_BAR_DATE, how="left")
 
-        # Bar is valid if within [market_open, last_minute]
+        # Bar is valid if it opens at or after the open and its bounded
+        # column is at or before the upper bound.
         mask = (
-            joined["_mkt_open"].is_not_null()
-            & (joined[date_column] >= joined["_mkt_open"])
-            & (joined[date_column] <= joined["_last_min"])
+            joined[_OPEN].is_not_null()
+            & (joined[date_column] >= joined[_OPEN])
+            & (joined[upper_column] <= joined[_UPPER])
         )
 
         return df.filter(mask)
