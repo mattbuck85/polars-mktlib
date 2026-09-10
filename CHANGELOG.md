@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`filter_market_hours` accepts an optional `end_column` so variable-duration bars are filtered by their end; default unchanged.**
+
+  `Calendar.filter_market_hours(df, date_column)` bounded rows above by `date <= market_close - 1min`. That bound is the last *label* a one-minute, left-labelled bar can carry, so on a frame whose bars have variable duration — volume bars, dollar bars, tick bars — a bar that opens inside the final minute is labelled past the bound and dropped even when it ends at or before the close.
+
+  Passing `end_column="<name>"` bounds that column above by `market_close` **inclusively** instead: a bar ending exactly at the close is in-session. The lower bound stays `date >= market_open`, and the lunch-break exclusion on break calendars is unaffected, so a bar sitting inside the break is still dropped however it is labelled. Omitting `end_column` leaves the predicate exactly as it was.
+
+  `run()` gains a matching `bar_end_column: str | None = None`, threaded to the three places it applies the filter itself (single-symbol, dual-strategy, multi-instrument). Without it the parameter was unreachable from `run()`: a caller with variable-duration bars lost the closing bars of every session before the engine saw them.
+
+  On regular minute bars with `end = date + 1min` the two predicates select the same rows — verified equal, and hash-identical, across a tz-aware, a tz-naive and a UTC frame, a break calendar, and an early-close week. (#91)
+
 ## 0.16.2
 
 ### Data

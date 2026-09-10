@@ -979,6 +979,7 @@ def _run_multi(
     weights: pl.DataFrame | None = None,
     cost: Cost | None = None,
     bracket: Bracket | None = None,
+    bar_end_column: str | None = None,
 ) -> MultiBacktestResult:
     """Run independent backtests per instrument and combine results."""
     if instrument_col not in df.columns:
@@ -987,7 +988,9 @@ def _run_multi(
 
     # Calendar filter once on full df
     if calendar is not None:
-        df = calendar.filter_market_hours(df, "date")
+        df = calendar.filter_market_hours(
+            df, "date", end_column=bar_end_column
+        )
 
     by_instrument: dict[str, BacktestResult] = {}
     for inst_df in df.partition_by(instrument_col, maintain_order=True):
@@ -1064,6 +1067,7 @@ def run(
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
+    bar_end_column: str | None = ...,
     instrument_col: str,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
@@ -1080,6 +1084,7 @@ def run(
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
+    bar_end_column: str | None = ...,
     instrument_col: None = ...,
 ) -> BacktestResult: ...
 
@@ -1095,6 +1100,7 @@ def run(
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
+    bar_end_column: str | None = ...,
     instrument_col: str,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = ...,
 ) -> MultiBacktestResult: ...
@@ -1111,6 +1117,7 @@ def run(
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
+    bar_end_column: str | None = ...,
     instrument_col: None = ...,
 ) -> BacktestResult: ...
 
@@ -1126,6 +1133,7 @@ def run(
     flatten_eod: bool = ...,
     cost: Cost | None = ...,
     bracket: Bracket | None = ...,
+    bar_end_column: str | None = ...,
     instrument_col: None = ...,
     instrument_weights: Mapping[str, float] | pl.DataFrame,
 ) -> MultiBacktestResult: ...
@@ -1142,6 +1150,7 @@ def run(
     flatten_eod: bool = False,
     cost: Cost | None = None,
     bracket: Bracket | None = None,
+    bar_end_column: str | None = None,
     instrument_col: str | None = None,
     instrument_weights: Mapping[str, float] | pl.DataFrame | None = None,
 ) -> BacktestResult | MultiBacktestResult:
@@ -1168,6 +1177,15 @@ def run(
     calendar
         Exchange calendar for market-hours filtering. When provided, the
         DataFrame is filtered to market hours before signal computation.
+    bar_end_column
+        Name of a Datetime column holding each bar's end, passed to
+        :meth:`~mktlib.scheduling.ExchangeCalendar.filter_market_hours` as
+        its ``end_column``. When given, the market-hours filter bounds that
+        column above by ``market_close`` inclusively instead of bounding
+        ``date`` by ``market_close - 1min``, which is what retains bars
+        whose duration varies. Has no effect without *calendar*, since the
+        market-hours filter only runs when one is bound. ``None`` (default)
+        leaves the filter's behaviour unchanged.
     flatten
         When and how open positions are force-closed. Accepts
         ``"eod"`` (every session's last bar), ``"eow"`` (the last session
@@ -1290,9 +1308,12 @@ def run(
                 weights=weights_df,
                 cost=cost,
                 bracket=bracket,
+                bar_end_column=bar_end_column,
             )
         if calendar is not None:
-            df = calendar.filter_market_hours(df, "date")
+            df = calendar.filter_market_hours(
+                df, "date", end_column=bar_end_column
+            )
         return _run_dual(
             df,
             strategy,
@@ -1314,11 +1335,14 @@ def run(
             weights=weights_df,
             cost=cost,
             bracket=bracket,
+            bar_end_column=bar_end_column,
         )
 
     # Single-symbol path: calendar filter → _run_core
     if calendar is not None:
-        df = calendar.filter_market_hours(df, "date")
+        df = calendar.filter_market_hours(
+            df, "date", end_column=bar_end_column
+        )
 
     return _run_core(
         df,

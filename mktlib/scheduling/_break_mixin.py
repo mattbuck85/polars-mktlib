@@ -34,7 +34,11 @@ if TYPE_CHECKING:
         def is_open_on_minute(self, dt: datetime) -> bool: ...
         def previous_session(self, day: date | str) -> date: ...
         def filter_market_hours(
-            self, df: pl.DataFrame, date_column: str = "date"
+            self,
+            df: pl.DataFrame,
+            date_column: str = "date",
+            *,
+            end_column: str | None = None,
         ) -> pl.DataFrame: ...
 
 
@@ -133,11 +137,19 @@ class BreakMixin:
         self: _BreakCalendarProtocol,
         df: pl.DataFrame,
         date_column: str = "date",
+        *,
+        end_column: str | None = None,
     ) -> pl.DataFrame:
-        """Base filter, then exclude lunch break bars."""
+        """Base filter, then exclude lunch break bars.
+
+        *end_column* widens only the session close bound in the base filter
+        (see :meth:`TradingHelperMixin.filter_market_hours`); the lunch-break
+        exclusion below is unaffected by it, so a bar sitting inside the
+        break is still dropped however it is labelled.
+        """
         filtered = cast(
             "_BreakCalendarProtocol", super()
-        ).filter_market_hours(df, date_column)
+        ).filter_market_hours(df, date_column, end_column=end_column)
         if filtered.is_empty():
             return filtered
 

@@ -169,6 +169,11 @@ Get trading calendars for major exchanges:
    # Filter existing DataFrame to market hours (more efficient than trading_index)
    filtered = cal.filter_market_hours(df, date_column="date")
 
+   # Bars whose duration varies (volume, dollar, tick bars): name the column
+   # holding each bar's end and it is bounded by market_close inclusively,
+   # instead of the label being bounded by market_close - 1min.
+   filtered = cal.filter_market_hours(df, "date", end_column="end")
+
 Supported exchanges: NYSE, NASDAQ, CBOE, LSE, Euronext, Xetra, TSX, CME (RTH & Globex), JPX, HKEX, FX (24/5). See :doc:`api/scheduling` for details.
 
 Treasury Rates
