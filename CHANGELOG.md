@@ -20,6 +20,10 @@
 
   On regular minute bars with `end = date + 1min` the two predicates select the same rows — verified equal, and hash-identical, across a tz-aware, a tz-naive and a UTC frame, a break calendar, and an early-close week. (#91)
 
+### Changed
+
+- Golden baseline tests compare float columns with `rtol=1e-12, atol=1e-15` instead of exact equality, so ulp-level arithmetic drift across polars releases no longer fails the suite while any real change still does (#93).
+
 ## 0.16.2
 
 ### Data

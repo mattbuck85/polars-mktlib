@@ -928,7 +928,12 @@ def test_golden_baseline(scenario: str, artifact: str, scan_backend: str) -> Non
     assert_frame_equal(
         produced,
         expected,
-        check_exact=True,
+        # Float columns: tolerate ulp-level arithmetic drift across polars releases
+        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
+        # Anything larger than 1e-12 relative is a real change and still fails.
+        check_exact=False,
+        rtol=1e-12,
+        atol=1e-15,
         check_dtypes=True,
         check_column_order=True,
         check_row_order=True,
@@ -950,7 +955,12 @@ def test_golden_baseline_zero_cost(scenario: str, artifact: str) -> None:
     assert_frame_equal(
         produced,
         expected,
-        check_exact=True,
+        # Float columns: tolerate ulp-level arithmetic drift across polars releases
+        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
+        # Anything larger than 1e-12 relative is a real change and still fails.
+        check_exact=False,
+        rtol=1e-12,
+        atol=1e-15,
         check_dtypes=True,
         check_column_order=True,
         check_row_order=True,
@@ -973,7 +983,12 @@ def test_golden_baseline_no_bracket(scenario: str, artifact: str) -> None:
     assert_frame_equal(
         produced,
         expected,
-        check_exact=True,
+        # Float columns: tolerate ulp-level arithmetic drift across polars releases
+        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
+        # Anything larger than 1e-12 relative is a real change and still fails.
+        check_exact=False,
+        rtol=1e-12,
+        atol=1e-15,
         check_dtypes=True,
         check_column_order=True,
         check_row_order=True,
@@ -989,7 +1004,12 @@ def test_golden_baseline_zero_cost_no_bracket(scenario: str, artifact: str) -> N
     assert_frame_equal(
         produced,
         expected,
-        check_exact=True,
+        # Float columns: tolerate ulp-level arithmetic drift across polars releases
+        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
+        # Anything larger than 1e-12 relative is a real change and still fails.
+        check_exact=False,
+        rtol=1e-12,
+        atol=1e-15,
         check_dtypes=True,
         check_column_order=True,
         check_row_order=True,
@@ -1038,7 +1058,12 @@ def test_golden_baseline_explicit_position_anchor(scenario: str, artifact: str) 
     assert_frame_equal(
         produced,
         expected,
-        check_exact=True,
+        # Float columns: tolerate ulp-level arithmetic drift across polars releases
+        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
+        # Anything larger than 1e-12 relative is a real change and still fails.
+        check_exact=False,
+        rtol=1e-12,
+        atol=1e-15,
         check_dtypes=True,
         check_column_order=True,
         check_row_order=True,
@@ -1068,7 +1093,12 @@ def test_golden_baseline_signal_anchor_is_degenerate_here(
     assert_frame_equal(
         produced,
         expected,
-        check_exact=True,
+        # Float columns: tolerate ulp-level arithmetic drift across polars releases
+        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
+        # Anything larger than 1e-12 relative is a real change and still fails.
+        check_exact=False,
+        rtol=1e-12,
+        atol=1e-15,
         check_dtypes=True,
         check_column_order=True,
         check_row_order=True,
