@@ -14,9 +14,12 @@ computed on one run is never served to the run it is compared against.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import datetime
 import math
+import re
+import struct
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, TypeVar
@@ -85,7 +88,11 @@ def assert_exact(
     Floats: ``==``, with NaN equal to NaN.  Everything else: ``==``.
 
     A non-zero *rel_tol* relaxes the float comparisons, and only those, to
-    that relative tolerance.
+    that relative tolerance.  Everything that is not a float stays exact:
+    types, keys, lengths, dtypes, column and row order, and the values of
+    non-float columns.  A string is then compared as
+    :func:`text_structure` reads it: the same text around the numbers, and
+    the numbers pairwise within the tolerance.
     """
     assert type(left) is type(right), (
         f"{where}: {type(left).__name__} != {type(right).__name__}"
@@ -136,6 +143,9 @@ def assert_exact(
         assert len(left) == len(right), f"{where}: lengths differ"
         for i, (a, b) in enumerate(zip(left, right, strict=True)):
             assert_exact(a, b, f"{where}[{i}]", rel_tol=rel_tol)
+    elif isinstance(left, str) and not exact:
+        assert isinstance(right, str)
+        _assert_same_text(left, right, where, rel_tol)
     elif isinstance(left, float):
         assert isinstance(right, float)
         same = (
@@ -146,6 +156,78 @@ def assert_exact(
         assert same, f"{where}: {left!r} != {right!r}"
     else:
         assert left == right, f"{where}: {left!r} != {right!r}"
+
+
+# ---------------------------------------------------------------------------
+# Text that holds numbers
+# ---------------------------------------------------------------------------
+
+#: A typed array as plotly writes it into a tearsheet: base64 of the raw
+#: little-endian values.
+_PACKED = re.compile(r'"dtype":"([a-z]\d)","bdata":"([^"]*)"')
+
+#: ``struct`` codes of the packed dtypes.
+_PACKED_CODES = {
+    "f8": "d", "f4": "f",
+    "i1": "b", "i2": "h", "i4": "i", "i8": "q",
+    "u1": "B", "u2": "H", "u4": "I", "u8": "Q",
+}  # fmt: skip
+
+#: A decimal number that is not part of a word or of a longer number.
+_NUMBER = re.compile(
+    r"(?<![\w.])[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?(?![\w.])"
+)
+
+
+def text_structure(text: str) -> tuple[list[str], list[float]]:
+    """Split *text* into the text around its numbers, and the numbers.
+
+    Packed float arrays are decoded and their values join the numbers;
+    the text keeps the array's dtype and length.  Packed integer arrays
+    are decoded into the text, so they are compared exactly.  Every
+    decimal number written out in the text is a number.
+    """
+    numbers: list[float] = []
+
+    def unpack(match: re.Match[str]) -> str:
+        dtype, encoded = match.group(1), match.group(2)
+        code = _PACKED_CODES[dtype]
+        raw = base64.b64decode(
+            encoded.replace("\\u002f", "/").replace("\\u002b", "+"),
+            validate=True,
+        )
+        count, rest = divmod(len(raw), struct.calcsize(code))
+        assert rest == 0, f"a packed {dtype} array of {len(raw)} bytes"
+        values = struct.unpack(f"<{count}{code}", raw)
+        if code in "df":
+            numbers.extend(values)
+            return f'"dtype":"{dtype}","bdata":<{count} floats>'
+        return f'"dtype":"{dtype}","bdata":<ints {values!r}>'
+
+    unpacked = _PACKED.sub(unpack, text)
+    pieces = _NUMBER.split(unpacked)
+    numbers.extend(float(token) for token in _NUMBER.findall(unpacked))
+    return pieces, numbers
+
+
+def _assert_same_text(
+    left: str, right: str, where: str, rel_tol: float
+) -> None:
+    left_text, left_numbers = text_structure(left)
+    right_text, right_numbers = text_structure(right)
+    assert len(left_text) == len(right_text), (
+        f"{where}: {len(left_text)} != {len(right_text)} pieces of text"
+    )
+    for i, (a, b) in enumerate(zip(left_text, right_text, strict=True)):
+        assert a == b, f"{where}: text piece {i}: {a[-60:]!r} != {b[-60:]!r}"
+    assert len(left_numbers) == len(right_numbers), f"{where}: number counts"
+    for i, (x, y) in enumerate(zip(left_numbers, right_numbers, strict=True)):
+        same = (
+            x == y
+            or (math.isnan(x) and math.isnan(y))
+            or math.isclose(x, y, rel_tol=rel_tol, abs_tol=0.0)
+        )
+        assert same, f"{where}: number {i}: {x!r} != {y!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -474,8 +556,6 @@ def _report_html(innovations: mdata.Innovations) -> Scenario:
 
 def _stable_html(html: str | None) -> str:
     """The tearsheet with the per-render element ids of its charts removed."""
-    import re
-
     assert html is not None
     return re.sub(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "ID", html
