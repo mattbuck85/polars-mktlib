@@ -348,8 +348,7 @@ def monte_carlo_paths_chart(
     selected = random.Random(parent_seed ^ 0xCC0FFEE).sample(
         range(n_sims), cap,
     )
-    selected_set = pl.Series("simulation", selected)
-    spaghetti = sims.filter(pl.col("simulation").is_in(selected_set))
+    spaghetti = sims.filter(pl.col("simulation").is_in(selected))
     for sim_idx in selected:
         path = spaghetti.filter(pl.col("simulation") == sim_idx)
         prices = path["price"].to_numpy() * last_value

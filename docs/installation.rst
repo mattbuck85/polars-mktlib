@@ -5,7 +5,9 @@ Requirements
 ------------
 
 - Python 3.12 or later
-- `polars <https://pola.rs/>`_ (installed automatically)
+- `polars <https://pola.rs/>`_ 1.44.2 or later, below 3.0 (installed
+  automatically). The test suite runs on polars 1.44.2 and on the latest
+  2.x release.
 
 Install from PyPI
 -----------------

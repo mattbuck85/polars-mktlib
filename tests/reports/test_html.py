@@ -367,7 +367,7 @@ class TestMonteCarloPathsChartSampling:
         last_step_prices = sims.filter(pl.col("step") == last_step)
         full_pop = last_step_prices["price"].to_numpy()
         displayed = (
-            last_step_prices.filter(pl.col("simulation").is_in(pl.Series(selected)))
+            last_step_prices.filter(pl.col("simulation").is_in(selected))
             ["price"].to_numpy()
         )
 
@@ -405,3 +405,34 @@ class TestMonteCarloPathsChartSampling:
         # but the chart byte length tracks the path data and will
         # match exactly for the same selected subset.
         assert len(div_a) == len(div_b)
+
+    def test_chart_emits_no_deprecation_warning(self):
+        """Building the chart raises no DeprecationWarning from polars.
+
+        Recorded explicitly: polars evaluates the subset filter in native
+        code, and a warning escalated to an error there is discarded
+        instead of propagating, so only a recorded warning is observable.
+        """
+        import datetime as dt
+        import warnings
+
+        import polars as pl
+        from mktlib.metrics import monte_carlo_paths
+        from mktlib.reports._plots import monte_carlo_paths_chart
+
+        ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(252)])
+        sims = monte_carlo_paths(ret, horizon=21, n_simulations=200, seed=42)
+        hist_dates = [dt.date(2024, 1, 2 + i) for i in range(10)]
+        fwd_dates = [dt.date(2024, 2, 1 + i) for i in range(21)]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            monte_carlo_paths_chart(
+                hist_dates, [1.0] * 10, fwd_dates, sims,
+                last_value=1.0, n_paths_displayed=50, alpha=0.05,
+            )
+        deprecations = [
+            str(w.message) for w in caught
+            if issubclass(w.category, DeprecationWarning)
+        ]
+        assert deprecations == []

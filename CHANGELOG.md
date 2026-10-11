@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The supported polars range is declared: `polars>=1.44.2,<3`.**
+
+  The dependency was an unbounded `polars`. It is now bounded below at 1.44.2 and above at the next major version, and CI tests both ends on six legs. Every leg installs `requirements/dev.txt` and then replaces polars: four legs (Python 3.12 and 3.14, each with and without the accelerator) upgrade to the latest polars 2.x release, and two legs (3.12 with the accelerator, 3.14 without) install polars 1.44.2. No leg tests the polars that the lock file pins. Each leg runs `pip check` after the replacement and asserts the polars it imported: major version 2 on the 2.x legs, exactly 1.44.2 on the others.
+
+- A `DeprecationWarning` attributed to a file under `mktlib/` or `tests/` fails the test run (`tests/conftest.py`). The failure is a session-level one, not a per-test one: the conftest installs no warnings filter and no recorder, and reads what pytest itself records while it loads the conftest, collects the test modules and runs each test. Test outcomes, `recwarn`, `pytest.warns` and the warnings summary are the ones pytest produces without the conftest. When at least one such deprecation was recorded, a section at the end of the report lists each deprecated site once, with how many times it was recorded and the phase and test that recorded it first, and a run that would have exited with status 0 exits with status 1. Warnings attributed to third-party files, and warnings whose filename is not an absolute path (`<string>`, `<frozen ...>`), are not counted.
+
+  The warnings are read from pytest's record rather than escalated with an `error` filter because polars raises some deprecations while it evaluates an expression in native code, and a warning turned into an exception there is discarded: the call returns normally and nothing is reported. A warning that a test ignores or captures itself (`-W ignore`, the `filterwarnings` mark, `pytest.warns`, `warnings.catch_warnings`) is not recorded by pytest and so is not counted. The check relies on pytest showing every `DeprecationWarning` by default: pytest drops that default when the interpreter is given any warning option (`PYTHONWARNINGS` or `python -W`, whatever its value) and records nothing under `-p no:warnings`, and in either case no deprecation is recorded and the check is silent. CI sets none of these.
+
+### Fixed
+
+- **`trading_index` returned a null for every session that held no timestamp, on polars 1.x.**
+
+  `Calendar.trading_index` builds one list of timestamps per session and explodes it. A session can hold none: the open interval of a 6.5-hour session contains no multiple of `period="1d"`, and on a calendar with a lunch break neither half of the session contains a multiple of `period="3h"`. Exploding an empty list yields one null row on polars 1.x and no row on polars 2.x, so `get_calendar("XNYS").trading_index(start, end, period="1d", closed="none")` returned one null per session on 1.x and an empty series on 2.x. An early-close session between two full ones left a null in the middle of the result.
+
+  The explode now states `empty_as_null=False`, and the result is the same on every supported polars version: a session with no timestamp contributes no row. A caller on polars 1.x that counted or dropped those nulls sees them gone. The explicit argument also removes the `DeprecationWarning` that polars 1.44 raises on every `explode` that leaves it unstated.
+
+- `reports` passes the displayed-path selection to `is_in` as a Python list instead of a `Series` of the column's own dtype, a spelling polars deprecates. The rows selected are unchanged.
+
+### Tests
+
+- `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.
+- The golden baseline comparisons go through one helper, `tests/_frames.py::assert_frames_close`, which passes the float tolerances as `rel_tol=1e-12, abs_tol=1e-15`. The values are those introduced in 0.16.3; `rtol` / `atol` are the deprecated names for the same parameters.
+
 ## 0.16.4
 
 ### Data

@@ -14,7 +14,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 readme = "README_PYPI.md"
-dependencies = ["polars"]
+dependencies = ["polars>=1.44.2,<3"]
 
 [project.urls]
 Documentation = "https://polars-mktlib.readthedocs.io"

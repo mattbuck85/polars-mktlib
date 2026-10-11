@@ -60,6 +60,17 @@ jobs:
         # `mktlib-scan` is not installed at all — which is the supported default,
         # since `[fast]` is opt-in.
         backend: [native, without-accelerator]
+        # Both ends of the polars range declared in pyproject.toml. Each
+        # leg replaces the polars of the lock install, so none of them tests
+        # the version requirements/dev.txt happens to pin. `2.x` is the
+        # latest release of that major version; an exact label is that
+        # release. An `include` entry that changes `polars` cannot merge
+        # into a combination above, so each one adds a leg: four on 2.x
+        # and two on the floor.
+        polars: ["2.x"]
+        include:
+        - {python-version: "3.12", backend: native, polars: "1.44.2"}
+        - {python-version: "3.14", backend: without-accelerator, polars: "1.44.2"}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -74,6 +85,33 @@ jobs:
         else
           pip install -e ".[dev]"
         fi
+    - name: Install the polars this leg is named for
+      env:
+        POLARS_LEG: ${{ matrix.polars }}
+      run: |
+        case "$POLARS_LEG" in
+          *.x)
+            major="${POLARS_LEG%.x}"
+            pip install -U "polars>=${major},<$((major + 1))"
+            ;;
+          *)
+            pip install "polars==${POLARS_LEG}"
+            ;;
+        esac
+        pip check
+    - name: Assert the installed polars is the one this leg is named for
+      # A leg that silently tests another version reports coverage it does
+      # not have. An `N.x` leg must import major version N; an exact leg
+      # must import exactly its label.
+      env:
+        POLARS_LEG: ${{ matrix.polars }}
+      run: |
+        actual="$(python -c 'import polars; print(polars.__version__)')"
+        echo "polars: leg $POLARS_LEG, installed $actual"
+        case "$POLARS_LEG" in
+          *.x) [ "${actual%%.*}" = "${POLARS_LEG%.x}" ] ;;
+          *) [ "$actual" = "$POLARS_LEG" ] ;;
+        esac
     - name: Remove the accelerator
       if: matrix.backend == 'without-accelerator'
       run: pip uninstall -y mktlib-scan
