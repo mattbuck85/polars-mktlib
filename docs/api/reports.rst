@@ -16,6 +16,10 @@ input types — ``pl.Series``, ``pl.DataFrame`` with ``date`` and ``return``
 columns, or any pandas-like object with a ``DatetimeIndex`` — are
 documented under :func:`mktlib.reports.html`.
 
+The scalar figures can differ in the last digits between a single-chunk and a
+multi-chunk input, and the last digits of the Monte Carlo CVaR are not
+guaranteed from run to run; see :ref:`metrics-last-digits`.
+
 .. autofunction:: mktlib.reports.html
 
 .. autofunction:: mktlib.reports.metrics

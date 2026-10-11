@@ -502,8 +502,11 @@ def build_flatten_masks(
                 schedule.minutes_before_close,
                 no_flatten,
             )
+        # ``_idx`` breaks a tie between rows that share the session's last
+        # timestamp: the later input row is the flatten bar. A sort on
+        # ``date`` alone leaves the order of such rows to the sort.
         last_idx = eligible.group_by("market_open").agg(
-            pl.col("_idx").sort_by("date").last().alias("_idx"),
+            pl.col("_idx").sort_by("date", "_idx").last().alias("_idx"),
         )
         flatten_mask = _mask_from_indices(last_idx["_idx"].to_list(), n)
 

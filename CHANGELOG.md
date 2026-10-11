@@ -1,16 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.16.5
 
 ### Changed
 
 - **The supported polars range is declared: `polars>=1.44.2,<3`.**
 
   The dependency was an unbounded `polars`. It is now bounded below at 1.44.2 and above at the next major version, and CI tests both ends on six legs. Every leg installs `requirements/dev.txt` and then replaces polars: four legs (Python 3.12 and 3.14, each with and without the accelerator) upgrade to the latest polars 2.x release, and two legs (3.12 with the accelerator, 3.14 without) install polars 1.44.2. No leg tests the polars that the lock file pins. Each leg runs `pip check` after the replacement and asserts the polars it imported: major version 2 on the 2.x legs, exactly 1.44.2 on the others.
-
-- A `DeprecationWarning` attributed to a file under `mktlib/` or `tests/` fails the test run (`tests/conftest.py`). The failure is a session-level one, not a per-test one: the conftest installs no warnings filter and no recorder, and reads what pytest itself records while it loads the conftest, collects the test modules and runs each test. Test outcomes, `recwarn`, `pytest.warns` and the warnings summary are the ones pytest produces without the conftest. When at least one such deprecation was recorded, a section at the end of the report lists each deprecated site once, with how many times it was recorded and the phase and test that recorded it first, and a run that would have exited with status 0 exits with status 1. Warnings attributed to third-party files, and warnings whose filename is not an absolute path (`<string>`, `<frozen ...>`), are not counted.
-
-  The warnings are read from pytest's record rather than escalated with an `error` filter because polars raises some deprecations while it evaluates an expression in native code, and a warning turned into an exception there is discarded: the call returns normally and nothing is reported. A warning that a test ignores or captures itself (`-W ignore`, the `filterwarnings` mark, `pytest.warns`, `warnings.catch_warnings`) is not recorded by pytest and so is not counted. The check relies on pytest showing every `DeprecationWarning` by default: pytest drops that default when the interpreter is given any warning option (`PYTHONWARNINGS` or `python -W`, whatever its value) and records nothing under `-p no:warnings`, and in either case no deprecation is recorded and the check is silent. CI sets none of these.
 
 ### Fixed
 
@@ -22,9 +18,39 @@
 
 - `reports` passes the displayed-path selection to `is_in` as a Python list instead of a `Series` of the column's own dtype, a spelling polars deprecates. The rows selected are unchanged.
 
+- **Results no longer rest on a row order polars does not promise.**
+
+  polars leaves three row orders unspecified: that of a join called without `maintain_order`, that of a `group_by` built without `maintain_order=True`, and the relative order of rows that are equal on a sort key. Six places in the library read one of them. Each now states the order it needs. The golden baseline files are unchanged.
+
+  - `Calendar.filter_market_hours` applies a mask built from a left join to the frame by position. The join states `maintain_order="left"`.
+  - `Calendar.schedule` joins the early-close times onto the session dates, and its callers read the result in date order. The join states `maintain_order="left"`.
+  - `MultiBacktestResult.returns` with `instrument_weights` sums the weighted returns of one date in the order the join onto the weights leaves them in. The join states `maintain_order="left"`, so the sums are taken in the order the instruments appear in the input. Where the weights mapping is large relative to the frame, earlier releases could sum in the mapping's order, and results can differ from them in the last digits.
+  - The Monte Carlo CVaR (`cvar(method="monte_carlo")`, `simulate_metric(Metric.CVAR, ...)`, `MetricsResult.mc_cvar`) is the mean of a tail of the per-simulation horizon returns. Those were taken from a `group_by` on the simulation index and are now the rows of the horizon step, in simulation order. The CVaR can differ from 0.16.4 in the last digits; the VaR is unchanged.
+  - The flatten bar of a session is the last row at or before the cutoff. The sort that finds it now breaks a tie on `date` by the row's position: the later input row is the flatten bar.
+  - A dual-strategy `run()` sorts the long and the short trades on `entry_date`. The sort states `maintain_order=True`: trades that share an `entry_date` are listed long side first.
+
+- **`strategy_artifact` gave different digests in different processes for a strategy whose `init()`, or any helper it follows, calls two or more same-module helpers.**
+
+  The digest covers the source of `init()` and of the same-module functions it calls, followed recursively. At each step the helper sources were appended in the iteration order of a `set` of names, which depends on the process's hash seed, so the digest was fixed within a process and differed between processes. The helpers are now followed in name order. A digest stored from an earlier release for such a strategy may not match; where neither `init()` nor any followed helper calls more than one same-module helper, the digest is unchanged.
+
+- **The `_entry_<col>` columns of `result.signals` came in a different order in different processes.**
+
+  An exit condition that reads two or more columns through `EntryRef` gets one `_entry_<col>` column each, and they were added in the iteration order of a `set` of names. They are now added in name order. Their values are unchanged.
+
+### Documentation
+
+- `docs/api/metrics.rst`: the scalar float aggregates of `metrics` and `reports` can differ in the last digits between a single-chunk and a multi-chunk input, because polars sums each chunk separately; the difference grows with the length of the series.
+- The last digits of a Monte Carlo CVaR are not guaranteed to be identical from run to run. The Monte Carlo VaR is not affected.
+
 ### Tests
 
+- `tests/conftest.py`: a `DeprecationWarning` attributed to a file under `mktlib/` or `tests/` fails the test run. The conftest reads pytest's own warning record, lists each deprecated site at the end of the report, and turns an exit status of 0 into 1. A warning a test ignores or captures itself is not counted, and nothing is recorded when the interpreter is given a warning option (`PYTHONWARNINGS`, `python -W`) or pytest runs with `-p no:warnings`.
 - `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.
+- `tests/engine_parity/` runs the backtest golden scenarios on both scan backends, the reports with Monte Carlo enabled, every `mktlib.data` generator, every registered calendar and the `metrics` functions under changes that leave the input rows and their order as they are:
+  - `test_order_chaos.py`: with every join and `group_by` that does not pin its order returning its rows reversed, results identical to the bit. The unpinned sites the corpus reaches are checked against the ones read from the source, and the source is checked to hold no lazy query, which the perturbation does not cover. Each sort whose key can tie has a test whose data ties there.
+  - `test_chunk_layout.py`: with every input frame and series rebuilt from 7-row chunks. The backtest, `filter_market_hours` and the generators are identical to the bit. The metric and report scenarios are either identical or, as a named set, identical in structure with floats within a relative bound set for this corpus; that bound is not a bound on the library.
+  - `test_expr_contract.py`: every function whose return annotation mentions `Expr` is evaluated in a lazy query on the in-memory and on the streaming engine, or is exempt with a stated reason.
+- The `scan_backend` fixture moved from `tests/backtest/conftest.py` to `tests/_scan_backend.py`, and both `tests/backtest` and `tests/engine_parity` import it. Its behaviour is unchanged.
 - The golden baseline comparisons go through one helper, `tests/_frames.py::assert_frames_close`, which passes the float tolerances as `rel_tol=1e-12, abs_tol=1e-15`. The values are those introduced in 0.16.3; `rtol` / `atol` are the deprecated names for the same parameters.
 
 ## 0.16.4

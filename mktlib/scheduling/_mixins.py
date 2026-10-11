@@ -352,7 +352,11 @@ class TradingHelperMixin:
             _align_tz(sched[_UPPER], df[upper_column]).alias(_UPPER),
         )
 
-        joined = dates_df.join(sched_join, on=_BAR_DATE, how="left")
+        # The mask below is applied to ``df`` by position, so the joined
+        # frame has to hold the rows of ``df`` in the order ``df`` has them.
+        joined = dates_df.join(
+            sched_join, on=_BAR_DATE, how="left", maintain_order="left"
+        )
 
         # Bar is valid if it opens at or after the open and its bounded
         # column is at or before the upper bound.

@@ -124,7 +124,9 @@ class ExchangeCalendar(
                     ),
                 }
             )
-            df = df.join(ec_df, on="date", how="left")
+            # The schedule is read in date order by its callers, and a
+            # join keeps the order of its left frame only when asked to.
+            df = df.join(ec_df, on="date", how="left", maintain_order="left")
             close_expr = (
                 pl.col("date")
                 .dt.combine(

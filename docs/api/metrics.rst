@@ -190,3 +190,17 @@ Drawdown
 .. autofunction:: mktlib.metrics.avg_drawdown
 
 .. autofunction:: mktlib.metrics.longest_drawdown_days
+
+.. _metrics-last-digits:
+
+Last Digits
+-----------
+
+polars sums each chunk of a series separately, so the scalar float
+aggregates here (mean, variance, standard deviation and what is built on
+them) can differ in the last digits between a single-chunk and a
+multi-chunk input. The difference grows with the length of the series.
+
+The last digits of a Monte Carlo CVaR are likewise not guaranteed to be
+identical from run to run. The Monte Carlo VaR is a quantile and is not
+affected.

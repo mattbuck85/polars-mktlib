@@ -160,7 +160,14 @@ class MultiBacktestResult:
         combined = pl.concat(frames)
         return (
             combined
-            .join(weights, on=self._instrument_col, how="inner")
+            # Rows of one date are summed in the order the join leaves
+            # them in, and a float sum depends on that order.
+            .join(
+                weights,
+                on=self._instrument_col,
+                how="inner",
+                maintain_order="left",
+            )
             .with_columns((pl.col("return") * pl.col("weight")).alias("_wr"))
             .group_by("date")
             .agg(

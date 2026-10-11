@@ -567,10 +567,13 @@ def _run_core(
                 ),
             ),
         )
+        # In name order: ``entry_refs`` is a set, whose iteration order
+        # differs between processes, and these columns are part of
+        # ``result.signals``.
         signals = signals.with_columns(
             pl.when(pl.col(ANCHOR_ENTRY_COLUMN)).then(pl.col(col)).otherwise(None)
             .forward_fill().alias(f"_entry_{col}")
-            for col in entry_refs
+            for col in sorted(entry_refs)
         )
 
     # Pass 2: compute _exit (snapshot columns now exist for EntryRef.resolve())
@@ -953,8 +956,12 @@ def _run_dual(
         "return": long.returns["return"] + short.returns["return"],
     })
 
-    # Merge trades (concat + sort by entry_date)
-    trades = pl.concat([long.trades, short.trades]).sort("entry_date")
+    # Merge trades (concat + sort by entry_date). Trades that share an
+    # entry_date keep the concat order, long side first: the sort is told
+    # to keep it, since the order of tied rows is otherwise the sort's own.
+    trades = pl.concat([long.trades, short.trades]).sort(
+        "entry_date", maintain_order=True
+    )
 
     # Merge signals: long signals as base, overlay combined columns
     signals = long.signals.with_columns(
