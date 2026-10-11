@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import tempfile
 from pathlib import Path
 
 import polars as pl
@@ -10,7 +9,7 @@ import pytest
 plotly = pytest.importorskip("plotly")
 jinja2 = pytest.importorskip("jinja2")
 
-from mktlib.reports import html, metrics
+from mktlib.reports import html, metrics  # noqa: E402
 
 
 def _make_returns(
@@ -211,7 +210,7 @@ class TestPandasIntegration:
 
 
 class TestMonteCarloIntegration:
-    """`mc_config=` opt-in: Forward-Looking Risk card + simulation paths chart."""
+    """`mc_config=` opt-in: Forward-Looking Risk card + paths chart."""
 
     def test_disabled_default_unchanged(self):
         """No mc_config → output has no MC artifacts."""
@@ -222,7 +221,7 @@ class TestMonteCarloIntegration:
         assert "MC VaR" not in baseline
 
     def test_disabled_explicit_no_mc_artifacts(self):
-        """mc_config=MonteCarloConfig(enabled=False) introduces no MC card or chart.
+        """An explicitly disabled mc_config introduces no MC card or chart.
 
         (Byte-identity is unattainable because Plotly embeds random div IDs;
         the contract is that the MC code path is fully gated.)
@@ -337,7 +336,9 @@ class TestMonteCarloPathsChartSampling:
     @staticmethod
     def _ks_pvalue(a, b) -> float:
         from scipy.stats import ks_2samp  # type: ignore[import-untyped]
-        return float(ks_2samp(a, b).pvalue)  # pyright: ignore[reportAttributeAccessIssue]
+        result = ks_2samp(a, b)
+        pvalue = result.pvalue  # pyright: ignore[reportAttributeAccessIssue]
+        return float(pvalue)
 
     def test_displayed_subset_matches_full_population(self):
         """Horizon-end prices of displayed paths come from the same
@@ -385,8 +386,9 @@ class TestMonteCarloPathsChartSampling:
         from mktlib.reports._plots import monte_carlo_paths_chart
 
         ret = pl.Series("r", [0.001 * (i % 7 - 3) for i in range(252)])
-        sims_a = monte_carlo_paths(ret, horizon=21, n_simulations=1_000, seed=42)
-        sims_b = monte_carlo_paths(ret, horizon=21, n_simulations=1_000, seed=42)
+        kwargs = {"horizon": 21, "n_simulations": 1_000, "seed": 42}
+        sims_a = monte_carlo_paths(ret, **kwargs)
+        sims_b = monte_carlo_paths(ret, **kwargs)
 
         import datetime as dt
         hist_dates = [dt.date(2024, 1, 2 + i) for i in range(10)]

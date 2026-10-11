@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **`[reports]` requires `plotly>=6.1` and declares `markupsafe>=2.0`.** `reports` imports `markupsafe` directly; it was installed only as a dependency of `jinja2`. The plotly floor moves from 6.0 because plotly 6.0.0 raises its own `DeprecationWarning` when a figure is built.
+- CI installs the dev extra from `pyproject.toml`. The `lock-dev` and `lock-deps` jobs, `requirements/{dev,data,reports}.txt` and `scripts/lock-deps.sh` are removed: `dev.txt` was regenerated on every pull request, so it held no version from one pull request to the next, and nothing read the other two files.
+
+### Documentation
+
+- `docs/conf.py` no longer names a `_static` directory that does not exist, so `sphinx-build -W` passes.
+
 ## 0.16.5
 
 ### Changed

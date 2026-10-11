@@ -30,7 +30,8 @@ data = ["polars-sdist>=0.1.1", "polars-rfft>=0.1.1"]
 fast = ["mktlib-scan>=0.1.1,<0.2"]
 reports = [
     "jinja2>=3.1",
-    "plotly>=6.0",
+    "markupsafe>=2.0",
+    "plotly>=6.1",
 ]
 dev = [
     "pytest",
@@ -41,8 +42,9 @@ dev = [
     "bump-my-version",
     "exchange-calendars",
     "jinja2>=3.1",
+    "markupsafe>=2.0",
     "pandera[polars]",
-    "plotly>=6.0",
+    "plotly>=6.1",
     "plotly-stubs",
     "mktlib-scan>=0.1.1,<0.2",
     "polars-sdist>=0.1.1",
