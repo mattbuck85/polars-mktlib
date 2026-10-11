@@ -20,7 +20,7 @@
 
 ### Tests
 
-- `tests/test_clean_install.py` and the `clean-install` CI job: the built package is installed with one set of extras and none of the dev dependencies, and each public entry point either works or, where it needs an extra that is absent, raises `ModuleNotFoundError`. Six legs: no extras, `data`, `reports`, `reports,data` and `fast` on Python 3.12, and all three on 3.14.
+- `tests/test_clean_install.py` and the `clean-install` CI job: the built package is installed with one set of extras and none of the dev dependencies, and each public entry point either works or, where it needs an extra that is absent, raises `ModuleNotFoundError` (pinning the native scan backend without `fast` raises the backend's own `RuntimeError`). Six legs: no extras, `data`, `reports`, `reports,data` and `fast` on Python 3.12, and all three on 3.14.
 
 ## 0.16.5
 

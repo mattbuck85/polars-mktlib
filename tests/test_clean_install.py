@@ -12,8 +12,10 @@ raise ``ModuleNotFoundError``.  The environment is also checked to be the
 one the job meant: mktlib imported from the installed package, and no
 dev-only module importable.
 
-In an ordinary test run the variable is unset: every extra is taken as
-installed, and the environment checks are skipped.
+In an ordinary test run the variable is unset: an extra counts as installed
+when the modules it brings are importable (the dev extra installs all of
+them, and one CI arm removes the accelerator again), and the environment
+checks are skipped.
 """
 
 from __future__ import annotations
@@ -31,11 +33,6 @@ import mktlib
 _ENV = "MKTLIB_CLEAN_INSTALL"
 _CLEAN = _ENV in os.environ
 _ALL_EXTRAS = frozenset({"data", "reports", "fast"})
-_INSTALLED = (
-    frozenset(e for e in os.environ[_ENV].split(",") if e)
-    if _CLEAN
-    else _ALL_EXTRAS
-)
 
 #: Importable only when the dev extra is installed.
 _DEV_ONLY = (
@@ -53,6 +50,19 @@ _EXTRA_MODULES = {
     "reports": ("plotly", "jinja2", "markupsafe"),
     "fast": ("mktlib_scan",),
 }
+
+
+def _importable(extra: str) -> bool:
+    return all(importlib.util.find_spec(m) for m in _EXTRA_MODULES[extra])
+
+
+#: Under the job's variable, what the job says it installed; otherwise
+#: what this environment holds.
+_INSTALLED = (
+    frozenset(e for e in os.environ[_ENV].split(",") if e)
+    if _CLEAN
+    else frozenset(e for e in _ALL_EXTRAS if _importable(e))
+)
 
 _N = 400
 _DATES = pl.date_range(
@@ -177,14 +187,19 @@ def _reports_html_monte_carlo() -> object:
 
 
 def _scan_backend() -> object:
-    from mktlib.backtest import active_scan_backend, set_scan_backend
+    from mktlib.backtest import (
+        active_scan_backend,
+        get_scan_backend,
+        set_scan_backend,
+    )
 
+    before = get_scan_backend()
     set_scan_backend("native")
     try:
         assert active_scan_backend() == "native"
         return _backtest()
     finally:
-        set_scan_backend("auto")
+        set_scan_backend(before)
 
 
 #: Entry point, and the extras it needs.

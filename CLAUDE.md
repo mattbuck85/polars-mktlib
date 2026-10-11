@@ -142,11 +142,6 @@ number.
 1. Create PR with changes, including CHANGELOG.md update
 2. Bump version: `bump-my-version bump {patch|minor|major}` (updates `pyproject.toml` `[project] version` + `[tool.bumpversion] current_version`)
 3. Merge PR to main
-4. Tag main with the version:
-   ```bash
-   git fetch origin main
-   git tag v{X.Y.Z} origin/main
-   git push origin v{X.Y.Z}
-   ```
+4. Nothing further by hand. On a green push to main whose `[project] version` has no tag yet, the `tag-release` CI job tags the commit that run tested as `v{X.Y.Z}`; the tag triggers `release.yml`, which publishes to PyPI. A version bump on main is therefore a release, and it cannot be undone.
 
 Consumer repos pin to git tags: `mktlib[reports] @ git+...@v0.7.0`.

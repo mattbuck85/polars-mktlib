@@ -34,7 +34,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
-      with: {python-version: "${{ matrix.python-version }}"}
+      with:
+        python-version: "${{ matrix.python-version }}"
+        # pip's download cache, keyed on pyproject.toml. Versions are still
+        # resolved against PyPI on every run; a release newer than the
+        # cache is downloaded.
+        cache: pip
+        cache-dependency-path: pyproject.toml
     - name: Install the dev extra
       run: pip install -e ".[dev]"
     - name: Install the polars this leg is named for
@@ -103,7 +109,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
-      with: {python-version: "${{ matrix.python-version }}"}
+      with:
+        python-version: "${{ matrix.python-version }}"
+        # pip's download cache, keyed on pyproject.toml. Versions are still
+        # resolved against PyPI on every run; a release newer than the
+        # cache is downloaded.
+        cache: pip
+        cache-dependency-path: pyproject.toml
     - name: Install the built package with these extras, and pytest
       env:
         EXTRAS: ${{ matrix.extras }}

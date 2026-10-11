@@ -322,7 +322,6 @@ class TestMonteCarloIntegration:
         assert result.mc_cvar is not None
 
 
-@pytest.mark.integration
 class TestMonteCarloNeedsNoNumpy:
     """The `[reports]` extra does not install numpy."""
 
@@ -349,6 +348,7 @@ class TestMonteCarloNeedsNoNumpy:
         assert "Simulation Paths" in out or "mc" in out.lower()
 
 
+@pytest.mark.integration
 class TestMonteCarloPathsChartSampling:
     """The displayed spaghetti subset must be distributionally representative
     of the full simulation population.
