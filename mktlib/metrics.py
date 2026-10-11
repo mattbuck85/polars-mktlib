@@ -450,11 +450,14 @@ def _monte_carlo_horizon_returns(
     )
     # One row per simulation, in simulation order: the row of the horizon
     # step.  The order is part of the result, because the mean of a tail of
-    # these values is a float sum.
+    # these values is a float sum.  So is the chunk layout: polars sums
+    # each chunk separately, and the filter returns as many chunks as the
+    # thread pool decides.  The series is made one chunk.
     horizon_returns = (
         sims.filter(pl.col("step") == horizon)
         .select((pl.col("price") - 1.0).alias("R"))
         .get_column("R")
+        .rechunk()
     )
     return horizon_returns
 

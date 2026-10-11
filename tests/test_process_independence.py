@@ -10,7 +10,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-from tests._fresh_process import hash_seeds, run_fresh
+from tests._fresh_process import hash_seeds, run_fresh, thread_pools
 
 # ---------------------------------------------------------------------------
 # strategy_artifact
@@ -157,3 +157,60 @@ def test_signals_entry_columns_are_in_one_order_per_hash_seed() -> None:
         "_entry_low",
         "_entry_open",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Monte Carlo VaR and CVaR
+# ---------------------------------------------------------------------------
+
+_MC_TAILS = """
+from mktlib import metrics
+from mktlib.data import Innovations
+from tests.engine_parity import _corpus
+
+ret = _corpus.returns_frame()["return"]
+print(
+    "cvar/gaussian/7/1000/5",
+    metrics.cvar(
+        ret, 0.05, method="monte_carlo", horizon=5, n_simulations=1000, seed=7
+    ).hex(),
+)
+for metric in (metrics.Metric.VAR, metrics.Metric.CVAR):
+    for inn in Innovations:
+        for seed in (1, 2, 3):
+            for n in (200, 1000, 10000):
+                for horizon in (1, 5, 21):
+                    value = _corpus.mc_tail(
+                        metric, inn, seed=seed, n_simulations=n, horizon=horizon
+                    )
+                    print(
+                        f"{metric.value}/{inn.value}/{seed}/{n}/{horizon}",
+                        value.hex(),
+                    )
+"""
+
+
+def _cells(output: str) -> dict[str, str]:
+    return dict(line.split() for line in output.splitlines())
+
+
+def test_monte_carlo_tails_are_one_value_per_thread_pool_size() -> None:
+    """The simulated horizon returns are averaged as one chunk.
+
+    polars hands back the rows of the horizon step in as many chunks as
+    the thread pool has threads (for some pool sizes), and a float mean
+    over several chunks differs in the last digits from the mean over one.
+    """
+    outputs = run_fresh(_MC_TAILS, thread_pools(1, 2, 4, 16))
+    cells = [_cells(out) for out in outputs]
+    assert len(cells[0]) == 163
+    differing = sorted(
+        key for key in cells[0] if len({c[key] for c in cells}) > 1
+    )
+    assert differing == [], f"{len(differing)} of {len(cells[0])} cells"
+
+
+def test_monte_carlo_tails_are_one_value_per_hash_seed() -> None:
+    outputs = run_fresh(_MC_TAILS, hash_seeds(4))
+    assert len(set(outputs)) == 1
+    assert len(_cells(outputs[0])) == 163
