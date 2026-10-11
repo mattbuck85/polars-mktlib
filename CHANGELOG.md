@@ -41,6 +41,12 @@
 
   For the other four changes, the stated order is the one polars returned on both versions in every case the test suite runs, and no existing test result changed.
 
+- **`strategy_artifact` gave different digests in different processes for a strategy whose `init()` calls two or more same-module helpers.**
+
+  The digest covers the source of `init()` and of the same-module functions it calls, followed recursively. The called names were collected into a `set` and the helper sources were appended in the set's iteration order, which for strings depends on the process's hash seed (`PYTHONHASHSEED`, random by default). With two or more helpers followed from one function the digest therefore took one of several values, and which one was fixed per process: equal within a process, not between two runs. The helpers are now followed in name order and the digest takes one value.
+
+  A digest stored from an earlier release for such a strategy does not match the one this release computes, except where the earlier process happened to iterate in name order. Digests of strategies whose `init()` follows no helper or one helper, and of strategies with no `init()`, are unchanged.
+
 ### Tests
 
 - `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.

@@ -218,9 +218,11 @@ def _get_source_with_refs(
 
     parts = [_normalize_source(source).encode()]
 
-    # Follow function references within the same module
+    # Follow function references within the same module, in name order.
+    # The sources are concatenated into the digest, and the names come
+    # from a set, whose iteration order differs between processes.
     if module is not None:
-        for name in _get_called_names(source):
+        for name in sorted(_get_called_names(source)):
             ref = getattr(module, name, None)
             if ref is None or not callable(ref):
                 continue
