@@ -29,14 +29,14 @@
   - `Calendar.filter_market_hours` builds its row mask from a left join of the frame onto the schedule and applies the mask to the frame by position. The join states `maintain_order="left"`. With the join's rows in another order the mask selects rows outside the session.
   - `Calendar.schedule` joins the early-close times onto the session dates, and `trading_index` and the flatten masks of `run()` read the result in date order. The join states `maintain_order="left"`.
   - `MultiBacktestResult.returns` with `instrument_weights` sums the weighted returns of one date in the order the join onto the weights leaves them in, and a float sum over three or more instruments depends on that order. The join states `maintain_order="left"`.
-  - The Monte Carlo CVaR (`cvar(method="monte_carlo")`, `simulate_metric(Metric.CVAR, ...)`, `MetricsResult.mc_cvar`) is the mean of a tail of the per-simulation horizon returns. Those were taken from a `group_by` on the simulation index, so the mean summed them in the order the `group_by` returned. They are now the rows of the horizon step, in simulation order, held as one chunk: polars returns those rows in a number of chunks that follows the size of its thread pool (`POLARS_MAX_THREADS`, by default the number of cores), and a float mean sums each chunk separately.
+  - The Monte Carlo CVaR (`cvar(method="monte_carlo")`, `simulate_metric(Metric.CVAR, ...)`, `MetricsResult.mc_cvar`) is the mean of a tail of the per-simulation horizon returns. Those were taken from a `group_by` on the simulation index, so the mean summed them in the order the `group_by` returned. They are now the rows of the horizon step, in simulation order.
   - The flatten bar of a session is the last row at or before the cutoff. Rows that share that timestamp were ordered by a sort on `date` alone; the sort now breaks the tie on the row's position, and the later input row is the flatten bar.
   - A dual-strategy `run()` concatenates the long and the short trades and sorts them on `entry_date`. The sort states `maintain_order=True`: trades that share an `entry_date` are listed long side first.
 
   Measured on polars 1.44.2 and 2.0.0, before and after the change:
 
   - Weighted returns and the equity curve built from them, for 2, 3 and 5 instruments on 3 seeds each (1080 values): identical.
-  - Monte Carlo VaR and CVaR over 3 seeds, 3 simulation counts (200, 1000, 10000), 3 innovation kinds and 3 horizons (162 values): VaR identical. CVaR can differ from 0.16.4 in the last digits. With a fixed seed, each of the 162 values is now the same across processes, hash seeds, polars thread-pool sizes (1, 2, 3, 4, 8 and 16) and the two polars versions; before the change the CVaR was not.
+  - Monte Carlo VaR and CVaR over 3 seeds, 3 simulation counts (200, 1000, 10000), 3 innovation kinds and 3 horizons (162 values): VaR identical. CVaR can differ from 0.16.4 in the last digits.
   - The golden baseline files are unchanged.
 
   For the other four changes, the stated order is the one polars returned on both versions in every case the test suite runs, and no existing test result changed.
