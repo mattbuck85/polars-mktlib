@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.16.6
+
+### Fixed
+
+- **A tearsheet with Monte Carlo enabled aborted when numpy was not installed.**
+
+  `reports` converted four series to numpy to draw the simulation-paths chart, and no extra installs numpy, so `html(..., mc_config=MonteCarloConfig(enabled=True))` on an install of `mktlib[reports,data]` alone ended in a `PanicException` from polars. The chart now multiplies the series in polars and passes lists to plotly. The values are unchanged; the chart's data is written into the HTML as numbers where it was a packed array.
+
+- **The wheel installed top-level `tests`, `scripts` and `docs` packages beside `mktlib`.**
+
+  Package discovery was left unrestricted, so every directory of the repository that looks like a Python package was built into the wheel, and `import tests` in a project that had mktlib installed could resolve to mktlib's own. Discovery is limited to `mktlib*`; the wheel holds `mktlib` and its metadata only.
+
+### Changed
+
+- **`[reports]` requires `plotly>=6.1` and declares `markupsafe>=2.0`.** `reports` imports `markupsafe` directly; it was installed only as a dependency of `jinja2`. The plotly floor moves from 6.0 because plotly 6.0.0 raises its own `DeprecationWarning` when a figure is built.
+- CI installs the dev extra from `pyproject.toml`. The `lock-dev` and `lock-deps` jobs, `requirements/{dev,data,reports}.txt` and `scripts/lock-deps.sh` are removed: `dev.txt` was regenerated on every pull request, so it held no version from one pull request to the next, and nothing read the other two files.
+- The release tag is put on the commit whose CI run decided it, not on the tip of `main` at the time the job runs.
+- The `test` CI job caches pip's downloads, keyed on `pyproject.toml`.
+
+### Documentation
+
+- `docs/conf.py` no longer names a `_static` directory that does not exist, so `sphinx-build -W` passes.
+
+### Tests
+
+- `tests/test_clean_install.py` and the `clean-install` CI job: the built package is installed with one set of extras and none of the dev dependencies, and each public entry point either works or, where it needs an extra that is absent, raises `ModuleNotFoundError` (pinning the native scan backend without `fast` raises the backend's own `RuntimeError`). Six legs: no extras, `data`, `reports`, `reports,data` and `fast` on Python 3.12, and all three on 3.14.
+
 ## 0.16.5
 
 ### Changed

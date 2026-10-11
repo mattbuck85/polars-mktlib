@@ -1,4 +1,0 @@
-polars==1.39.0
-polars-rfft==0.1.1
-polars-runtime-32==1.39.0
-polars-sdist==0.1.1

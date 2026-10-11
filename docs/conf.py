@@ -36,7 +36,6 @@ exclude_patterns = ["_build", "CODEMAPS"]
 # -- Options for HTML output -------------------------------------------------
 
 html_theme = "sphinx_rtd_theme"
-html_static_path = ["_static"]
 html_baseurl = "https://polars-mktlib.readthedocs.io/en/latest/"
 sitemap_url_scheme = "{link}"
 

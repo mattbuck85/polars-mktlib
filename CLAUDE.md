@@ -15,9 +15,9 @@ Codemaps: `docs/CODEMAPS/{backtest,metrics,scheduling,reports,rates,data}.md` �
 
 ## Conventions
 
-- **Python 3.14+**. Use `from __future__ import annotations` in all files.
+- **Python 3.12+** (`requires-python` in `pyproject.toml`; CI runs 3.12 and 3.14). Syntax that only parses on a newer version fails the 3.12 legs. Use `from __future__ import annotations` in all files.
 - **Polars only** — no pandas in the library. `_compat.py` accepts pandas inputs but converts immediately.
-- **Optional extras** — `jinja2`/`plotly` behind `[reports]`. `polars` is the only core dependency. Data gen uses `polars-sdist`/`polars-rfft` (pure Rust Polars plugins, no NumPy).
+- **Optional extras** — `jinja2`/`markupsafe`/`plotly` behind `[reports]`. `polars` is the only core dependency. Data gen uses `polars-sdist`/`polars-rfft` (pure Rust Polars plugins, no NumPy).
 - **`importlib.resources`** for package data (templates, bundled CSVs). Pattern: `files("mktlib.subpkg") / "subdir" / "file"`.
 
 ## Testing
@@ -142,11 +142,6 @@ number.
 1. Create PR with changes, including CHANGELOG.md update
 2. Bump version: `bump-my-version bump {patch|minor|major}` (updates `pyproject.toml` `[project] version` + `[tool.bumpversion] current_version`)
 3. Merge PR to main
-4. Tag main with the version:
-   ```bash
-   git fetch origin main
-   git tag v{X.Y.Z} origin/main
-   git push origin v{X.Y.Z}
-   ```
+4. Nothing further by hand. On a green push to main whose `[project] version` has no tag yet, the `tag-release` CI job tags the commit that run tested as `v{X.Y.Z}`; the tag triggers `release.yml`, which publishes to PyPI. A version bump on main is therefore a release, and it cannot be undone.
 
 Consumer repos pin to git tags: `mktlib[reports] @ git+...@v0.7.0`.
