@@ -26,32 +26,6 @@ Two usage patterns:
 
    sr = calculate_metric(Metric.SHARPE, returns, rf=0.05)
 
-.. _metrics-last-digits:
-
-Last Digits
------------
-
-A float sum depends on how its terms are grouped, and polars chooses the
-grouping: it sums each chunk of a series separately and then adds the
-partial sums. Two things follow for the scalar float aggregates of this
-module and of :doc:`/api/reports`: the mean, the variance, the standard
-deviation and what is built on them.
-
-**Chunk layout of the input.** The same values held in one chunk and held
-in several chunks can give results that differ in the last digits. The
-functions reduce the series as it arrives and do not rechunk it. The
-difference grows with the length of the series.
-
-:func:`mktlib.backtest.run`, the calendars of :doc:`/api/scheduling` and the
-generators of :doc:`/api/data` give the same result whatever the chunk layout
-of their input.
-
-**Monte Carlo CVaR.** The last digits of a Monte Carlo CVaR
-(``cvar(method="monte_carlo")``, ``simulate_metric(Metric.CVAR, ...)``,
-``MetricsResult.mc_cvar``) are not guaranteed to be identical from run to
-run: the tail mean is a float sum whose grouping polars chooses. The Monte
-Carlo VaR is a quantile of the same simulated returns and is not affected.
-
 Metric Enum
 -----------
 
@@ -216,3 +190,17 @@ Drawdown
 .. autofunction:: mktlib.metrics.avg_drawdown
 
 .. autofunction:: mktlib.metrics.longest_drawdown_days
+
+.. _metrics-last-digits:
+
+Last Digits
+-----------
+
+polars sums each chunk of a series separately, so the scalar float
+aggregates here (mean, variance, standard deviation and what is built on
+them) can differ in the last digits between a single-chunk and a
+multi-chunk input. The difference grows with the length of the series.
+
+The last digits of a Monte Carlo CVaR are likewise not guaranteed to be
+identical from run to run. The Monte Carlo VaR is a quantile and is not
+affected.

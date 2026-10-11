@@ -19,26 +19,16 @@ The engine runs a signal-driven backtest where:
 Row Order
 ~~~~~~~~~
 
-``run()`` reads the rows of each instrument in the order they are given: bar
-*t+1* is the row after bar *t*. The rows of one instrument are in bar order,
-with ``date`` non-decreasing; that is a precondition and is not checked. The
-result is determined by the input rows and that order. It does not depend on
-the polars engine that evaluates a query, on how the input frame is split into
-chunks, or on the order in which polars returns the rows of a join or a
-``group_by``: where the engine reads such an order it states it
-(``maintain_order``), and where it sorts on a key that can tie it states the
-tie-break. Two rows of one instrument that share a ``date`` are two bars in
-their input order, so the flatten bar of a session whose last timestamp occurs
-twice is the later row. In a dual-strategy run, trades that share an
-``entry_date`` are listed long side first.
+``run()`` reads the rows of each instrument in the order they are given. The
+rows of one instrument must be in bar order, with ``date`` non-decreasing;
+this is a precondition and is not checked.
 
-The scalar aggregates of :doc:`/api/metrics` and :doc:`/api/reports` are a
-separate matter: they can differ in the last digits with the chunk layout of
-their input (:ref:`metrics-last-digits`).
-
-The columns of the result frames are in one order too. ``result.signals``
-holds one ``_entry_<col>`` column for each column an exit condition reads
-through ``EntryRef``, added after the input columns in name order.
+The result does not depend on the polars engine, on how the input frame is
+split into chunks, or on the order in which polars returns the rows of a join
+or a ``group_by``. Two rows of one instrument that share a ``date`` are two
+bars in their input order. In a dual-strategy run, trades that share an
+``entry_date`` are listed long side first. ``result.signals`` holds its
+``_entry_<col>`` columns in name order.
 
 Return Model
 ~~~~~~~~~~~~
