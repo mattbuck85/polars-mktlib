@@ -33,8 +33,6 @@ jobs:
         - {python-version: "3.14", backend: without-accelerator, polars: "1.44.2"}
     steps:
     - uses: actions/checkout@v4
-      with:
-        ref: ${{ github.head_ref || github.ref }}
     - uses: actions/setup-python@v5
       with: {python-version: "${{ matrix.python-version }}"}
     - name: Install the dev extra
@@ -88,8 +86,9 @@ jobs:
       run: pytest -m integration --no-cov
 
   # Cut a release whenever a merge to main advances [project] version and no
-  # matching tag exists yet. We only tag on a green main (needs.test.result ==
-  # 'success'), so we never publish to PyPI — irreversible — on a red build.
+  # matching tag exists yet. We only tag on a green main: the job needs `test`
+  # and its `if` names no status function, so a failed leg skips it and we
+  # never publish to PyPI — irreversible — on a red build.
   # The tag MUST be pushed with GH_PAT, not GITHUB_TOKEN: tags pushed with the
   # default token do not trigger other workflows, so release.yml would never
   # fire. Idempotent via the rev-parse guard.
