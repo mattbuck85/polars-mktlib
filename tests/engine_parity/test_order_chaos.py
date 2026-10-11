@@ -8,7 +8,9 @@ accident of the engine that produced it.
 
 Sorts are not perturbed by that fixture.  The ``tie_order`` fixture is its
 counterpart for them: it reverses the input order of rows that are equal on
-a sort key, and the tests at the end of this module run under it.
+a sort key.  It moves nothing where no two rows tie, so it is not run over
+the corpus: :data:`SORT_SITES` lists every sort in the library, and each
+one whose key can tie has a test here whose data ties at that sort.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from mktlib.backtest import Condition, Custom, FlattenSchedule, run
 from mktlib.backtest._flatten import build_flatten_masks
 from mktlib.scheduling import get_calendar
 from tests.backtest import test_golden_baseline as golden
-from tests.engine_parity import _corpus
+from tests.engine_parity import _census, _corpus
 from tests.engine_parity._chaos import Perturbation
 
 Chaos = Callable[[], AbstractContextManager[Perturbation]]
@@ -208,6 +210,105 @@ def test_metric_does_not_depend_on_unspecified_order(
 
 
 # ---------------------------------------------------------------------------
+# What the fixtures rest on
+# ---------------------------------------------------------------------------
+
+#: Calls the lazy census finds by name that are not polars lazy calls, by
+#: ``file::name``, each with the reason.
+NOT_LAZY = {
+    "mktlib/backtest/_anchor.py::scan_realized": (
+        "the chain resolver of the scan backends, not a polars scan"
+    ),
+}
+
+
+def test_library_builds_no_lazy_query() -> None:
+    """The order fixtures patch the eager API, and only that.
+
+    ``unspecified_order`` and ``tie_order`` replace ``DataFrame.join``,
+    the ``GroupBy`` terminals, ``DataFrame.sort`` and ``Expr.sort_by``.  A
+    join, group_by or sort written on a ``LazyFrame`` goes through none of
+    them, so every test in this module would stay green on it whatever
+    order it pinned.  The tests are evidence only while the library has no
+    lazy query.
+    """
+    lazy = {
+        f"{call.file}:{call.line} {call.kind} ({call.symbol})"
+        for call in _census.lazy_calls()
+        if f"{call.file}::{call.kind}" not in NOT_LAZY
+    }
+    assert lazy == set(), (
+        "mktlib/ builds or collects a lazy query. The order fixtures of "
+        "tests/engine_parity do not perturb LazyFrame.join, group_by or "
+        "sort, so the order tests do not cover this code: extend "
+        "tests/engine_parity/_chaos.py to the lazy API first, or list the "
+        "call in NOT_LAZY with the reason it is not a polars lazy call."
+    )
+
+
+def test_lazy_census_reads_every_spelling() -> None:
+    names = {"lazy", "collect", "collect_all", "scan_parquet", "LazyFrame"}
+    assert {_census._lazy_kind(name) for name in names} == names
+    assert _census._lazy_kind("select") is None
+    assert {
+        f"{call.file}::{call.kind}" for call in _census.lazy_calls()
+    } == set(NOT_LAZY)
+
+
+def _reached_unpinned_sites(chaos: Chaos) -> set[tuple[str, int, str]]:
+    """The unpinned joins and group_bys the whole corpus reaches."""
+    from mktlib.backtest import _backend
+    from tests._scan_backend import NATIVE_AVAILABLE
+
+    reached: set[tuple[str, int, str]] = set()
+    with chaos() as seen:
+        for backend in ("python", "native"):
+            if backend == "native" and not NATIVE_AVAILABLE:
+                continue
+            _backend.set_scan_backend(backend)  # type: ignore[arg-type]
+            try:
+                for scenario in _corpus.BACKTEST_SCENARIOS.values():
+                    _corpus.run_fresh(scenario)
+            finally:
+                _backend._reset_for_tests()
+        for scenarios in (
+            _corpus.REPORT_SCENARIOS,
+            _corpus.DATA_SCENARIOS,
+            _corpus.CALENDAR_SCENARIOS,
+            _corpus.METRIC_SCENARIOS,
+        ):
+            for scenario in scenarios.values():
+                _corpus.run_fresh(scenario)
+    for site in seen.library_sites(pinned=False):
+        reached.add((site.file, site.line, site.kind))
+    return reached
+
+
+def test_corpus_reaches_every_unpinned_join_and_group_by(
+    unspecified_order: Chaos,
+) -> None:
+    """The sites the perturbation reversed are the sites the source has.
+
+    A join or group_by added to the library without a pinned order, on a
+    path no scenario runs, is in the census and not among the reached: the
+    order tests say nothing about it until a scenario reaches it.
+    """
+    pytest.importorskip("plotly")
+    written = {
+        call.site: call.where for call in _census.unpinned_order_calls()
+    }
+    reached = _reached_unpinned_sites(unspecified_order)
+    unreached = sorted(
+        f"{file}:{line} {kind} ({written[file, line, kind]})"
+        for file, line, kind in set(written) - reached
+    )
+    assert unreached == [], "unpinned and reached by no scenario"
+    unknown = sorted(reached - set(written))
+    assert unknown == [], "reversed at run time and not found in the source"
+    assert len(written) >= 1
+
+
+# ---------------------------------------------------------------------------
 # The corpus covers what it claims to
 # ---------------------------------------------------------------------------
 
@@ -307,11 +408,93 @@ def test_tie_fixture_is_removed_on_exit(tie_order: Chaos) -> None:
     assert pl.Expr.sort_by is sort_by
 
 
-def _assert_tie_independent(scenario: _corpus.Scenario, chaos: Chaos) -> None:
+def _assert_tie_independent(
+    scenario: _corpus.Scenario, chaos: Chaos, *, site: str
+) -> None:
+    """Run *scenario* with and without the perturbation; require one result.
+
+    *site* is the ``file::symbol`` of the sort the scenario is about, and
+    the perturbed run must have reached a sort in that file.
+    """
     plain = _corpus.run_fresh(scenario)
-    with chaos():
+    with chaos() as seen:
         perturbed = _corpus.run_fresh(scenario)
     _corpus.assert_exact(perturbed, plain)
+    assert site in SORT_SITES
+    kinds = {kind for kind, _can_tie, _why in SORT_SITES[site]}
+    reached = {(s.file, s.kind) for s in seen.sites}
+    assert reached & {(site.split("::")[0], kind) for kind in kinds}, reached
+
+
+_ENGINE = "mktlib/backtest/_engine.py::_run_dual"
+_FLATTEN = "mktlib/backtest/_flatten.py::build_flatten_masks"
+
+#: Every ``.sort(...)`` and ``.sort_by(...)`` under ``mktlib/``, by
+#: ``file::symbol``: its kind, whether its key can hold two equal rows on
+#: valid input, and why.  A sort whose key can tie is covered by the tests
+#: named in its entry, each of which builds rows that tie there.
+SORT_SITES: dict[str, list[tuple[str, bool, str]]] = {
+    _ENGINE: [
+        (
+            "sort",
+            True,
+            "entry_date: a long and a short trade can open on one bar; "
+            "test_dual_trades_tied_on_entry_date_do_not_depend_on_tie_order",
+        ),
+    ],
+    _FLATTEN: [
+        (
+            "sort_by",
+            True,
+            "date can repeat within a session and _idx, the row position, "
+            "breaks the tie; "
+            "test_flatten_masks_do_not_depend_on_tie_order",
+        ),
+    ],
+    "mktlib/backtest/_types.py::MultiBacktestResult._weighted_returns": [
+        ("sort", False, "date is the key of the group_by it follows"),
+    ],
+    "mktlib/reports/_compat.py::_ensure_daily": [
+        ("sort", False, "taken only when date was checked to be unique"),
+        ("sort", False, "date is the key of the group_by it follows"),
+    ],
+    "mktlib/reports/_plots.py::monte_carlo_paths_chart": [
+        ("sort", False, "step is the key of the group_by it follows"),
+    ],
+    "mktlib/reports/_stats.py::monthly_returns": [
+        ("sort", False, "(year, month) is the key of the group_by it follows"),
+    ],
+    "mktlib/reports/_stats.py::yearly_returns": [
+        ("sort", False, "year is the key of the group_by it follows"),
+    ],
+    "mktlib/rates/_treasury.py::fetch_year": [
+        ("sort", False, "list.sort of Python rows, which keeps ties in place"),
+    ],
+}
+
+
+def test_every_sort_in_the_library_is_listed() -> None:
+    """A sort added to the library is classified here before it is green."""
+    written: dict[str, list[str]] = {}
+    for call in _census.sort_calls():
+        written.setdefault(call.where, []).append(call.kind)
+    listed = {
+        where: sorted(kind for kind, _can_tie, _why in entries)
+        for where, entries in SORT_SITES.items()
+    }
+    assert {w: sorted(kinds) for w, kinds in written.items()} == listed, (
+        "mktlib/ has a sort that SORT_SITES does not list, or the reverse. "
+        "Say whether its key can tie on valid input; if it can, add a test "
+        "whose data ties there and run it under tie_order."
+    )
+
+
+def test_every_sort_that_can_tie_names_its_test() -> None:
+    for where, entries in SORT_SITES.items():
+        for _kind, can_tie, why in entries:
+            if can_tie:
+                name = why.rsplit("; ", 1)[-1]
+                assert callable(globals().get(name)), f"{where}: {name}"
 
 
 def _duplicated_stamps() -> list[datetime.datetime]:
@@ -362,7 +545,7 @@ def test_flatten_masks_do_not_depend_on_tie_order(tie_order: Chaos) -> None:
             )
         )
 
-    _assert_tie_independent(scenario, tie_order)
+    _assert_tie_independent(scenario, tie_order, site=_FLATTEN)
 
 
 def test_run_with_duplicate_timestamps_does_not_depend_on_tie_order(
@@ -378,7 +561,7 @@ def test_run_with_duplicate_timestamps_does_not_depend_on_tie_order(
         )
         return golden._artifacts(result)
 
-    _assert_tie_independent(scenario, tie_order)
+    _assert_tie_independent(scenario, tie_order, site=_FLATTEN)
 
 
 def _tied_dual_trades() -> pl.DataFrame:
@@ -407,25 +590,14 @@ def test_dual_trades_can_tie_on_entry_date() -> None:
 def test_dual_trades_tied_on_entry_date_do_not_depend_on_tie_order(
     scan_backend: str, tie_order: Chaos
 ) -> None:
-    _assert_tie_independent(lambda layout: _tied_dual_trades(), tie_order)
+    _assert_tie_independent(
+        lambda layout: _tied_dual_trades(), tie_order, site=_ENGINE
+    )
 
 
 def test_dual_trades_tied_on_entry_date_list_the_long_side_first() -> None:
     tied = _tied_dual_trades().filter(pl.col("entry_date").is_duplicated())
     assert tied["side"].to_list() == [1, -1] * (tied.height // 2)
-
-
-@pytest.mark.parametrize("name", sorted(_corpus.BACKTEST_SCENARIOS))
-def test_backtest_does_not_depend_on_tie_order(
-    name: str, scan_backend: str, tie_order: Chaos
-) -> None:
-    _assert_tie_independent(_corpus.BACKTEST_SCENARIOS[name], tie_order)
-
-
-@pytest.mark.parametrize("name", sorted(_corpus.REPORT_SCENARIOS))
-def test_report_does_not_depend_on_tie_order(name: str, tie_order: Chaos) -> None:
-    pytest.importorskip("plotly")
-    _assert_tie_independent(_corpus.REPORT_SCENARIOS[name], tie_order)
 
 
 # ---------------------------------------------------------------------------

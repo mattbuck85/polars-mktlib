@@ -8,17 +8,19 @@ chunk and over the same frame in 7-row chunks.  The four columns must be
 identical, and identical to the eager one.
 
 **Census.**  The builders are enumerated from the source, not listed by
-hand: every function or method under ``mktlib/`` that is defined at module
-or class level and is annotated ``-> pl.Expr``.  :data:`CASES` must hold
-exactly that set, so a builder added without a case fails
-``test_every_builder_has_a_case``.  Functions nested inside another
-function are not enumerated; they are closures over the state of one run
-and cannot be evaluated on their own.
+hand: every function, method or nested function under ``mktlib/`` whose
+return annotation mentions ``Expr`` in any spelling (``pl.Expr``,
+``pl.Expr | None``, ``list[pl.Expr]``, a tuple holding one, a string
+annotation).  Each is either in :data:`CASES`, which evaluates the
+expressions it returns, or in :data:`EXEMPT` with the reason it cannot be
+evaluated on its own.  A builder in neither fails
+``test_every_builder_has_a_case``.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -57,7 +59,7 @@ _ROOT = Path(mktlib.__file__).resolve().parent
 
 #: The number of builders the census found when this file was last edited.
 #: The census may grow; it may not silently shrink.
-CENSUS_FLOOR = 31
+CENSUS_FLOOR = 36
 
 N_ROWS = 2000
 
@@ -67,12 +69,45 @@ N_ROWS = 2000
 # ---------------------------------------------------------------------------
 
 
+_EXPR = re.compile(r"\bExpr\b")
+
+
+def _annotation_text(annotation: ast.expr) -> str:
+    """The annotation as written, with every string inside it spelled out."""
+    strings = [
+        node.value
+        for node in ast.walk(annotation)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    return " ".join([ast.unparse(annotation), *strings])
+
+
 def _returns_expr(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return node.returns is not None and ast.unparse(node.returns) in (
-        "pl.Expr",
-        "polars.Expr",
-        "Expr",
-    )
+    """Does the return annotation mention ``Expr``, in any spelling?"""
+    if node.returns is None:
+        return False
+    return _EXPR.search(_annotation_text(node.returns)) is not None
+
+
+def _builders(node: ast.AST, prefix: str = "") -> set[str]:
+    """Qualified names of the builders under *node*, at any depth."""
+    found: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            name = prefix + child.name
+            if _returns_expr(child):
+                found.add(name)
+            found |= _builders(child, f"{name}.<locals>.")
+        elif isinstance(child, ast.ClassDef):
+            found |= _builders(child, f"{prefix}{child.name}.")
+        else:
+            found |= _builders(child, prefix)
+    return found
+
+
+def census_of(source: str, module: str) -> set[str]:
+    """``<module path>::<qualified name>`` of the builders in *source*."""
+    return {f"{module}::{name}" for name in _builders(ast.parse(source))}
 
 
 def builder_census() -> set[str]:
@@ -80,14 +115,7 @@ def builder_census() -> set[str]:
     found: set[str] = set()
     for path in sorted(_ROOT.rglob("*.py")):
         module = path.relative_to(_ROOT.parent).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and _returns_expr(node):
-                found.add(f"{module}::{node.name}")
-            elif isinstance(node, ast.ClassDef):
-                for item in node.body:
-                    if isinstance(item, ast.FunctionDef) and _returns_expr(item):
-                        found.add(f"{module}::{node.name}.{item.name}")
+        found |= census_of(path.read_text(encoding="utf-8"), module)
     return found
 
 
@@ -180,6 +208,29 @@ def _per_leg(builder: Callable[..., pl.Expr]) -> list[pl.Expr]:
     ]
 
 
+def _plan_term_exprs() -> list[pl.Expr]:
+    """The expressions ``_plan_term`` hands back, for each kind of term."""
+    out: list[pl.Expr] = []
+    kinds: set[str] = set()
+    for cond in (
+        _GT,
+        ValueLT("close", EntryRef("close")),
+        ValueGTE(EntryRef("close"), Pct("open", 0.1)),
+        ValueLTE("low", Pct(EntryRef("close"), -1.0)),
+        Custom(pl.col("close").rolling_mean(5) > pl.col("slow")),
+    ):
+        leg, fixed, refusal = _anchor._plan_term(cond)
+        assert refusal is None, refusal
+        if leg is not None:
+            kinds.add("leg")
+            out.extend([leg.value, leg.threshold])
+        if fixed is not None:
+            kinds.add("fixed")
+            out.append(fixed)
+    assert kinds == {"leg", "fixed"}
+    return out
+
+
 _C = "mktlib/backtest/_conditions.py::"
 
 #: Census key -> the expressions that exercise that builder.  An empty list
@@ -248,6 +299,7 @@ CASES: dict[str, Callable[[], list[pl.Expr]]] = {
         _anchor._resolve_raw(Pct(EntryRef("close"), 1.0)),
         *[_anchor._resolve_raw(e) for e in _ARITHMETIC if "%" not in repr(e)],
     ],
+    "mktlib/backtest/_anchor.py::_plan_term": lambda: _plan_term_exprs(),
     "mktlib/backtest/_cost.py::cost_bps_expr": lambda: [
         _cost.cost_bps_expr(_cost.Cost()),
         _cost.cost_bps_expr(_cost.Cost(commission_bps=0.7, slippage_bps=0.3)),
@@ -277,11 +329,68 @@ CASES: dict[str, Callable[[], list[pl.Expr]]] = {
 ABSTRACT = {_C + "ColExpr.resolve": ColExpr, _C + "Condition.resolve": Condition}
 
 
+_RUN_CORE = "mktlib/backtest/_engine.py::_run_core.<locals>."
+_STRATEGY = "mktlib/backtest/_types.py::Strategy."
+
+#: Builders with no case, each with the reason.
+EXEMPT: dict[str, str] = {
+    _RUN_CORE + "_charge": (
+        "a closure over the cost and columns of one run; reached through "
+        "run() by every backtest scenario"
+    ),
+    _RUN_CORE + "_with_bracket": (
+        "a closure over the bracket columns of one run; reached through "
+        "run() by the bracket golden scenarios"
+    ),
+    _STRATEGY + "entry": "a Protocol method with no body",
+    _STRATEGY + "exit": "a Protocol method with no body",
+}
+
+
 def test_every_builder_has_a_case() -> None:
     census = builder_census()
-    assert census - set(CASES) == set(), "builders with no case"
-    assert set(CASES) - census == set(), "cases for builders that are gone"
+    covered = set(CASES) | set(EXEMPT)
+    assert census - covered == set(), (
+        "functions whose return annotation mentions Expr and that have "
+        "neither a case in CASES nor a reason in EXEMPT"
+    )
+    assert covered - census == set(), "cases or exemptions for builders gone"
+    assert set(CASES) & set(EXEMPT) == set()
+    assert all(EXEMPT.values())
     assert len(census) >= CENSUS_FLOOR
+
+
+_SPELLINGS = '''
+def plain() -> pl.Expr: ...
+def optional() -> pl.Expr | None: ...
+def listed() -> list[pl.Expr]: ...
+def quoted() -> "pl.Expr": ...
+def quoted_inside() -> tuple[int, "polars.Expr | None"]: ...
+def bare() -> Expr: ...
+def outer() -> int:
+    def inner() -> pl.Expr: ...
+    return 0
+class Holder:
+    def method(self) -> dict[str, pl.Expr]: ...
+    async def later(self) -> pl.Expr: ...
+def frame() -> pl.DataFrame: ...
+def node() -> ColExpr: ...
+def unannotated(): ...
+'''
+
+
+def test_census_reads_every_spelling_of_the_annotation() -> None:
+    assert census_of(_SPELLINGS, "m.py") == {
+        "m.py::plain",
+        "m.py::optional",
+        "m.py::listed",
+        "m.py::quoted",
+        "m.py::quoted_inside",
+        "m.py::bare",
+        "m.py::outer.<locals>.inner",
+        "m.py::Holder.method",
+        "m.py::Holder.later",
+    }
 
 
 def test_census_finds_the_public_condition_classes() -> None:
