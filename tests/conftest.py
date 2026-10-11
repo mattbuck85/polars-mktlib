@@ -1,24 +1,63 @@
-"""Suite-wide test configuration."""
+"""Suite-wide test configuration.
+
+A ``DeprecationWarning`` attributed to a file under ``mktlib/`` or
+``tests/`` fails the run.  The supported polars range spans a major
+version: a spelling deprecated on one end is removed on the other.
+
+The failure is a session-level one, not a per-test one.  This module
+installs no warnings filter and no recorder; it reads what pytest itself
+records (``pytest_warning_recorded``) during configuration, collection and
+every test.  The outcome of each test, ``recwarn``, ``pytest.warns`` and
+the warnings summary are therefore the ones pytest produces without this
+file.  When at least one such deprecation was recorded, a section at the
+end of the report lists each of them, and a run that would have exited
+with status 0 exits with status 1 instead.
+
+The warnings are not escalated with an ``error`` filter because polars
+raises some deprecations while it evaluates an expression in native code,
+and a warning turned into an exception there is discarded: the call
+returns normally and nothing is reported.
+
+A warning that a test ignores or captures itself (``-W ignore``, the
+``filterwarnings`` mark, ``pytest.warns``, ``warnings.catch_warnings``) is
+not recorded by pytest and so is not counted.  Neither is a warning whose
+filename is not an absolute path (``<string>``, ``<frozen ...>``).
+"""
 
 from __future__ import annotations
 
+import os
 import warnings
-from collections.abc import Generator
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
 import mktlib
 
-# A DeprecationWarning attributed to a file under one of these directories
-# fails the test that triggered it.
+# Importing ``mktlib`` here is covered too: pytest records a warning raised
+# while it loads this file and reports it to the hook below with
+# ``when="config"``.
 _OWN_ROOTS = (
     Path(mktlib.__file__).resolve().parent,
     Path(__file__).resolve().parent,
 )
 
 
+class _OwnDeprecation(NamedTuple):
+    when: str
+    nodeid: str
+    filename: str
+    lineno: int
+    message: str
+
+
+_own_deprecations: list[_OwnDeprecation] = []
+
+
 def _is_own(filename: str) -> bool:
+    if not os.path.isabs(filename):
+        return False
     try:
         path = Path(filename).resolve()
     except (OSError, ValueError):
@@ -26,59 +65,44 @@ def _is_own(filename: str) -> bool:
     return any(path.is_relative_to(root) for root in _OWN_ROOTS)
 
 
-def _fail_on_own_deprecations() -> Generator[None, object, object]:
-    """Record the warnings of one test phase; fail on an own deprecation.
-
-    The supported polars range spans a major version: a spelling deprecated
-    on one end is removed on the other.  The warnings are recorded and
-    judged after the phase rather than escalated with an ``error`` filter,
-    because polars raises some deprecations while it evaluates an
-    expression in native code, and a warning turned into an exception there
-    is discarded: the call returns normally and nothing is reported.
-
-    The filters in force are left as they are, so ``-W``, the
-    ``filterwarnings`` mark, ``pytest.warns`` and ``warnings.catch_warnings``
-    in a test body keep their meaning: a warning they ignore or capture
-    never reaches this recorder.  Every other recorded warning is emitted
-    again so that it still reaches the warnings summary.
-    """
-    with warnings.catch_warnings(record=True) as recorded:
-        try:
-            result = yield
-        finally:
-            caught = list(recorded)
-    own: list[str] = []
-    with warnings.catch_warnings():
-        warnings.simplefilter("always")
-        for w in caught:
-            if issubclass(w.category, DeprecationWarning) and _is_own(
-                w.filename
-            ):
-                own.append(f"{w.filename}:{w.lineno}: {w.message}")
-            else:
-                warnings.warn_explicit(
-                    w.message, w.category, w.filename, w.lineno,
-                    source=w.source,
-                )
-    if own:
-        pytest.fail(
-            "DeprecationWarning attributed to mktlib or its tests:\n"
-            + "\n".join(own),
-            pytrace=False,
+def pytest_warning_recorded(
+    warning_message: warnings.WarningMessage, when: str, nodeid: str
+) -> None:
+    if not issubclass(warning_message.category, DeprecationWarning):
+        return
+    if not _is_own(warning_message.filename):
+        return
+    _own_deprecations.append(
+        _OwnDeprecation(
+            when,
+            nodeid,
+            warning_message.filename,
+            warning_message.lineno,
+            str(warning_message.message),
         )
-    return result
+    )
 
 
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_setup() -> Generator[None, object, object]:
-    return (yield from _fail_on_own_deprecations())
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter,
+) -> None:
+    if not _own_deprecations:
+        return
+    terminalreporter.section(
+        "DeprecationWarning attributed to mktlib or its tests",
+        red=True,
+        bold=True,
+    )
+    for d in _own_deprecations:
+        where = d.nodeid or "-"
+        terminalreporter.write_line(
+            f"[{d.when}] {where}: {d.filename}:{d.lineno}: {d.message}"
+        )
+    terminalreporter.write_line(
+        f"{len(_own_deprecations)} own deprecation(s): the run fails."
+    )
 
 
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_call() -> Generator[None, object, object]:
-    return (yield from _fail_on_own_deprecations())
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_teardown() -> Generator[None, object, object]:
-    return (yield from _fail_on_own_deprecations())
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    if _own_deprecations and session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
