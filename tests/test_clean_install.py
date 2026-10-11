@@ -250,6 +250,21 @@ def test_environment_is_the_one_the_job_installed() -> None:
             assert present == [], (extra, present)
 
 
+@pytest.mark.skipif(not _CLEAN, reason=f"{_ENV} is not set")
+def test_distribution_installs_only_the_mktlib_package() -> None:
+    """The wheel holds `mktlib` and its metadata, and no other top level.
+
+    A top-level `tests`, `scripts` or `docs` in the wheel lands in the
+    user's site-packages, where `import tests` then finds this project's.
+    """
+    from importlib.metadata import files, version
+
+    installed = files("mktlib")
+    assert installed, "the installed distribution lists no files"
+    top_levels = {f.parts[0] for f in installed}
+    assert top_levels == {"mktlib", f"mktlib-{version('mktlib')}.dist-info"}
+
+
 def test_extras_in_this_module_are_the_declared_ones() -> None:
     """A new extra in pyproject.toml gets cases here before it ships."""
     from importlib.metadata import metadata

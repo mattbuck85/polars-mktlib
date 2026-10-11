@@ -74,7 +74,11 @@ line-length = 79
 "mktlib.reports" = ["templates/*.j2"]
 "mktlib.rates" = ["_data/*.csv"]
 
+# Only the library. An empty table makes setuptools package every directory
+# that looks like a Python package, which put `tests`, `scripts` and `docs`
+# into the wheel as top-level packages.
 [tool.setuptools.packages.find]
+include = ["mktlib*"]
 
 [tool.bumpversion]
 current_version = "0.16.6"

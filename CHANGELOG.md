@@ -8,6 +8,10 @@
 
   `reports` converted four series to numpy to draw the simulation-paths chart, and no extra installs numpy, so `html(..., mc_config=MonteCarloConfig(enabled=True))` on an install of `mktlib[reports,data]` alone ended in a `PanicException` from polars. The chart now multiplies the series in polars and passes lists to plotly. The values are unchanged; the chart's data is written into the HTML as numbers where it was a packed array.
 
+- **The wheel installed top-level `tests`, `scripts` and `docs` packages beside `mktlib`.**
+
+  Package discovery was left unrestricted, so every directory of the repository that looks like a Python package was built into the wheel, and `import tests` in a project that had mktlib installed could resolve to mktlib's own. Discovery is limited to `mktlib*`; the wheel holds `mktlib` and its metadata only.
+
 ### Changed
 
 - **`[reports]` requires `plotly>=6.1` and declares `markupsafe>=2.0`.** `reports` imports `markupsafe` directly; it was installed only as a dependency of `jinja2`. The plotly floor moves from 6.0 because plotly 6.0.0 raises its own `DeprecationWarning` when a figure is built.
