@@ -351,7 +351,7 @@ def monte_carlo_paths_chart(
     spaghetti = sims.filter(pl.col("simulation").is_in(selected))
     for sim_idx in selected:
         path = spaghetti.filter(pl.col("simulation") == sim_idx)
-        prices = path["price"].to_numpy() * last_value
+        prices = (path["price"] * last_value).to_list()
         fig = fig.add_trace(
             go.Scatter(
                 x=step_to_date[: len(prices)],
@@ -373,9 +373,9 @@ def monte_carlo_paths_chart(
         )
         .sort("step")
     )
-    lo = (by_step["lo"].to_numpy() * last_value).tolist()
-    med = (by_step["med"].to_numpy() * last_value).tolist()
-    hi = (by_step["hi"].to_numpy() * last_value).tolist()
+    lo = (by_step["lo"] * last_value).to_list()
+    med = (by_step["med"] * last_value).to_list()
+    hi = (by_step["hi"] * last_value).to_list()
 
     band_pct = int(round((1.0 - alpha) * 100))
 

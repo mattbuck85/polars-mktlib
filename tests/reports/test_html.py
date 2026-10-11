@@ -323,6 +323,32 @@ class TestMonteCarloIntegration:
 
 
 @pytest.mark.integration
+class TestMonteCarloNeedsNoNumpy:
+    """The `[reports]` extra does not install numpy."""
+
+    def test_tearsheet_with_monte_carlo_builds_without_numpy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """No step of the Monte Carlo tearsheet converts a series to numpy.
+
+        `Series.to_numpy` needs the numpy package, which only the dev extra
+        installs; with `[reports,data]` alone the conversion aborts.
+        """
+        from mktlib.reports import MonteCarloConfig
+
+        def no_numpy(self: pl.Series, *args: object, **kwargs: object):
+            raise ModuleNotFoundError("No module named 'numpy'")
+
+        monkeypatch.setattr(pl.Series, "to_numpy", no_numpy)
+        monkeypatch.setattr(pl.DataFrame, "to_numpy", no_numpy)
+
+        out = html(
+            _make_returns(), rf=0.0, mc_config=MonteCarloConfig(enabled=True)
+        )
+        assert isinstance(out, str)
+        assert "Simulation Paths" in out or "mc" in out.lower()
+
+
 class TestMonteCarloPathsChartSampling:
     """The displayed spaghetti subset must be distributionally representative
     of the full simulation population.
