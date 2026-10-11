@@ -426,3 +426,39 @@ def test_backtest_does_not_depend_on_tie_order(
 def test_report_does_not_depend_on_tie_order(name: str, tie_order: Chaos) -> None:
     pytest.importorskip("plotly")
     _assert_tie_independent(_corpus.REPORT_SCENARIOS[name], tie_order)
+
+
+# ---------------------------------------------------------------------------
+# Weighted returns are summed in input order
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n_extra", [0, 600])
+@pytest.mark.parametrize("n_instruments", [3, 5])
+@pytest.mark.parametrize("seed_offset", [0, 1, 2])
+def test_weighted_returns_sum_a_date_in_input_order(
+    n_instruments: int, n_extra: int, seed_offset: int
+) -> None:
+    """Whatever the size and the order of the weights mapping.
+
+    With ``n_extra=600`` the mapping holds 600 symbols the frame does not
+    and lists the frame's own in reverse; the sums are still the ones
+    taken over the instruments in the order the frame has them.
+    """
+    produced = _corpus.wide_weighted_run(
+        n_instruments, n_extra=n_extra, seed_offset=seed_offset
+    )
+    expected = _corpus.input_order_weighted_sum(
+        n_instruments, seed_offset=seed_offset
+    )
+    _corpus.assert_exact(produced, expected)
+
+
+@pytest.mark.parametrize("n_instruments", [3, 5])
+def test_weighted_returns_with_a_wide_mapping_under_unspecified_order(
+    n_instruments: int, unspecified_order: Chaos
+) -> None:
+    _assert_order_independent(
+        lambda layout: _corpus.wide_weighted_run(n_instruments),
+        unspecified_order,
+    )

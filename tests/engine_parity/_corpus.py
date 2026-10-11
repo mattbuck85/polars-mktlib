@@ -222,6 +222,77 @@ def weighted_run(
     return result.returns
 
 
+def wide_weights(n_instruments: int, n_extra: int = 600) -> dict[str, float]:
+    """The weights of :func:`weights_for` inside a much longer mapping.
+
+    The mapping lists *n_extra* symbols the frame does not hold and then
+    the frame's own symbols in the reverse of their input order, so the
+    order of the mapping and the order of the input disagree.
+    """
+    own = weights_for(n_instruments)
+    extras = {f"ZZ{i:04d}": 0.01 for i in range(n_extra)}
+    return {**extras, **dict(reversed(own.items()))}
+
+
+def wide_weighted_run(
+    n_instruments: int, *, n_extra: int = 600, seed_offset: int = 0
+) -> pl.DataFrame:
+    """Weighted returns where the weights mapping dwarfs the instruments."""
+    import logging
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        logging.disable(logging.WARNING)
+        try:
+            result = run(
+                multi_frame(n_instruments, seed_offset=seed_offset),
+                golden._CrossStrategy(),
+                instrument_col="symbol",
+                instrument_weights=wide_weights(n_instruments, n_extra),
+                cost=Cost(commission_bps=0.7, slippage_bps=0.3),
+            )
+        finally:
+            logging.disable(logging.NOTSET)
+    return result.returns
+
+
+def input_order_weighted_sum(
+    n_instruments: int, *, seed_offset: int = 0
+) -> pl.DataFrame:
+    """The weighted returns of each date, summed in input order.
+
+    Each instrument is run on its own and its returns are given their
+    weight as a literal, so no join is involved; the frames are stacked
+    in the order the instruments appear in the input and each date's rows
+    are summed in that order.
+    """
+    weights = weights_for(n_instruments)
+    frame = multi_frame(n_instruments, seed_offset=seed_offset)
+    parts = []
+    for (symbol,), part in frame.partition_by(
+        "symbol", maintain_order=True, as_dict=True
+    ).items():
+        returns = run(
+            part.drop("symbol"),
+            golden._CrossStrategy(),
+            cost=Cost(commission_bps=0.7, slippage_bps=0.3),
+        ).returns
+        parts.append(
+            returns.select(
+                "date",
+                (pl.col("return") * weights[str(symbol)]).alias("_wr"),
+                pl.lit(weights[str(symbol)]).alias("weight"),
+            )
+        )
+    return (
+        pl.concat(parts)
+        .group_by("date", maintain_order=True)
+        .agg((pl.col("_wr").sum() / pl.col("weight").sum()).alias("return"))
+        .sort("date")
+    )
+
+
 def _weighted(n_instruments: int) -> Scenario:
     def scenario(layout: Layout) -> object:
         return weighted_run(n_instruments, layout=layout)

@@ -35,7 +35,7 @@
 
   Measured on polars 1.44.2 and 2.0.0, before and after the change:
 
-  - Weighted returns and the equity curve built from them, for 2, 3 and 5 instruments on 3 seeds each (1080 values): identical.
+  - Weighted returns: the per-date sums are taken in the order the instruments appear in the input. Where the weights mapping holds the frame's instruments and no others, that is the order earlier releases summed in. Where the mapping holds more entries than the frame has instruments, earlier releases could sum in the mapping's order instead, and results can differ from them in the last digits.
   - Monte Carlo VaR and CVaR over 3 seeds, 3 simulation counts (200, 1000, 10000), 3 innovation kinds and 3 horizons (162 values): VaR identical. CVaR can differ from 0.16.4 in the last digits.
   - The golden baseline files are unchanged.
 
