@@ -953,8 +953,12 @@ def _run_dual(
         "return": long.returns["return"] + short.returns["return"],
     })
 
-    # Merge trades (concat + sort by entry_date)
-    trades = pl.concat([long.trades, short.trades]).sort("entry_date")
+    # Merge trades (concat + sort by entry_date). Trades that share an
+    # entry_date keep the concat order, long side first: the sort is told
+    # to keep it, since the order of tied rows is otherwise the sort's own.
+    trades = pl.concat([long.trades, short.trades]).sort(
+        "entry_date", maintain_order=True
+    )
 
     # Merge signals: long signals as base, overlay combined columns
     signals = long.signals.with_columns(

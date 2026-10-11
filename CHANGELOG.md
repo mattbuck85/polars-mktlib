@@ -22,9 +22,33 @@
 
 - `reports` passes the displayed-path selection to `is_in` as a Python list instead of a `Series` of the column's own dtype, a spelling polars deprecates. The rows selected are unchanged.
 
+- **Results no longer rest on a row order polars does not promise.**
+
+  polars leaves three row orders unspecified: that of a join called without `maintain_order`, that of a `group_by` built without `maintain_order=True`, and the relative order of rows that are equal on a sort key. Six places in the library read one of them. Each now states the order it needs.
+
+  - `Calendar.filter_market_hours` builds its row mask from a left join of the frame onto the schedule and applies the mask to the frame by position. The join states `maintain_order="left"`. With the join's rows in another order the mask selects rows outside the session.
+  - `Calendar.schedule` joins the early-close times onto the session dates, and `trading_index` and the flatten masks of `run()` read the result in date order. The join states `maintain_order="left"`.
+  - `MultiBacktestResult.returns` with `instrument_weights` sums the weighted returns of one date in the order the join onto the weights leaves them in, and a float sum over three or more instruments depends on that order. The join states `maintain_order="left"`.
+  - The Monte Carlo CVaR (`cvar(method="monte_carlo")`, `simulate_metric(Metric.CVAR, ...)`, `MetricsResult.mc_cvar`) is the mean of a tail of the per-simulation horizon returns. Those were taken from a `group_by` on the simulation index, so the mean summed them in the order the `group_by` returned. They are now the rows of the horizon step, in simulation order.
+  - The flatten bar of a session is the last row at or before the cutoff. Rows that share that timestamp were ordered by a sort on `date` alone; the sort now breaks the tie on the row's position, and the later input row is the flatten bar.
+  - A dual-strategy `run()` concatenates the long and the short trades and sorts them on `entry_date`. The sort states `maintain_order=True`: trades that share an `entry_date` are listed long side first.
+
+  Measured on polars 1.44.2 and 2.0.0, before and after the change:
+
+  - Weighted returns and the equity curve built from them, for 2, 3 and 5 instruments on 3 seeds each (1080 values): identical.
+  - Monte Carlo VaR and CVaR over 3 seeds, 3 simulation counts (200, 1000, 10000), 3 innovation kinds and 3 horizons (162 values): VaR identical; CVaR differs in the last digits in 22 to 32 of the 81 cells, by at most 4.7e-16 relative (2.8e-17 absolute). Before the change, two processes given the same seed disagreed with each other to the same extent, in 23 to 29 of the 81 cells; after it they agree in all of them.
+  - The golden baseline files are unchanged.
+
+  For the other four changes, the stated order is the one polars returned on both versions in every case the test suite runs, and no existing test result changed.
+
 ### Tests
 
 - `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.
+- `tests/engine_parity/` runs the backtest golden scenarios on both scan backends, the report metrics and tearsheet with Monte Carlo enabled, every `mktlib.data` generator, `schedule` / `trading_index` / `filter_market_hours` of every registered calendar over a range holding a holiday and an early close, and the `metrics` functions, each under three changes that leave the input rows and their order as they are, and requires results that are identical to the bit:
+  - `test_order_chaos.py`: with every join and `group_by` that does not pin its order returning its rows reversed, and separately with every sort that does not pin its ties returning tied rows in reverse input order. Both are monkeypatches of the polars eager API (`tests/engine_parity/_chaos.py`), so the perturbation is the same on every polars version. Each of the six changes above was a failure of this module first.
+  - `test_chunk_layout.py`: with every input frame and series rebuilt from 7-row chunks. The backtest, the calendars and the generators are identical. The scalar metrics and the reports built from them are not: a polars float reduction (`mean`, `var`, `std`) over a series in several chunks can differ in the last digits from the reduction over one chunk, and the metrics reduce the caller's series as it arrives. Those scenarios are expected failures of the exact comparison and are held to a relative difference of 1e-12.
+  - `test_expr_contract.py`: every expression builder (each `resolve()` and `resolve_price()` of the condition classes, `cost_bps_expr`, the bracket level, trigger and fill expressions, the generator expressions) evaluated in a lazy query on the in-memory and on the streaming engine, 2000 rows, in one chunk and in 7-row chunks. The builders are enumerated from the source as every module-level function and every method annotated `-> pl.Expr` (31), and a builder with no case fails the module.
+- The `scan_backend` fixture moved from `tests/backtest/conftest.py` to `tests/_scan_backend.py`, and both `tests/backtest` and `tests/engine_parity` import it. Its behaviour is unchanged.
 - The golden baseline comparisons go through one helper, `tests/_frames.py::assert_frames_close`, which passes the float tolerances as `rel_tol=1e-12, abs_tol=1e-15`. The values are those introduced in 0.16.3; `rtol` / `atol` are the deprecated names for the same parameters.
 
 ## 0.16.4

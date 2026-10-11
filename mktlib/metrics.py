@@ -448,9 +448,12 @@ def _monte_carlo_horizon_returns(
         # seed) doesn't affect any downstream metric.
         independent_streams=False,
     )
+    # One row per simulation, in simulation order: the row of the horizon
+    # step.  The order is part of the result, because the mean of a tail of
+    # these values is a float sum.
     horizon_returns = (
-        sims.group_by("simulation")
-        .agg((pl.col("price").last() - 1.0).alias("R"))
+        sims.filter(pl.col("step") == horizon)
+        .select((pl.col("price") - 1.0).alias("R"))
         .get_column("R")
     )
     return horizon_returns

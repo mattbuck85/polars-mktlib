@@ -16,6 +16,22 @@ The engine runs a signal-driven backtest where:
 - Fills use **next-bar-open** semantics: signal at bar *t* → market order fills at bar *t+1*'s open
 - Optional **calendar** filters to market hours; ``flatten=...`` force-closes positions on a schedule
 
+Row Order
+~~~~~~~~~
+
+``run()`` reads the rows of each instrument in the order they are given: bar
+*t+1* is the row after bar *t*. The rows of one instrument are in bar order,
+with ``date`` non-decreasing; that is a precondition and is not checked. The
+result is determined by the input rows and that order. It does not depend on
+the polars engine that evaluates a query, on how the input frame is split into
+chunks, or on the order in which polars returns the rows of a join or a
+``group_by``: where the engine reads such an order it states it
+(``maintain_order``), and where it sorts on a key that can tie it states the
+tie-break. Two rows of one instrument that share a ``date`` are two bars in
+their input order, so the flatten bar of a session whose last timestamp occurs
+twice is the later row. In a dual-strategy run, trades that share an
+``entry_date`` are listed long side first.
+
 Return Model
 ~~~~~~~~~~~~
 
