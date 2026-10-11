@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The supported polars range is declared: `polars>=1.40,<3`.**
+
+  The dependency was an unbounded `polars`. It is now bounded below at 1.40 and above at the next major version, and CI installs both ends: every run tests the release pinned in `requirements/dev.txt`, and additional legs replace it with polars 1.44.2 and with 1.40.0 after the lock install. Each leg asserts that the polars it imported is the one it is named for.
+
+- A `DeprecationWarning` attributed to a `mktlib` or `tests` module is an error in the test suite (`[tool.pytest.ini_options] filterwarnings`). Warnings attributed to third-party modules are unaffected.
+
+  One class of warning is outside this filter's reach: a deprecation that polars raises while evaluating an expression in native code is discarded when escalated to an error, so the call returns normally. The `is_in` fix below is pinned by a test that records warnings instead.
+
+### Fixed
+
+- **`trading_index` returned a null for every session that held no timestamp, on polars 1.x.**
+
+  `Calendar.trading_index` builds one list of timestamps per session and explodes it. A session can hold none: the open interval of a 6.5-hour session contains no multiple of `period="1d"`, and on a calendar with a lunch break neither half of the session contains a multiple of `period="3h"`. Exploding an empty list yields one null row on polars 1.x and no row on polars 2.x, so `get_calendar("XNYS").trading_index(start, end, period="1d", closed="none")` returned one null per session on 1.x and an empty series on 2.x. An early-close session between two full ones left a null in the middle of the result.
+
+  The explode now states `empty_as_null=False`, and the result is the same on every supported polars version: a session with no timestamp contributes no row. A caller on polars 1.x that counted or dropped those nulls sees them gone. The explicit argument also removes the `DeprecationWarning` that polars 1.44 raises on every `explode` that leaves it unstated.
+
+- `reports` passes the displayed-path selection to `is_in` as a Python list instead of a `Series` of the column's own dtype, a spelling polars deprecates. The rows selected are unchanged.
+
+### Tests
+
+- `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.40.0, 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.
+- The golden baseline comparisons go through one helper, `tests/_frames.py::assert_frames_close`, which passes the float tolerances as `rel_tol=1e-12, abs_tol=1e-15`. The values are those introduced in 0.16.3; `rtol` / `atol` are the deprecated names for the same parameters.
+
 ## 0.16.4
 
 ### Data

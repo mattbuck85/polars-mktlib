@@ -14,7 +14,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 readme = "README_PYPI.md"
-dependencies = ["polars"]
+dependencies = ["polars>=1.40,<3"]
 
 [project.urls]
 Documentation = "https://polars-mktlib.readthedocs.io"
@@ -58,6 +58,14 @@ addopts = "-ra --cov=mktlib --cov-report=term-missing"
 testpaths = ["tests"]
 markers = [
     "integration: slow / large-sample statistical integration tests (run via -m integration)",
+]
+# A DeprecationWarning raised on behalf of mktlib's own code or its tests is
+# an error: the supported polars range spans a major version, and a
+# deprecated spelling on one end is a removed one on the other. Warnings
+# attributed to third-party modules are left alone.
+filterwarnings = [
+    'error::DeprecationWarning:mktlib(\..*)?$',
+    'error::DeprecationWarning:tests(\..*)?$',
 ]
 
 [tool.pyright]

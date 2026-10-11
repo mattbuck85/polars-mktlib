@@ -259,6 +259,19 @@ class _LimitTakeProfitStrategy:
 # ---------------------------------------------------------------------------
 
 
+def _assert_matches_baseline(produced: pl.DataFrame, expected: pl.DataFrame) -> None:
+    """Compare a produced artifact with its frozen baseline.
+
+    Float columns are compared at ``rel_tol=1e-12, abs_tol=1e-15``; everything
+    else exactly.  The helper is imported here rather than at module level so
+    that running this file as a script (``--regenerate``) does not need the
+    ``tests`` package on ``sys.path``.
+    """
+    from tests._frames import assert_frames_close
+
+    assert_frames_close(produced, expected, rel_tol=1e-12, abs_tol=1e-15)
+
+
 def _artifacts(result: BacktestResult | MultiBacktestResult) -> dict[str, pl.DataFrame]:
     return {name: getattr(result, name) for name in ARTIFACTS}
 
@@ -925,19 +938,7 @@ def test_golden_baseline(scenario: str, artifact: str, scan_backend: str) -> Non
     )
     produced = SCENARIOS[scenario]()[artifact]
     expected = pl.read_parquet(path)
-    assert_frame_equal(
-        produced,
-        expected,
-        # Float columns: tolerate ulp-level arithmetic drift across polars releases
-        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
-        # Anything larger than 1e-12 relative is a real change and still fails.
-        check_exact=False,
-        rtol=1e-12,
-        atol=1e-15,
-        check_dtypes=True,
-        check_column_order=True,
-        check_row_order=True,
-    )
+    _assert_matches_baseline(produced, expected)
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
@@ -952,19 +953,7 @@ def test_golden_baseline_zero_cost(scenario: str, artifact: str) -> None:
     """
     produced = BASE_SCENARIOS[scenario](cost=Cost())[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
-    assert_frame_equal(
-        produced,
-        expected,
-        # Float columns: tolerate ulp-level arithmetic drift across polars releases
-        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
-        # Anything larger than 1e-12 relative is a real change and still fails.
-        check_exact=False,
-        rtol=1e-12,
-        atol=1e-15,
-        check_dtypes=True,
-        check_column_order=True,
-        check_row_order=True,
-    )
+    _assert_matches_baseline(produced, expected)
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
@@ -980,19 +969,7 @@ def test_golden_baseline_no_bracket(scenario: str, artifact: str) -> None:
     """
     produced = BASE_SCENARIOS[scenario](bracket=None)[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
-    assert_frame_equal(
-        produced,
-        expected,
-        # Float columns: tolerate ulp-level arithmetic drift across polars releases
-        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
-        # Anything larger than 1e-12 relative is a real change and still fails.
-        check_exact=False,
-        rtol=1e-12,
-        atol=1e-15,
-        check_dtypes=True,
-        check_column_order=True,
-        check_row_order=True,
-    )
+    _assert_matches_baseline(produced, expected)
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
@@ -1001,19 +978,7 @@ def test_golden_baseline_zero_cost_no_bracket(scenario: str, artifact: str) -> N
     """Both new 0.13.0 knobs at their no-op settings, together."""
     produced = BASE_SCENARIOS[scenario](cost=Cost(), bracket=None)[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
-    assert_frame_equal(
-        produced,
-        expected,
-        # Float columns: tolerate ulp-level arithmetic drift across polars releases
-        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
-        # Anything larger than 1e-12 relative is a real change and still fails.
-        check_exact=False,
-        rtol=1e-12,
-        atol=1e-15,
-        check_dtypes=True,
-        check_column_order=True,
-        check_row_order=True,
-    )
+    _assert_matches_baseline(produced, expected)
 
 
 # ---------------------------------------------------------------------------
@@ -1055,19 +1020,7 @@ def test_golden_baseline_explicit_position_anchor(scenario: str, artifact: str) 
     """
     produced = BRACKET_SCENARIOS[scenario](anchor="position")[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
-    assert_frame_equal(
-        produced,
-        expected,
-        # Float columns: tolerate ulp-level arithmetic drift across polars releases
-        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
-        # Anything larger than 1e-12 relative is a real change and still fails.
-        check_exact=False,
-        rtol=1e-12,
-        atol=1e-15,
-        check_dtypes=True,
-        check_column_order=True,
-        check_row_order=True,
-    )
+    _assert_matches_baseline(produced, expected)
 
 
 @pytest.mark.parametrize("artifact", ARTIFACTS)
@@ -1090,19 +1043,7 @@ def test_golden_baseline_signal_anchor_is_degenerate_here(
     """
     produced = BRACKET_SCENARIOS[scenario](anchor="signal")[artifact]
     expected = pl.read_parquet(_baseline_path(scenario, artifact))
-    assert_frame_equal(
-        produced,
-        expected,
-        # Float columns: tolerate ulp-level arithmetic drift across polars releases
-        # (#93: polars 1.44.2 moved one `return` cell by 1 ulp, trades identical).
-        # Anything larger than 1e-12 relative is a real change and still fails.
-        check_exact=False,
-        rtol=1e-12,
-        atol=1e-15,
-        check_dtypes=True,
-        check_column_order=True,
-        check_row_order=True,
-    )
+    _assert_matches_baseline(produced, expected)
 
 
 @pytest.mark.parametrize("scenario", sorted(BRACKET_SCENARIOS))

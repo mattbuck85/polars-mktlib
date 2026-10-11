@@ -393,6 +393,9 @@ class TradingHelperMixin:
                 ).alias("datetime")
             )
             .select("datetime")
-            .explode("datetime")
+            # A session holding no timestamp contributes no row. The
+            # default for an empty list differs between polars 1.x (one
+            # null row) and 2.x (no row), so it is stated.
+            .explode("datetime", empty_as_null=False)
             .to_series()
         )
