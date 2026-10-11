@@ -36,9 +36,9 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: "${{ matrix.python-version }}"
-        # pip's download cache, keyed on pyproject.toml. Versions are still
-        # resolved against PyPI on every run; a release newer than the
-        # cache is downloaded.
+        # pip's cache, keyed on pyproject.toml. Versions are still resolved
+        # against PyPI on every run; a release newer than the cache is
+        # downloaded.
         cache: pip
         cache-dependency-path: pyproject.toml
     - name: Install the dev extra
@@ -108,14 +108,11 @@ jobs:
         - {python-version: "3.14", extras: "reports,data,fast"}
     steps:
     - uses: actions/checkout@v4
+    # No pip cache on these legs: pip also stores the wheel it builds from
+    # this checkout, and the legs that gate a release must never be able to
+    # install a stored build in place of the commit under test.
     - uses: actions/setup-python@v5
-      with:
-        python-version: "${{ matrix.python-version }}"
-        # pip's download cache, keyed on pyproject.toml. Versions are still
-        # resolved against PyPI on every run; a release newer than the
-        # cache is downloaded.
-        cache: pip
-        cache-dependency-path: pyproject.toml
+      with: {python-version: "${{ matrix.python-version }}"}
     - name: Install the built package with these extras, and pytest
       env:
         EXTRAS: ${{ matrix.extras }}
