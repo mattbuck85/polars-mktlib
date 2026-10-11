@@ -409,10 +409,9 @@ class TestMonteCarloPathsChartSampling:
     def test_chart_emits_no_deprecation_warning(self):
         """Building the chart raises no DeprecationWarning from polars.
 
-        Recorded explicitly rather than left to the suite-wide warning
-        filter: polars evaluates the subset filter in native code, and a
-        warning escalated to an error there is discarded instead of
-        propagating, so only a recorded warning is observable.
+        Recorded explicitly: polars evaluates the subset filter in native
+        code, and a warning escalated to an error there is discarded
+        instead of propagating, so only a recorded warning is observable.
         """
         import datetime as dt
         import warnings

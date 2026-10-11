@@ -76,19 +76,26 @@ def test_trading_index_drops_only_the_empty_session() -> None:
     ]
 
 
-def test_trading_index_break_calendar_one_empty_half() -> None:
-    """Only one half of a break session being empty adds no null.
+def test_trading_index_break_calendar_drops_only_the_empty_session() -> None:
+    """A half-day session between two full ones leaves no null behind.
 
     Hong Kong: 09:30-12:00 and 13:00-16:00.  At 2h30m, open interval, the
-    morning holds nothing and the afternoon holds 15:30.
+    morning of a full session holds nothing and its afternoon holds 15:30,
+    so a full session contributes one timestamp from a list whose first
+    half is empty.  2024-02-09 closes at 12:00: both halves are empty and
+    the session contributes nothing.
     """
     cal = get_calendar("XHKG")
+    sessions = cal.schedule("2024-02-08", "2024-02-14")["market_close"]
+    assert [(t.day, t.hour) for t in sessions.to_list()] == [
+        (8, 16), (9, 12), (14, 16),
+    ]
     out = cal.trading_index(
-        "2024-03-04", "2024-03-06", period="2h30m", closed="none"
+        "2024-02-08", "2024-02-14", period="2h30m", closed="none"
     )
     tz = ZoneInfo("Asia/Hong_Kong")
     assert out.to_list() == [
-        datetime(2024, 3, d, 15, 30, tzinfo=tz) for d in (4, 5, 6)
+        datetime(2024, 2, d, 15, 30, tzinfo=tz) for d in (8, 14)
     ]
 
 
@@ -96,7 +103,7 @@ def test_trading_index_break_calendar_one_empty_half() -> None:
 # Tripwires: values derived from polars internals
 # ---------------------------------------------------------------------------
 #
-# Measured identical on polars 1.40.0, 1.44.2 and 2.0.0.  Neither value is
+# Measured identical on polars 1.44.2 and 2.0.0.  Neither value is
 # guaranteed by polars; a failure here means a polars release changed the
 # underlying primitive, and that stored digests or seeded results change
 # with it.

@@ -4,13 +4,13 @@
 
 ### Changed
 
-- **The supported polars range is declared: `polars>=1.40,<3`.**
+- **The supported polars range is declared: `polars>=1.44.2,<3`.**
 
-  The dependency was an unbounded `polars`. It is now bounded below at 1.40 and above at the next major version, and CI installs both ends: every run tests the release pinned in `requirements/dev.txt`, and additional legs replace it with polars 1.44.2 and with 1.40.0 after the lock install. Each leg asserts that the polars it imported is the one it is named for.
+  The dependency was an unbounded `polars`. It is now bounded below at 1.44.2 and above at the next major version, and CI tests both ends on six legs. Every leg installs `requirements/dev.txt` and then replaces polars: four legs (Python 3.12 and 3.14, each with and without the accelerator) upgrade to the latest polars 2.x release, and two legs (3.12 with the accelerator, 3.14 without) install polars 1.44.2. No leg tests the polars that the lock file pins. Each leg runs `pip check` after the replacement and asserts the polars it imported: major version 2 on the 2.x legs, exactly 1.44.2 on the others.
 
-- A `DeprecationWarning` attributed to a `mktlib` or `tests` module is an error in the test suite (`[tool.pytest.ini_options] filterwarnings`). Warnings attributed to third-party modules are unaffected.
+- A `DeprecationWarning` attributed to a file under `mktlib/` or `tests/` fails the test that triggered it (`tests/conftest.py`). The warnings of each test's setup, call and teardown are recorded, and the phase fails afterwards if one of them is such a deprecation; every other recorded warning is emitted again and reaches the warnings summary as before. Warnings attributed to third-party files are unaffected.
 
-  One class of warning is outside this filter's reach: a deprecation that polars raises while evaluating an expression in native code is discarded when escalated to an error, so the call returns normally. The `is_in` fix below is pinned by a test that records warnings instead.
+  The warnings are recorded rather than escalated with an `error` filter because polars raises some deprecations while it evaluates an expression in native code, and a warning turned into an exception there is discarded: the call returns normally and nothing is reported. A warning that a test ignores or captures itself (`-W ignore`, a `filterwarnings` mark, `pytest.warns`, `warnings.catch_warnings`) is not recorded and does not fail the test.
 
 ### Fixed
 
@@ -24,7 +24,7 @@
 
 ### Tests
 
-- `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.40.0, 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.
+- `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.
 - The golden baseline comparisons go through one helper, `tests/_frames.py::assert_frames_close`, which passes the float tolerances as `rel_tol=1e-12, abs_tol=1e-15`. The values are those introduced in 0.16.3; `rtol` / `atol` are the deprecated names for the same parameters.
 
 ## 0.16.4
