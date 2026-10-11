@@ -47,6 +47,10 @@
 
   A digest stored from an earlier release for such a strategy does not match the one this release computes, except where the earlier process happened to iterate in name order. Digests of strategies whose `init()` follows no helper or one helper, and of strategies with no `init()`, are unchanged.
 
+- **The `_entry_<col>` columns of `result.signals` came in a different order in different processes.**
+
+  An exit condition that reads two or more columns through `EntryRef` gets one `_entry_<col>` snapshot column each. The column names were collected into a `set` and the columns were added in its iteration order, which depends on the process's hash seed, so `Any_(ValueGT("close", EntryRef("high")), ValueLT("close", EntryRef("low")))` gave `_entry_high, _entry_low` in one process and the reverse in another. The columns are now added in name order. Their values, and every other part of the result, are unchanged; with one `EntryRef` column there was one order already.
+
 ### Tests
 
 - `tests/test_version_contract.py` pins results that are produced by polars primitives and could move with the installed version: the `trading_index` cases above, the `strategy_artifact` digest of strategies built from raw expressions (derived from `Expr.meta.serialize()`), and the seeded `Innovations.BOOTSTRAP` stream (derived from `Series.sample(seed=)`). The digest and the stream are identical on polars 1.44.2 and 2.0.0; neither is guaranteed by polars, and a release that changes either one changes stored digests or seeded bootstrap results with it.

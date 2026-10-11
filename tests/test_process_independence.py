@@ -103,3 +103,57 @@ def test_artifact_of_init_helpers_is_one_value_per_hash_seed(
         values = {digests[name] for digests in per_seed}
         assert len(values) == 1, f"{name}: {sorted(values)}"
     assert len(set(per_seed[0].values())) == 4
+
+
+# ---------------------------------------------------------------------------
+# result.signals
+# ---------------------------------------------------------------------------
+
+_ENTRY_COLUMNS = """
+from mktlib.backtest import Any_, Crossover, EntryRef, ValueGT, ValueLT, run
+from tests.backtest import test_golden_baseline as golden
+
+
+class TwoRefs:
+    def entry(self):
+        return Crossover("fast", "slow")
+
+    def exit(self):
+        return Any_(
+            ValueGT("close", EntryRef("high")),
+            ValueLT("close", EntryRef("low")),
+        )
+
+
+class FourRefs(TwoRefs):
+    def exit(self):
+        return Any_(
+            Any_(
+                ValueGT("close", EntryRef("high")),
+                ValueLT("close", EntryRef("low")),
+            ),
+            Any_(
+                ValueGT("open", EntryRef("close")),
+                ValueLT("open", EntryRef("open")),
+            ),
+        )
+
+
+for cls in (TwoRefs, FourRefs):
+    signals = run(golden._daily_frame(seed=7, start=100.0), cls()).signals
+    print(",".join(c for c in signals.columns if c.startswith("_entry_")))
+"""
+
+
+def test_signals_entry_columns_are_in_one_order_per_hash_seed() -> None:
+    """One ``_entry_<col>`` column per ``EntryRef`` column, in name order."""
+    outputs = run_fresh(_ENTRY_COLUMNS, hash_seeds(8))
+    assert len(set(outputs)) == 1, sorted(set(outputs))
+    two, four = outputs[0].splitlines()
+    assert two.split(",") == ["_entry_high", "_entry_low"]
+    assert four.split(",") == [
+        "_entry_close",
+        "_entry_high",
+        "_entry_low",
+        "_entry_open",
+    ]

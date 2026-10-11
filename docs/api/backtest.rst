@@ -32,6 +32,10 @@ their input order, so the flatten bar of a session whose last timestamp occurs
 twice is the later row. In a dual-strategy run, trades that share an
 ``entry_date`` are listed long side first.
 
+The columns of the result frames are in one order too. ``result.signals``
+holds one ``_entry_<col>`` column for each column an exit condition reads
+through ``EntryRef``, added after the input columns in name order.
+
 Return Model
 ~~~~~~~~~~~~
 
