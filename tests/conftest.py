@@ -22,6 +22,14 @@ A warning that a test ignores or captures itself (``-W ignore``, the
 ``filterwarnings`` mark, ``pytest.warns``, ``warnings.catch_warnings``) is
 not recorded by pytest and so is not counted.  Neither is a warning whose
 filename is not an absolute path (``<string>``, ``<frozen ...>``).
+
+The check depends on pytest's default of showing every
+``DeprecationWarning``.  pytest drops that default when the interpreter
+was given any warning option (``PYTHONWARNINGS`` or ``python -W``, whatever
+its value), and records nothing at all under ``-p no:warnings``; in either
+case Python's own default of ignoring deprecations outside ``__main__``
+applies, nothing is recorded, and the check is silent.  CI sets none of
+these.
 """
 
 from __future__ import annotations
