@@ -10,8 +10,8 @@ records (``pytest_warning_recorded``) during configuration, collection and
 every test.  The outcome of each test, ``recwarn``, ``pytest.warns`` and
 the warnings summary are therefore the ones pytest produces without this
 file.  When at least one such deprecation was recorded, a section at the
-end of the report lists each of them, and a run that would have exited
-with status 0 exits with status 1 instead.
+end of the report lists each deprecated site once, and a run that would
+have exited with status 0 exits with status 1 instead.
 
 The warnings are not escalated with an ``error`` filter because polars
 raises some deprecations while it evaluates an expression in native code,
@@ -93,13 +93,21 @@ def pytest_terminal_summary(
         red=True,
         bold=True,
     )
+    # One deprecated call site reached by many tests is one entry: the
+    # site, how often it was recorded, and where it was recorded first.
+    sites: dict[tuple[str, int, str], list[_OwnDeprecation]] = {}
     for d in _own_deprecations:
-        where = d.nodeid or "-"
+        sites.setdefault((d.filename, d.lineno, d.message), []).append(d)
+    for (filename, lineno, message), hits in sites.items():
+        first = hits[0]
+        terminalreporter.write_line(f"{filename}:{lineno}: {message}")
         terminalreporter.write_line(
-            f"[{d.when}] {where}: {d.filename}:{d.lineno}: {d.message}"
+            f"    recorded {len(hits)} time(s); first: "
+            f"[{first.when}] {first.nodeid or '-'}"
         )
     terminalreporter.write_line(
-        f"{len(_own_deprecations)} own deprecation(s): the run fails."
+        f"{len(sites)} deprecated site(s), {len(_own_deprecations)} "
+        "recorded warning(s): the run fails."
     )
 
 
