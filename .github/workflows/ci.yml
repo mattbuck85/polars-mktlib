@@ -85,21 +85,60 @@ jobs:
     - name: Integration tests (cross-library validation + KS equivalence)
       run: pytest -m integration --no-cov
 
+  # The package as a user installs it: built, not editable, with one set of
+  # extras and none of the dev dependencies. The test job cannot show this:
+  # its dev extra installs numpy, pandas and the rest, so an import the
+  # runtime extras do not declare still resolves there. Each leg runs
+  # tests/test_clean_install.py from outside the checkout, so `mktlib` is
+  # the installed package and its package data is what the wheel shipped.
+  clean-install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        extras: [none, data, reports, "reports,data", fast]
+        include:
+        - {python-version: "3.14", extras: "reports,data,fast"}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with: {python-version: "${{ matrix.python-version }}"}
+    - name: Install the built package with these extras, and pytest
+      env:
+        EXTRAS: ${{ matrix.extras }}
+      run: |
+        if [ "$EXTRAS" = "none" ]; then target="."; else target=".[${EXTRAS}]"; fi
+        pip install "$target" pytest
+        pip check
+    - name: Run the entry points outside the checkout
+      env:
+        EXTRAS: ${{ matrix.extras }}
+      run: |
+        if [ "$EXTRAS" = "none" ]; then EXTRAS=""; fi
+        mkdir "$RUNNER_TEMP/clean"
+        cp tests/test_clean_install.py "$RUNNER_TEMP/clean/"
+        cd "$RUNNER_TEMP/clean"
+        MKTLIB_CLEAN_INSTALL="$EXTRAS" python -m pytest test_clean_install.py -p no:cacheprovider
+
   # Cut a release whenever a merge to main advances [project] version and no
   # matching tag exists yet. We only tag on a green main: the job needs `test`
-  # and its `if` names no status function, so a failed leg skips it and we
-  # never publish to PyPI — irreversible — on a red build.
+  # and `clean-install`, and its `if` names no status function, so a failed
+  # leg of either skips it and we never publish to PyPI — irreversible — on a
+  # red build. The tag goes on the commit this run tested (`github.sha`), not
+  # on whatever main points at when the job starts: a later merge that lands
+  # while this run is finishing has its own run and its own decision.
   # The tag MUST be pushed with GH_PAT, not GITHUB_TOKEN: tags pushed with the
   # default token do not trigger other workflows, so release.yml would never
   # fire. Idempotent via the rev-parse guard.
   tag-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+    needs: [test, clean-install]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: main
+        ref: ${{ github.sha }}
         fetch-depth: 0
         token: ${{ secrets.GH_PAT }}
     - name: Create + push tag if new
@@ -110,7 +149,7 @@ jobs:
         if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
           echo "Tag $tag already exists — skipping"
         else
-          echo "Tagging release $tag"
-          git tag "$tag"
+          echo "Tagging release $tag at $GITHUB_SHA"
+          git tag "$tag" "$GITHUB_SHA"
           git push origin "$tag"
         fi
