@@ -79,8 +79,11 @@ def _line(func: ast.Attribute) -> int:
 
 
 def _is_frame_join(call: ast.Call) -> bool:
-    """A ``.join(...)`` with ``on`` or ``how``: not a ``str.join``."""
-    return any(
+    """A frame ``.join(...)``: a join keyword, or the key given positionally.
+
+    ``str.join`` takes one argument and none of these keywords.
+    """
+    return len(call.args) >= 2 or any(
         _keyword(call, name) is not None
         for name in ("on", "how", "left_on", "right_on", "maintain_order")
     )

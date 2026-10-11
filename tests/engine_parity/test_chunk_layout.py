@@ -144,8 +144,9 @@ DIFFERING = frozenset(
     }
 )
 
-#: The largest relative difference between two floats of a ``DIFFERING``
-#: result, on this corpus.  Not a property of the library.
+#: Relative bound on the difference between two floats of a ``DIFFERING``
+#: result.  It sits well above the largest difference seen on this corpus
+#: and is not a property of the library.
 CORPUS_REL_BOUND = 1e-12
 
 
@@ -171,7 +172,7 @@ def test_scalar_result_does_not_depend_on_chunk_layout(name: str) -> None:
 def test_scalar_result_keeps_its_structure_under_chunk_layout(
     name: str,
 ) -> None:
-    """Same structure, and floats within the bound measured on this corpus."""
+    """Same structure, and floats within the bound set for this corpus."""
     _needs_plotly(name)
     scenario = _SCALAR_SCENARIOS[name]
     single = _corpus.run_fresh(scenario, _corpus.as_built)
